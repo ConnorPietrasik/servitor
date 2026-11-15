@@ -1,0 +1,7 @@
+{
+  "defaultTools": ["read", "bash", "edit", "write"],
+  "compaction": {
+    "enabled": true
+  },
+  "skills": []
+}

@@ -1,0 +1,62 @@
+# ============================================================================
+# Servitor interface contract — CONTRACT ONLY (DECISIONS D1).
+#
+# The runtime is a systemd service on the guest (deploy/guest/servitor.service);
+# there is NO docker in the VM. This file is the machine-readable interface
+# contract: env var names, the one published port, bind, and mount layout.
+# `make check` (stage-0 gate) parses it and enforces:
+#   - every env name referenced here is named in .env.example
+#   - exactly one published port, referenced as ${SERVITOR_PORT}
+#   - no value appears here (all ${VAR})
+# Do not "run" this compose file; do not add services.
+# ============================================================================
+name: servitor-contract
+
+services:
+  servitor:
+    # image is never built/pulled — the guest rootfs + systemd unit is the runtime
+    image: servitor-contract:contract-only
+    environment:
+      # machine credentials (the only secrets; env-only per subprocess)
+      - OMNISSIAH_API_KEY=${OMNISSIAH_API_KEY}
+      - EXA_API_KEY=${EXA_API_KEY}
+      # network contract (edge is the only auth gate; app authenticates nobody)
+      - SERVITOR_BIND=${SERVITOR_BIND}
+      - SERVITOR_PORT=${SERVITOR_PORT}
+      - SERVITOR_EDGE_SUBNET=${SERVITOR_EDGE_SUBNET}
+      - SERVITOR_OPS_SUBNET=${SERVITOR_OPS_SUBNET}
+      # state volume (guest ext4, never overlay/container storage — T29)
+      - SERVITOR_ROOT=${SERVITOR_ROOT}
+      # lifecycle / delivery (ops parameters, never capability caps)
+      - SERVITOR_GC_IDLE_DAYS=${SERVITOR_GC_IDLE_DAYS}
+      - SERVITOR_DRAIN_GRACE_SECS=${SERVITOR_DRAIN_GRACE_SECS}
+      - SERVITOR_COALESCE_MS=${SERVITOR_COALESCE_MS}
+      - SERVITOR_HEARTBEAT_SECS=${SERVITOR_HEARTBEAT_SECS}
+      # version selections (npm semver specs, exact by default)
+      - SERVITOR_PI_VERSION=${SERVITOR_PI_VERSION}
+      - SERVITOR_PI_WEB_ACCESS_VERSION=${SERVITOR_PI_WEB_ACCESS_VERSION}
+      # deploy-time intent (doctor asserts the live router against these)
+      - SERVITOR_INTENDED_MODEL_ID=${SERVITOR_INTENDED_MODEL_ID}
+      - SERVITOR_INTENDED_CONTEXT_WINDOW=${SERVITOR_INTENDED_CONTEXT_WINDOW}
+    ports:
+      # the ONE published port; bind from the env file, never a literal
+      - "${SERVITOR_BIND}:${SERVITOR_PORT}:${SERVITOR_PORT}"
+    volumes:
+      # state volume — guest ext4 (T29). Areas: config/, lib/, inbox/<s>/,
+      # scratch/<s>/, sessions/<s>/ (PLAN §5). The agent's per-session mounts
+      # (overlays, binds) are created by the app from this volume; they are
+      # not container mounts.
+      - "${SERVITOR_ROOT}:/var/lib/servitor"
+      # synced agent config — versioned dirs config/v<N>/ under the state
+      # volume, read-only to the agent (root-owned 0755); models.json is
+      # additionally single-file RO-bound over each session's agent dir.
+      - "${SERVITOR_ROOT}/config:/var/lib/servitor/config:ro"
+      # durable, human-curated scripts — the only durable, reviewable
+      # artifact; writable only by the distinct human "save this script"
+      # action; never GC'd.
+      - "${SERVITOR_ROOT}/lib:/var/lib/servitor/lib:ro"
+      # image-baked, documented for the contract (no volume needed):
+      #   /opt/toolkit            — overlay lower of every session workdir
+      #   /opt/pi-ext/pi-web-access — sync-installed search extension
+      #   /opt/servitor/pi        — pinned pi (absolute CLI path constant)
+      #   /home/slot1..slot16     — slot uid $HOME (follows the uid)

@@ -1,0 +1,18 @@
+# secrets — never in git
+.env
+
+# python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# node (conformance scratch prefixes, ui)
+node_modules/
+test/.scratch/
+ui/node_modules/
+ui/dist/
+
+# dev state
+test/.state/
+*.log

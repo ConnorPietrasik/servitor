@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "servitor"
+version = "0.1.0"
+description = "Home assistant with coding ability: browser chat UI fronting pi (RPC) in a dedicated VM"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "python-magic>=0.4",  # MIME by magic for uploads (needs system libmagic)
+    "PyYAML>=6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",  # API test client (Stage 3)
+]
+
+[tool.setuptools]
+packages = [
+    "app",
+    "app.rpc",
+    "app.iso",
+    "app.registry",
+    "app.delivery",
+    "app.api",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+addopts = "-q"

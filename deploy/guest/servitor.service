@@ -1,0 +1,29 @@
+# servitor.service — the app on the guest (DECISIONS D1: systemd, no docker).
+#
+# Privilege model (PLAN §3): the app runs as root (privileged); the agent
+# never is. The stop path is the abort-then-drain path (PLAN §5): the app's
+# SIGTERM handler sends RPC abort (with recorded cause) to every run-active
+# child while its stdin is still open, marks sessions interrupted, then
+# closes stdin for orderly shutdown. SERVSITOR_DRAIN_GRACE_SECS (90) is
+# STRICTLY LESS than TimeoutStopSec below (120) — or systemd escalates to
+# SIGKILL mid-drain and the recorded cause lies.
+[Unit]
+Description=Servitor — home assistant (Pi RPC harness + HTTP/SSE API + static UI)
+Slice=servitor.slice
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/servitor/servitor.env
+ExecStart=/opt/servitor/app/.venv/bin/python -m app.api.main
+TimeoutStopSec=120
+Restart=on-failure
+RestartSec=2
+# the drain is in-process (SIGTERM handler); give it the unit's stop window
+KillSignal=SIGTERM
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target
