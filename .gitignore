@@ -10,6 +10,7 @@ __pycache__/
 # node (conformance scratch prefixes, ui)
 node_modules/
 test/.scratch/
+test/.scratch2/
 ui/node_modules/
 ui/dist/
 
