@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -154,6 +155,31 @@ class Staging:
         return swept
 
 
+# ---------------------------------------------------------------------- #
+# outbox sha256: lazy background hash, cached per (size, mtime)
+# ---------------------------------------------------------------------- #
+
+_sha_lock = threading.Lock()
+_SHA_CACHE: dict[tuple, str] = {}
+_SHA_PENDING: set[tuple] = set()
+
+
+def _hash_outbox_file(key: tuple, path: str) -> None:
+    """Background: sha256 a single outbox file (1 MB chunks)."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        with _sha_lock:
+            _SHA_CACHE[key] = h.hexdigest()
+    except OSError:
+        pass  # file gone mid-hash: the next listing re-checks
+    finally:
+        with _sha_lock:
+            _SHA_PENDING.discard(key)
+
+
 class SessionFiles:
     """One session's delivery state.
 
@@ -244,6 +270,11 @@ class SessionFiles:
     # --- listing / reads -------------------------------------------------- #
 
     def list_outbox(self) -> list[dict]:
+        # sha256 is computed LAZILY in a background thread, cached per
+        # (session, path, size, mtime): a multi-GB artifact must not be
+        # re-hashed on every listing. The UI shows whatever is cached
+        # (null while the first hash is still running).
+        sid = self.session_dir.name
         out = []
         if not self.outbox.is_dir():
             return out
@@ -255,11 +286,23 @@ class SessionFiles:
                     st = p.stat()
                 except OSError:
                     continue
+                key = (sid, rel, st.st_size, st.st_mtime)
+                sha = _SHA_CACHE.get(key)
+                if sha is None:
+                    with _sha_lock:
+                        if key not in _SHA_PENDING:
+                            _SHA_PENDING.add(key)
+                            threading.Thread(
+                                target=_hash_outbox_file,
+                                args=(key, str(p)),
+                                daemon=True,
+                            ).start()
                 out.append(
                     {
                         "path": rel,
                         "size": st.st_size,
                         "mtime": st.st_mtime,
+                        "sha256": sha,
                         "mime": sniff_mime(str(p)) if st.st_size else "application/octet-stream",
                     }
                 )

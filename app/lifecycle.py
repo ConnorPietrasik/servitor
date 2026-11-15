@@ -39,6 +39,13 @@ from app.iso.spawn import slot_identity, spawn_setuid
 from app.iso.sweep import kill_strays_by_uid
 from app.iso.release import release_session
 from app.api.sse import SseHub
+from app.api.transcript import (
+    active_branch,
+    build_forest,
+    entry_to_message,
+    forkable_messages,
+    read_entries,
+)
 from app.registry import (
     ALLOCATED,
     CLEANING,
@@ -749,6 +756,166 @@ class Lifecycle:
             return {"alive": False, "respawned": False, "idle_no_transcript": True}
         await self._respawn(session_id)
         return {"alive": True, "respawned": True}
+
+    # ------------------------------------------------------------------ #
+    # transcript fetch (stage 4: reattach on load — fetch, never replay)
+    # ------------------------------------------------------------------ #
+
+    def _live_driver(self, session_id: str):
+        live = self.live.get(session_id)
+        if live is not None and live.driver is not None and not live.driver.exited:
+            return live.driver
+        return None
+
+    def _transcript_entries(self, session_id: str) -> list[dict[str, Any]]:
+        row = self.cfg.registry.get(session_id)
+        if row is None or not row.session_file:
+            return []
+        return read_entries(row.session_file)
+
+    @staticmethod
+    def _branch_messages(branch: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for e in branch:
+            m = entry_to_message(e)
+            if m is not None:
+                out.append(m)
+        return out
+
+    async def fetch_messages(self, session_id: str) -> dict[str, Any]:
+        """Authoritative active-branch messages (UI reattach base).
+
+        Live process: pi RPC get_entries (pi's leaf is authoritative).
+        Dead process (idle-killed, crashed, app restarted): the session
+        file on disk — the same truth. Either way: {leaf_id, messages}."""
+        row = self.cfg.registry.get(session_id)
+        if row is None:
+            raise KeyError(session_id)
+        driver = self._live_driver(session_id)
+        # cursor FIRST: it is the hub position before the (awaiting)
+        # entries read; a concurrent event in between duplicates an
+        # entry the snapshot already contains — the client dedupes by
+        # entry id. The reverse order would silently skip the tail.
+        cursor = self.hub(session_id).latest_id
+        if driver is not None:
+            try:
+                await self._live_sync_file(session_id, driver)
+                data = await driver.get_entries()
+                entries = list(data.get("entries", []))
+                leaf_id = data.get("leafId")
+            except Exception:
+                driver = None  # died mid-fetch: disk fallback
+        if driver is not None:
+            by_id = {e["id"]: e for e in entries}
+            chain: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            cur: dict[str, Any] | None = by_id.get(leaf_id) if leaf_id else None
+            while cur is not None and cur["id"] not in seen:
+                seen.add(cur["id"])
+                chain.append(cur)
+                pid = cur.get("parentId")
+                cur = by_id.get(pid) if pid else None
+            return {
+                "leaf_id": leaf_id,
+                "cursor": cursor,
+                "messages": self._branch_messages(list(reversed(chain))),
+            }
+        branch = active_branch(self._transcript_entries(session_id))
+        return {
+            "leaf_id": branch[-1]["id"] if branch else None,
+            "cursor": self.hub(session_id).latest_id,
+            "messages": self._branch_messages(branch),
+        }
+
+    async def fetch_tree(self, session_id: str) -> dict[str, Any]:
+        """The full branch picture (read-only): every session FILE in the
+        session dir as one forest. pi's fork creates a new file and the
+        process switches to it; the originals stay — the session's tree
+        is the union of all of them. Uniform across live/dead (the files
+        are written as events happen)."""
+        row = self.cfg.registry.get(session_id)
+        if row is None:
+            raise KeyError(session_id)
+        roots, leaf_id, files = build_forest(
+            self.cfg.state.sessions_for(session_id)
+        )
+        return {"roots": roots, "leaf_id": leaf_id, "files": files}
+
+    async def _sync_session_file(self, session_id: str, driver) -> None:
+        """After fork/switch the process's sessionFile changes (fork
+        creates a NEW file — but pi creates it lazily, on the next write,
+        so it may not exist yet). The registry follows it when it exists;
+        a fetch-time sync picks it up otherwise. The registry must never
+        point at a missing file (the probe/respawn/disk paths trust it)."""
+        try:
+            st = await driver.get_state()
+            new_file = st.get("sessionFile")
+            if new_file and os.path.exists(new_file):
+                row = self.cfg.registry.get(session_id)
+                if row is not None and row.session_file != new_file:
+                    self.cfg.registry.set_session_file(session_id, new_file)
+        except Exception:
+            log.warning("could not sync sessionFile after fork/switch", exc_info=True)
+
+    async def _live_sync_file(self, session_id: str, driver):
+        """Fetch-time sessionFile sync: the fork's new file appears on the
+        first write after the fork; pick it up on any live fetch."""
+        try:
+            st = await driver.get_state()
+            new_file = st.get("sessionFile")
+            if new_file and os.path.exists(new_file):
+                row = self.cfg.registry.get(session_id)
+                if row is not None and row.session_file != new_file:
+                    self.cfg.registry.set_session_file(session_id, new_file)
+                    return new_file
+        except Exception:
+            pass
+        row = self.cfg.registry.get(session_id)
+        return row.session_file if row else None
+
+    async def fetch_fork_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """Fork points: user messages on the active branch
+        ({entryId, text}) — the \"edit that message\" list."""
+        row = self.cfg.registry.get(session_id)
+        if row is None:
+            raise KeyError(session_id)
+        driver = self._live_driver(session_id)
+        if driver is not None:
+            try:
+                return list(await driver.get_fork_messages())
+            except Exception:
+                pass  # disk fallback
+        return forkable_messages(active_branch(self._transcript_entries(session_id)))
+
+    async def fork(self, session_id: str, entry_id: str) -> dict[str, Any]:
+        """Fork from a previous user message ("edit that message").
+        Dead process ⇒ respawn first (ensure_alive), then the RPC.
+        The active branch moves to the new fork; the UI re-fetches."""
+        row = self.cfg.registry.get(session_id)
+        if row is None:
+            raise KeyError(session_id)
+        await self.ensure_alive(session_id)
+        driver = self._live_driver(session_id)
+        if driver is None:
+            raise RuntimeError("session has no transcript to fork from")
+        out = await driver.fork(entry_id)
+        await self._sync_session_file(session_id, driver)
+        return out
+
+    async def switch_session(self, session_id: str, session_path: str) -> bool:
+        """Navigate the live process to another session file (advanced
+        branch navigation; the fork slice's escape hatch)."""
+        row = self.cfg.registry.get(session_id)
+        if row is None:
+            raise KeyError(session_id)
+        await self.ensure_alive(session_id)
+        driver = self._live_driver(session_id)
+        if driver is None:
+            raise RuntimeError("no live process to switch")
+        ok = await driver.switch_session(session_path)
+        if ok:
+            await self._sync_session_file(session_id, driver)
+        return ok
 
     def _disk_near_full(self) -> bool:
         try:

@@ -17,6 +17,11 @@ Contract surface (versioned in test/.scratch/api-contract.json):
     POST   /api/v1/sessions/{id}/follow-up
     POST   /api/v1/sessions/{id}/abort
     GET    /api/v1/sessions/{id}/probe
+    GET    /api/v1/sessions/{id}/messages        (fetch, never replay)
+    GET    /api/v1/sessions/{id}/tree            (fork/branch view)
+    GET    /api/v1/sessions/{id}/fork-messages   (fork points)
+    POST   /api/v1/sessions/{id}/fork
+    POST   /api/v1/sessions/{id}/switch
     POST   /api/v1/sessions/{id}/stable
     POST   /api/v1/sessions/{id}/release
     GET    /api/v1/sessions/{id}/events            (SSE; Last-Event-ID resume)
@@ -49,6 +54,7 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -89,6 +95,14 @@ class StartBody(BaseModel):
 
 class ReleaseBody(BaseModel):
     reason: str = "user close"
+
+
+class ForkBody(BaseModel):
+    entry_id: str
+
+
+class SwitchBody(BaseModel):
+    session_path: str
 
 
 class AckBody(BaseModel):
@@ -270,6 +284,70 @@ def build_app(app_state, cfg) -> FastAPI:
         _get_row(app_state, sid)
         result = await app_state.lc.probe(sid, which)
         return {"result": result}
+
+    # ------------------------------------------------------------------ #
+    # transcript fetch (reattach on load: fetch, never replay) +
+    # fork/branch (the last slice)
+    # ------------------------------------------------------------------ #
+
+    @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/messages")
+    async def messages(sid: str):
+        """Authoritative active-branch messages: the UI's reattach base.
+        The SSE stream is the LIVE TAIL only — on load the client fetches
+        here and then follows events from the leaf; it never replays."""
+        try:
+            return await app_state.lc.fetch_messages(sid)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="no such session")
+
+    @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/tree")
+    async def tree(sid: str):
+        """The full entry tree (all branches, read-only): the fork/branch
+        view. Live: pi get_tree; dead: built from the session file."""
+        try:
+            return await app_state.lc.fetch_tree(sid)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="no such session")
+
+    @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/fork-messages")
+    async def fork_messages(sid: str):
+        """Fork points: user messages on the active branch
+        ({entryId, text}) — the 'edit that message' list."""
+        try:
+            return {"messages": await app_state.lc.fetch_fork_messages(sid)}
+        except KeyError:
+            raise HTTPException(status_code=404, detail="no such session")
+
+    @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/fork")
+    async def fork(sid: str, body: ForkBody):
+        """Fork from a previous user message ('edit that message').
+        Dead process ⇒ respawn first. The active branch moves to the new
+        fork — the client re-fetches messages/tree afterwards."""
+        _get_row(app_state, sid)
+        try:
+            out = await app_state.lc.fork(sid, body.entry_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="no such session")
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"fork: {e}")
+        return {"forked": True, **out}
+
+    @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/switch")
+    async def switch(sid: str, body: SwitchBody):
+        """Navigate the live process to another session file (advanced
+        branch navigation)."""
+        _get_row(app_state, sid)
+        try:
+            ok = await app_state.lc.switch_session(sid, body.session_path)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="no such session")
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"switch: {e}")
+        return {"switched": ok}
 
     @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/stable")
     async def set_stable(sid: str, body: StableBody):
@@ -477,5 +555,33 @@ def build_app(app_state, cfg) -> FastAPI:
                 "errors": out.errors,
             }
         raise HTTPException(status_code=400, detail="unreachable")
+
+    # ------------------------------------------------------------------ #
+    # static UI (stage 4: served by the app, same port, no second
+    # service). Built to ui/dist; absent in dev checkouts — the API
+    # alone is the stage-0..3 surface and keeps working.
+    # ------------------------------------------------------------------ #
+    ui_dist = Path(__file__).resolve().parents[2] / "ui" / "dist"
+    if ui_dist.is_dir() and (ui_dist / "index.html").is_file():
+        assets = ui_dist / "assets"
+        if assets.is_dir():
+            from fastapi.staticfiles import StaticFiles
+
+            app.mount("/assets", StaticFiles(directory=str(assets)), name="assets")
+
+        @app.get("/{path:path}", include_in_schema=False)
+        async def spa(path: str):
+            # API/panel/healthz routes are registered above and win; this
+            # is the SPA fallback (client-side routing: /s/<id> is a UI
+            # route, not a server one). Unknown API-ish prefixes 404.
+            if path.startswith(("api/", "panel/", "healthz", "openapi", "docs")):
+                raise HTTPException(status_code=404, detail="not found")
+            candidate = (ui_dist / path) if path else ui_dist / "index.html"
+            try:
+                if path and candidate.is_file():
+                    return FileResponse(str(candidate))
+            except OSError:
+                pass
+            return FileResponse(str(ui_dist / "index.html"))
 
     return app

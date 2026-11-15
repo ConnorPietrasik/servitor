@@ -15,7 +15,7 @@
 PY := .venv/bin/python
 PY_BOOT := python3
 
-.PHONY: venv check test sandbox-smoke vm-smoke guest sync update doctor deploy
+.PHONY: venv check test test-stage2 test-api test-all sandbox-smoke vm-smoke guest sync update doctor deploy
 
 venv:
 	$(PY_BOOT) -m venv .venv
@@ -31,6 +31,27 @@ check: venv
 ## scratch prefix — the runner handles it; version-parameterized per .env)
 test: venv
 	$(PY) -m pytest test/unit test/conformance -v
+
+## stage-2 gate: lifecycle (spawn/settle/respawn/idle-kill/crash drills)
+## over the JSON-over-stdio app. Separate invocation: the stage-2 and
+## api test dirs both define a `conftest` (imported by bare name).
+test-stage2: venv
+	$(PY) -m pytest test/stage2 -v
+
+## stage-3/4 gate: HTTP/SSE API + delivery + transcript/fork over a real
+## subprocess app (root: real uids/mounts). The backpressure gate test
+## is in here (slow: ~110s).
+test-api: venv
+	$(PY) -m pytest test/api -v
+
+## every pytest gate, one invocation each (check is the lint gate)
+test-all: venv
+	$(PY) test/check_contract.py
+	$(PY) -m pytest test/unit test/conformance -q
+	$(PY) -m pytest test/stage2 -q
+	$(PY) -m pytest test/api -q
+	$(PY) -m pytest test/sandbox_smoke -q
+	$(PY) -m pytest test/vm_smoke -q
 
 ## stage-1 isolation gates, root half: overlay mounts, EROFS, whiteouts,
 ## upper paths, teardown order, sweep walk, config/credential/context-file

@@ -394,3 +394,80 @@ Findings that shaped the stage-3 code (all reproduced and fixed):
   completes in <1 s; an unthrottled "mid-upload" kill lands after completion.
   The test paces the body (~250 KB/s) so the kill is deterministically
   mid-stream.
+
+## Stage 4 verified (2026-11-15) — transcript fetch, fork/branch, static UI; gate stack green
+
+- **pi 1.5.2 fork semantics (verified live).** `fork` on a user entry
+  creates a NEW session FILE (same `sessions/<s>/` dir, new session id,
+  timestamped name) and the process switches to it. The forked-from
+  message is NOT re-appended: the new session starts at the fork point
+  with only the config preamble (model_change/thinking_level_change/
+  system) — the client re-sends the (edited) message as the fork's first
+  prompt (that's the "edit that message" flow; the API returns the
+  forked text exactly for the composer prefill). The original file
+  stays on disk — the session's full branch picture = every file in the
+  session dir.
+- **pi creates the fork file lazily.** At fork time the new file does
+  not exist yet (created on the first write). The registry's
+  `session_file` is therefore synced to the new file ONLY when it exists
+  (immediately after fork/switch, and lazily on every live transcript
+  fetch). The registry must never point at a missing file: the probe's
+  first-touch rule, respawn, and the dead-process disk path all trust it.
+- **The probe survives the fork's lazy file creation.** The registry
+  only follows the new sessionFile once the file EXISTS, so between the
+  fork and the fork's first write the registry still points at the
+  original transcript — the probe (which requires an existing
+  transcript by its first-touch rule) keeps working, and respawn in that
+  window reattaches to the original file (the fork is a new session
+  anyway, so nothing is lost). Once the fork file lands, the next
+  sync (immediate post-fork/switch check or any live fetch) moves the
+  registry.
+- **`/messages` reattach protocol: fetch, never replay.** Response =
+  `{leaf_id, cursor, messages}`. `cursor` = the SSE hub's monotonic event
+  id read BEFORE the entries snapshot (cursor-first: a concurrent event
+  in between duplicates an entry the snapshot already contains — the
+  client dedupes by (role, text, thinking) fingerprint; the reverse
+  order would silently skip the tail). The UI subscribes to
+  `/events?after=cursor` and follows only NEW events; the browser
+  EventSource re-sends `Last-Event-ID` on every (re)connect, so a
+  dropped phone connection resumes exactly where it stopped. A `gap`
+  (ring evicted past our position) triggers a full re-fetch + re-attach —
+  never partial data.
+- **Fingerprint dedup, not entry-id dedup.** pi's message events carry
+  no entry ids (ids are assigned at transcript append). Snapshot/live
+  dedup keys on role+text+thinking; after `agent_settled` the UI
+  re-fetches `/messages` anyway, so live partials (synthetic ids) are
+  replaced by the authoritative transcript with real entry ids.
+- **`/tree` is a forest, not a tree.** The response is the union of ALL
+  session files in the session dir (per-file pi get_tree shape +
+  `files[]`), because forks create new files rather than in-file
+  branches. Uniform across live/dead: the files are written as events
+  happen, so the disk IS the live view.
+- **Outbox sha256 is lazy.** `list_outbox` returns `sha256: null` while a
+  background thread hashes the file (1 MB chunks), cached per
+  (session, path, size, mtime) — a multi-GB artifact is never re-hashed
+  on every listing; the UI polls and the hash appears when ready.
+- **Static UI served by the app, same port.** `ui/dist` (Vite+React,
+  hashed assets) is mounted by `build_app` when present: `/assets/*` via
+  StaticFiles, everything else falls through to the SPA index. API/panel
+  routes are registered first and win; the catch-all is
+  `include_in_schema=False` so the OpenAPI route set (and the versioned
+  contract) is unchanged. `ui/dist` and `ui/node_modules` are gitignored
+  (reproducible: `npm ci && npm run build` in `ui/`).
+- **UI design (phone-first, single origin).** Dark, max-width 720 px
+  column, 42 px tap targets, system fonts, `100dvh` chat layout with
+  sticky composer (safe-area padded). Send = steer while a run is
+  active, prompt otherwise; explicit follow-up button queues a turn in
+  the current run. Abort is always visible while running. Close =
+  confirm dialog (aborts first when a run is active) → release.
+  Settings (show_thinking, coalesce ms) persist to localStorage and
+  affect rendering only. Tool lines collapse; tool results expand
+  lazily (4 KB preview). Meters (session list) poll every 5 s — no live
+  socket needed on the list screen.
+- **Gate wiring.** `make test-stage2`, `make test-api` (each suite in its
+  own pytest invocation — the stage-2 and api test dirs both define a
+  `conftest` imported by bare name and cannot share one collection),
+  and `make test-all` = check + unit/conformance + stage2 + api +
+  sandbox-smoke + vm-smoke. Stage 4 full stack: check 31/31, unit+
+  conformance 56, stage2 5, api 20 (incl. fork/branch + 110 s
+  backpressure), sandbox+vm 15.
