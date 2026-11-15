@@ -113,6 +113,7 @@ def start_app(state_root: Path, *, pi, slot: str, router: MockRouter, run_root: 
         "--idle-kill-sec", str(idle_kill_sec),
         "--shutdown-grace-sec", str(shutdown_grace_sec),
         "--gc-interval-sec", "30",
+        "--stdio",
     ]
     if extra:
         argv += extra

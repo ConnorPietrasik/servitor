@@ -1,12 +1,13 @@
-"""The servitor app entry (stage 2): JSON-lines control protocol on stdio.
+"""The servitor app entry (stage 3): the HTTP/SSE API on the one
+published port (uvicorn), with the stage-2 JSON-over-stdio protocol
+kept behind ``--stdio`` (the stage-2 crash drill and the lifecycle
+regression tests use it).
 
-Stage 3 replaces this front door with the HTTP/SSE API — the Lifecycle
-it is a thin front door over stays. The stdio protocol exists for the
-stage-2 crash drill (the test is the parent, kill -9's the app, restarts
-it) and keeps every lifecycle operation scriptable.
+The front door is thin: the Lifecycle (registry truth, respawn-on-
+pickup, probe rules, ladder, no caps) is the same object in both modes.
 
-Protocol: one JSON object per line on stdin, one JSON object per line on
-stdout:
+Protocol (stdio mode): one JSON object per line on stdin, one JSON
+object per line on stdout:
 
     {"id": 1, "cmd": "start_session", "args": {"display_name": "x"}}
     -> {"id": 1, "ok": true, "result": {...}}
@@ -16,7 +17,8 @@ Commands: start_session, prompt, settle, steer, follow_up, abort,
 list_sessions, probe, release, events, idle_kill_tick, gc_tick,
 boot_report, shutdown, exit.
 
-CLI (env contract wins for keys — the key rides env only, never argv):
+CLI (env contract wins for keys — the key rides env only, never argv;
+bind/port likewise, from SERVITOR_BIND/SERVITOR_PORT in HTTP mode):
 
     python -m app.main --state ROOT --config-src DIR [--router-url URL]
         --pi-node BIN --pi-cli JS --pi-ext DIR --toolkit DIR
@@ -24,7 +26,7 @@ CLI (env contract wins for keys — the key rides env only, never argv):
         [--exa-key-env EXA_API_KEY]
         [--idle-kill-sec N] [--shutdown-grace-sec N]
         [--gc-idle-days N] [--gc-interval-sec N]
-        [--baseline-ext NAME ...]
+        [--baseline-ext NAME ...] [--stdio]
 """
 from __future__ import annotations
 
@@ -37,6 +39,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from app.delivery.service import Delivery
 from app.iso.configswap import active_version, next_version, stage_and_swap
 from app.iso.layout import state_paths
 from app.iso.slots import SlotPool
@@ -80,6 +83,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--gc-interval-sec", type=float, default=300.0)
     p.add_argument("--baseline-ext", action="append", default=[])
     p.add_argument("--registry", default=None, help="registry db path (default <state>/registry.db)")
+    p.add_argument("--stdio", action="store_true", help="stage-2 JSON-over-stdio front door")
     return p.parse_args(argv)
 
 
@@ -92,6 +96,7 @@ class App:
         if staged:
             log.info("staged config version %s at boot", staged)
         self.pool = SlotPool(tuple(s.strip() for s in args.slots.split(",") if s.strip()))
+        self.delivery = Delivery(args.state)
         self.lc = Lifecycle(
             LifecycleConfig(
                 state=self.state,
@@ -106,6 +111,7 @@ class App:
                 shutdown_grace_sec=args.shutdown_grace_sec,
                 gc_idle_days=args.gc_idle_days,
                 gc_interval_sec=args.gc_interval_sec,
+                delivery=self.delivery,
             )
         )
         self.boot_report = self.lc.boot_reconcile()
@@ -232,13 +238,45 @@ class App:
         sys.stdout.write(json.dumps(obj) + "\n")
         sys.stdout.flush()
 
+    async def run_http(self) -> None:
+        """The stage-3 front door: uvicorn on SERVITOR_BIND:SERVITOR_PORT
+        (env-only, no defaults). The ASGI app is the same Lifecycle.
+
+        The fastapi/uvicorn imports are lazy: the stdio front door (the
+        stage-2 regression gate) runs without them."""
+        import uvicorn
+
+        from app.api.app import build_app
+        from app.env import load_http_config
+
+        env = dict(os.environ)
+        cfg = load_http_config(env, root=self.args.state)
+        # the SSE ring cap is a per-hub memory policy (default 50 MB):
+        # wire it before any session hub is created (hubs are lazy)
+        self.lc.cfg.sse_ring_bytes = cfg.sse_ring_bytes
+        asgi = build_app(self, cfg)
+        server = uvicorn.Server(
+            uvicorn.Config(
+                asgi,
+                host=cfg.bind,
+                port=cfg.port,
+                log_level="info",
+                lifespan="on",
+                timeout_keep_alive=75,
+            )
+        )
+        await server.serve()
+
 
 def main(argv: list[str]) -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(name)s %(message)s")
     args = parse_args(argv)
     app = App(args)
     try:
-        asyncio.run(app.run())
+        if args.stdio:
+            asyncio.run(app.run())
+        else:
+            asyncio.run(app.run_http())
     except KeyboardInterrupt:
         pass
     return 0

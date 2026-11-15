@@ -41,11 +41,20 @@ def find_owner_paths(uid: int, exclude_prefixes: tuple[str, ...] = ()) -> list[s
 
 def _find(uid: int, exclude_prefixes: tuple[str, ...]) -> list[str]:
     args = ["find", "/"]
-    excludes = tuple(PSEUDO_FS) + tuple(exclude_prefixes)
-    if excludes:
-        args += ["(", "-path", excludes[0]]
-        for p in excludes[1:]:
-            args += ["-o", "-path", p]
+    # NOTE: -path matches the WHOLE path against a glob — a bare prefix
+    # prunes nothing (a child's path is a longer string). Each excluded
+    # area must be excluded as itself AND its subtree ("P/*").
+    patterns: list[str] = []
+    for p in tuple(PSEUDO_FS) + tuple(exclude_prefixes):
+        p = p.rstrip("/")
+        patterns.append(p)
+        patterns.append(p + "/*")
+    if patterns:
+        args += ["("]
+        for i, pat in enumerate(patterns):
+            if i:
+                args.append("-o")
+            args += ["-path", pat]
         args += [")", "-prune", "-o"]
     args += ["-user", str(uid), "-print"]
     out = subprocess.run(args, capture_output=True, text=True)
@@ -80,8 +89,19 @@ def sweep_by_owner(
         if keep_dir is not None and path.rstrip("/") == keep_dir.rstrip("/"):
             continue  # the home dir itself: kept, contents are swept
         if path in mounted:
-            result.errors.append((path, "is a mountpoint (unmount first)"))
-            continue
+            # a mountpoint owned by the uid: from THIS session (should be
+            # unmounted by release already) or a STALE mount left by a
+            # dead run (app crash, killed test). A stale mount must not
+            # quarantine the slot forever — force-unmount and let the
+            # directory be swept like any other.
+            try:
+                import subprocess
+                subprocess.run(["umount", "-l", path], capture_output=True, timeout=10)
+            except Exception:
+                pass
+            if path in _mounted_targets():
+                result.errors.append((path, "is a mountpoint (unmount first)"))
+                continue
         try:
             if os.path.islink(path) or os.path.isfile(path):
                 os.unlink(path)
@@ -90,6 +110,13 @@ def sweep_by_owner(
             else:
                 os.unlink(path)  # fifo/socket/device the session dropped
             result.deleted.append(path)
+        except FileNotFoundError:
+            # vanished between the find and the unlink (the agent's
+            # exit-time cleanup, a concurrent delete): already gone —
+            # exactly the outcome the sweep wants. The verification pass
+            # below is the real gate: anything still present is a
+            # leftover and fails the sweep there.
+            continue
         except OSError as exc:
             result.errors.append((path, str(exc)))
     # verification pass: the uid must own nothing outside excludes

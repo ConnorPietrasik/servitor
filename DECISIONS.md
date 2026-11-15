@@ -338,3 +338,59 @@ the ownership invariant the owner-sweep depends on.
 Single repo (= A1) · keyed Exa (= A3) · runtime model discovery (= A4) ·
 operator-run sync (= A2) · artifact download + outbox (= H3, ratified) · fork/branch
 UI ships in v1 as the last UI slice (H1, answered-in-place; vetoable as a scope cut).
+
+---
+
+## Stage 3 verified (2026-11-15) — API, SSE, delivery; gate stack green
+
+Findings that shaped the stage-3 code (all reproduced and fixed):
+
+- **httpx `iter_raw(n)` re-chunks into FIXED-size pieces.** With a chunk size,
+  the final partial piece (which can hold the tail of the stream — including
+  `agent_settled`) is held back until more bytes arrive or the stream closes;
+  an SSE stream never closes (heartbeats), so the tail never surfaces. Test
+  clients must use `iter_raw()` without a chunk size (raw passthrough) or
+  `iter_lines()`. (Cost: ~8 debugging sessions; the kernel was innocent —
+  raw-socket and asyncio 20 MB loopback transfers complete in <1 s.)
+- **Deep kernel receive backlogs wedge TCP on this host's kernel (7.3.4-1-
+  cachyos).** Measured: client socket `skmem d=114 rb=6.5MB` under a slow
+  reader; a dedicated reader thread that drains the socket at line rate keeps
+  the backlog small and the wedge disappears. The backpressure gate test
+  therefore reads in a reader thread and throttles the PARSER — the pause is
+  driven by the hub's position (ack'd ids), never by TCP socket state.
+- **Test state roots must live on the shared 0755 tree (`/srv/
+  servitor-test`), never under a slot home.** The slot homes are 0700; a state
+  root under slot1's home is invisible to slot2/slot3 (stat EACCES on their
+  OWN pre-created session dirs — `existsSync` false, `mkdirSync` EACCES, pi
+  exits 1 at spawn). Production shape: state is a dedicated volume, never in
+  a slot home.
+- **`find -path` is a whole-path GLOB, not a prefix.** Bare prefixes prune
+  nothing; sweep exclusions need both `P` and `P/*`. The owner-sweep was
+  deleting files inside the wholesale-deleted session areas (merged overlay
+  views) and erroring on them.
+- **Sweep tolerates ENOENT.** A file vanishing between find and unlink (the
+  agent's exit-time cleanup, e.g. pi-web-access dropping
+  `last-seen-version.json`) is the desired outcome, not an error; the
+  verification pass (uid owns nothing outside excludes) is the real gate.
+- **Sweep lazy-unmounts stale mountpoints.** A mount left by a dead run
+  (crashed app, killed test) must not quarantine the slot forever; `umount -l`
+  then sweep the directory like any other.
+- **Released sessions are gone.** API treats FREE rows as 404 everywhere; the
+  session list shows live sessions only (`include_released=False`).
+- **SSE replay is a snapshot, not a live view.** `subscribe` returned a lazy
+  generator over the ring deque; the generator yields lazily while the
+  publisher mutates the deque → `RuntimeError: deque mutated during
+  iteration` (any subscribe with a non-empty replay, i.e. a reconnect or a
+  stream opened after events exist). Snapshot list at subscribe time
+  (synchronous ⇒ atomic w.r.t. the event loop).
+- **Backpressure test calibration (measured, pi 1.5.2 + mock).** The mock's
+  `chunk_count` is a PIECE count (not bytes); 20 tool rounds × 32 KB prefix ×
+  2048 pieces ≈ 42 000 small `message_update`s ≈ 12–16 MB of SSE at the
+  mock's ~300 KB/s natural pace. A consumer at ~150 KB/s (0.25 s sleep per
+  200 parsed frames) crosses the 1 MB cap, the run pauses (driver stdout
+  gate), the drain resumes it, and the run settles complete. Pause episodes
+  observed: 14–23 per run; the slow consumer stretches the run ~3×.
+- **Crash-drill uploads must be throttled client-side.** 16 MB over loopback
+  completes in <1 s; an unthrottled "mid-upload" kill lands after completion.
+  The test paces the body (~250 KB/s) so the kill is deterministically
+  mid-stream.

@@ -9,7 +9,10 @@ __pycache__/
 
 # node (conformance scratch prefixes, ui)
 node_modules/
-test/.scratch/
+# scratch contents are gitignored, EXCEPT the versioned API contract
+# (test_contract.py diffs the live app's route set against it)
+test/.scratch/*
+!test/.scratch/api-contract.json
 test/.scratch2/
 ui/node_modules/
 ui/dist/

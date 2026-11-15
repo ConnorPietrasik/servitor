@@ -48,11 +48,19 @@ class LFFramer:
 
     def feed_bytes(self, chunk: bytes) -> None:
         """Feed raw bytes (one read chunk). May emit zero or more records."""
+        for record in self.split_records(chunk):
+            self._on_record(record)
+
+    def split_records(self, chunk: bytes) -> list[dict[str, Any]]:
+        """Accumulate bytes and return the complete JSON records in this
+        chunk (parse errors recorded, never raised). Callers may dispatch
+        with an ``await`` between records (backpressure gating)."""
+        out: list[dict[str, Any]] = []
         self._buf.extend(chunk)
         while True:
             nl = self._buf.find(b"\n")
             if nl < 0:
-                return
+                return out
             line = bytes(self._buf[:nl])
             del self._buf[: nl + 1]
             if line.endswith(b"\r"):  # tolerate CRLF-terminated records
@@ -72,7 +80,7 @@ class LFFramer:
                         self._record_no, f"record is not a JSON object: {type(record).__name__}"
                     )
                 continue
-            self._on_record(record)
+            out.append(record)
 
     @property
     def pending(self) -> bytes:

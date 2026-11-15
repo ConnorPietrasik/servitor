@@ -137,6 +137,14 @@ class PiSession:
         self._tasks: list[asyncio.Task] = []
         self._parse_errors: list[str] = []
         self._commands_sent: int = 0
+        # backpressure gate (PLAN §3.3): cleared = pause the event stream.
+        # The reader stops draining the child's stdout, the pipe fills, and
+        # pi blocks on write — the RUN pauses (control responses are never
+        # gated, so the control plane stays responsive). Set at all times
+        # unless the delivery layer paused it.
+        self._events_allowed = asyncio.Event()
+        self._events_allowed.set()
+        self.events_paused = False
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -161,6 +169,20 @@ class PiSession:
     @property
     def last_settled_aborted(self) -> bool | None:
         return self._last_settled_aborted
+
+    def pause_events(self) -> None:
+        """Backpressure: stop draining session events (the run pauses).
+
+        In-flight control responses still flow (they are not gated). Safe
+        to call repeatedly; :meth:`resume_events` re-opens the gate."""
+        if not self.events_paused:
+            self.events_paused = True
+            self._events_allowed.clear()
+
+    def resume_events(self) -> None:
+        if self.events_paused:
+            self.events_paused = False
+            self._events_allowed.set()
 
     @property
     def pending_dialogs(self) -> dict[str, dict[str, Any]]:
@@ -240,7 +262,14 @@ class PiSession:
             chunk = await self._proc.stdout.read(65536)
             if not chunk:
                 break
-            framer.feed_bytes(chunk)
+            for record in framer.split_records(chunk):
+                rtype = record.get("type")
+                if rtype != "response" and rtype != "extension_ui_request":
+                    # session event: gated by the backpressure valve
+                    # (PLAN §3.3). While paused this await blocks, the pipe
+                    # stops draining, and pi's in-flight run pauses.
+                    await self._events_allowed.wait()
+                self._on_record(record)
 
     async def _stderr_task(self) -> None:
         """Capture stderr: logged, NEVER parsed as protocol data."""

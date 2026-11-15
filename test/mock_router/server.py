@@ -154,12 +154,34 @@ class MockRouter:
                     time.sleep(gap)  # long silent gap: no bytes at all
 
                 messages = body.get("messages", [])
-                has_tool_result = any(
-                    isinstance(m, dict) and m.get("role") == "tool" for m in messages
+                tool_result_count = sum(
+                    1 for m in messages if isinstance(m, dict) and m.get("role") == "tool"
                 )
-                if has_tool_result and not s.get("loop_forever", False):
+                has_tool_result = tool_result_count > 0
+                # loop_count: keep emitting tool calls until N tool results
+                # have accumulated (no-cap tests: a long multi-round run)
+                loop_count = int(s.get("loop_count", 0) or 0)
+                keep_looping = loop_count > 0 and tool_result_count < loop_count
+                if has_tool_result and not s.get("loop_forever", False) and not keep_looping:
                     # final answer after the tool ran
-                    text = s.get("final_text", "DONE: tool output processed.")
+                    if s.get("echo_final"):
+                        # echo the last user message (per-session markers
+                        # without shared script state — concurrency tests)
+                        text = ""
+                        for m in reversed(messages):
+                            if isinstance(m, dict) and m.get("role") == "user":
+                                c = m.get("content")
+                                if isinstance(c, str):
+                                    text = c
+                                elif isinstance(c, list):
+                                    text = "".join(
+                                        p.get("text", "")
+                                        for p in c
+                                        if isinstance(p, dict) and p.get("type") == "text"
+                                    )
+                                break
+                    else:
+                        text = s.get("final_text", "DONE: tool output processed.")
                     chunks = _text_chunks(text, s, model=script_model)
                 else:
                     chunks = _run_chunks(s, model=script_model)
@@ -213,13 +235,19 @@ def _usage_chunk(model: str, include_usage: bool) -> list[dict[str, Any]]:
 
 
 def _text_chunks(text: str, s: dict[str, Any], model: str) -> list[dict[str, Any]]:
-    """Thinking block (every run, per verified behavior) + text + usage."""
+    """Thinking block (every run, per verified behavior) + text + usage.
+
+    `chunk_count` (default 7): the text is split into this many PIECES
+    (not piece size): 32 KB with chunk_count 2048 streams 2048 small
+    deltas → pi emits one small message_update per delta.
+    """
     include_usage = bool(s.get("include_usage", True))
+    size = int(s.get("chunk_count", 7))
     chunks: list[dict[str, Any]] = [_chunk({"role": "assistant", "content": ""}, model)]
     thinking = s.get("thinking", "Mock reasoning: inspect, then answer.")
     for piece in _split(thinking, 7):
         chunks.append(_chunk({"reasoning_content": piece}, model))
-    for piece in _split(text, 7):
+    for piece in _split(text, size):
         chunks.append(_chunk({"content": piece}, model))
     chunks.append(_chunk({}, model, finish="stop"))
     chunks.extend(_usage_chunk(model, include_usage))
@@ -234,6 +262,7 @@ def _run_chunks(s: dict[str, Any], model: str) -> list[dict[str, Any]]:
     produces the final text — see _handle_chat.
     """
     include_usage = bool(s.get("include_usage", True))
+    size = int(s.get("chunk_count", 7))
     thinking = s.get("thinking", "Mock reasoning: I should run a command first.")
     tools = s.get("tools") or [
         {"name": "bash", "arguments": {"command": "echo servitor-mock-tool-ran"}}
@@ -242,7 +271,7 @@ def _run_chunks(s: dict[str, Any], model: str) -> list[dict[str, Any]]:
     for piece in _split(thinking, 7):
         chunks.append(_chunk({"reasoning_content": piece}, model))
     if s.get("prefix_text"):
-        for piece in _split(str(s["prefix_text"]), 7):
+        for piece in _split(str(s["prefix_text"]), size):
             chunks.append(_chunk({"content": piece}, model))
     for i, t in enumerate(tools):
         name = t.get("name", "bash")

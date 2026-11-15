@@ -38,6 +38,7 @@ from app.iso.slots import NoFreeSlot, SlotPool
 from app.iso.spawn import slot_identity, spawn_setuid
 from app.iso.sweep import kill_strays_by_uid
 from app.iso.release import release_session
+from app.api.sse import SseHub
 from app.registry import (
     ALLOCATED,
     CLEANING,
@@ -78,6 +79,7 @@ class Live:
     last_settled: Optional[float] = None
     subscribers: int = 0
     config_lower: Optional[str] = None  # the version this session booted from
+    api_key: Optional[str] = None  # per-session key (browser-held; never persisted)
 
 
 @dataclass
@@ -94,6 +96,8 @@ class LifecycleConfig:
     shutdown_grace_sec: float = 90.0  # strictly < the unit's TimeoutStopSec
     gc_idle_days: float = 14.0
     gc_interval_sec: float = 300.0
+    delivery: "Delivery | None" = None  # stage-3 delivery service (blobs/staging)
+    sse_ring_bytes: int | None = None  # per-session SSE cap (None = 50 MB default)
 
 
 class LifecycleHooks:
@@ -126,18 +130,29 @@ class EventFeed:
     """The event feed (registry/panel/doctor consume it; stage 3 serves it).
 
     Bounded in memory; the doctor reads `new_extensions` from the registry
-    directly, so dropping old feed entries is safe."""
+    directly, so dropping old feed entries is safe. App-level events are
+    also published to the session's SseHub (stage 3) so the SSE stream is
+    the single per-session event source."""
 
-    def __init__(self, maxlen: int = 1000):
+    def __init__(self, maxlen: int = 1000, hub_getter=None):
         self._items: list[dict] = []
         self._maxlen = maxlen
+        self._hub_getter = hub_getter
 
     def add(self, session_id: str | None, kind: str, detail: str = "") -> None:
-        self._items.append(
-            {"ts": time.time(), "session_id": session_id, "kind": kind, "detail": detail}
-        )
+        item = {
+            "ts": time.time(), "session_id": session_id, "kind": kind, "detail": detail
+        }
+        self._items.append(item)
         if len(self._items) > self._maxlen:
             self._items = self._items[-self._maxlen :]
+        if self._hub_getter is not None and session_id:
+            try:
+                hub = self._hub_getter(session_id)
+                if hub is not None:
+                    hub.publish(kind, {"detail": detail, "ts": item["ts"]})
+            except Exception:
+                log.exception("hub publish failed for %s/%s", session_id, kind)
 
     def items(self, since: float = 0.0) -> list[dict]:
         return [i for i in self._items if i["ts"] >= since]
@@ -147,12 +162,22 @@ class Lifecycle:
     def __init__(self, cfg: LifecycleConfig):
         self.cfg = cfg
         self.live: dict[str, Live] = {}
-        self.events = EventFeed()
+        self._hubs: dict[str, "SseHub"] = {}
+        self.events = EventFeed(hub_getter=self.hub)
         self.hooks = LifecycleHooks(cfg.registry, cfg.pool, self.events)
         self._probe_locks: dict[str, asyncio.Future] = {}
         self._probe_cache: dict[tuple[str, str], tuple[float, Any]] = {}
         self.shutting_down = False
         self._gc_task: Optional[asyncio.Task] = None
+
+    def hub(self, session_id: str) -> "SseHub":
+        """The session's SSE hub (created on first use; the hub outlives
+        any single driver — respawns re-attach to the same hub)."""
+        h = self._hubs.get(session_id)
+        if h is None:
+            h = SseHub(session_id, cap_bytes=self.cfg.sse_ring_bytes)
+            self._hubs[session_id] = h
+        return h
 
     # ------------------------------------------------------------------ #
     # boot reconciliation                                                 #
@@ -200,6 +225,18 @@ class Lifecycle:
             out.append({"slot": slot.name, "uid": slot.uid, "killed": killed, "session": row.id})
             if killed or interrupted:
                 log.warning("boot reconcile: slot %s session %s: %s", slot.name, row.id, detail or "killed")
+        # delivery GC: any surviving staging dir is an interrupted upload
+        # (a completed upload removes its staging dir); no half-blobs can
+        # survive a crash (PLAN §3.4 crash drill)
+        if self.cfg.delivery is not None:
+            self.cfg.delivery.gc_boot()
+            for row in self.cfg.registry.list_sessions():
+                if row.state in (ALLOCATED, LIVE):
+                    try:
+                        slot = slot_identity(row.slot) if row.slot != "waiting" else None
+                        self.cfg.delivery.files(self.cfg.state, row.id, slot).gc_inbox_temps()
+                    except Exception:
+                        pass
         return out
 
     def _rebuild_pool_slot(self, slot, row) -> None:
@@ -259,6 +296,7 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     def _launch(self, session_id: str, session_file: str | None, sp: SessionMountPaths):
+        live = self.live.get(session_id)
         return build_launch(
             node_bin=self.cfg.pi.node_bin,
             cli_js=str(self.cfg.pi.cli_js),
@@ -269,7 +307,9 @@ class Lifecycle:
             home=f"/home/{self._slot_name_for(session_id)}",
             user=self._slot_name_for(session_id),
             agent_dir=sp.agent_dir,
-            omnissiah_api_key=self.cfg.api_key,
+            # per-session key (browser-held, in-memory only) beats the app
+            # env key; env-only, never persisted, never returned
+            omnissiah_api_key=(live.api_key if live and live.api_key else self.cfg.api_key),
             exa_api_key=self.cfg.exa_key,
             web_cache_root=sp.web_cache,
         )
@@ -290,6 +330,11 @@ class Lifecycle:
         ident = slot_identity(slot_name)
         driver = PiSession(launch, ident, cwd=live.sp.workdir)
         driver.on_settled = lambda *a, **k: self._on_settled(session_id)
+        # stage 3: the session's event stream is the SSE hub (pi events +
+        # app events; backpressure pauses THIS driver's event stream)
+        hub = self.hub(session_id)
+        driver.on_event = hub.on_event
+        hub.attach(driver)
         return driver
 
     def _on_settled(self, session_id: str) -> None:
@@ -302,7 +347,9 @@ class Lifecycle:
     # start / prompt / respawn                                            #
     # ------------------------------------------------------------------ #
 
-    async def start_session(self, display_name: str | None = None) -> dict:
+    async def start_session(
+        self, display_name: str | None = None, api_key: str | None = None
+    ) -> dict:
         """Allocate slot + mounts + first spawn. Slot pressure: release the
         oldest non-stable non-running; if none, the session WAITS (the
         panel says so) — it is not an error."""
@@ -344,7 +391,7 @@ class Lifecycle:
         )
         live = Live(
             session_id=session_id, sp=sp, mount_ops=ops, driver=None,
-            config_version=version, config_lower=lower,
+            config_version=version, config_lower=lower, api_key=api_key,
         )
         self.live[session_id] = live
         try:
@@ -663,6 +710,17 @@ class Lifecycle:
                 res = await self.release(row.id, reason="disk pressure")
                 if res.released:
                     released.append(row.id)
+        # delivery GC: orphan blobs no manifest references (bounded)
+        if self.cfg.delivery is not None:
+            manifests = []
+            for row in self.cfg.registry.list_sessions():
+                try:
+                    manifests.append(
+                        self.cfg.delivery.files(self.cfg.state, row.id, None).read_manifest()
+                    )
+                except Exception:
+                    pass
+            self.cfg.delivery.gc_blobs(manifests)
         return released
 
     def _is_running(self, session_id: str) -> bool:
@@ -673,6 +731,24 @@ class Lifecycle:
         # it is settled (a fresh app cannot see in-flight state it did not
         # start — the proc is the fact)
         return True
+
+    async def ensure_alive(self, session_id: str) -> dict:
+        """Panel action `start`: make sure the session's process is up.
+
+        Live process ⇒ no-op. Dead process with a transcript ⇒ respawn
+        (the stage-2 pickup path). No transcript ⇒ the session is simply
+        idle (nothing to start — not an error). Never starts a run: the
+        panel cannot inject a prompt it does not have."""
+        row = self.cfg.registry.get(session_id)
+        if row is None:
+            raise KeyError(session_id)
+        live = self.live.get(session_id)
+        if live is not None and live.driver is not None and not live.driver.exited:
+            return {"alive": True, "respawned": False}
+        if not row.session_file:
+            return {"alive": False, "respawned": False, "idle_no_transcript": True}
+        await self._respawn(session_id)
+        return {"alive": True, "respawned": True}
 
     def _disk_near_full(self) -> bool:
         try:
@@ -733,6 +809,13 @@ class Lifecycle:
                 except Exception:
                     pass
             self.live.pop(session_id, None)
+        # delivery GC for the released session's inbox (no .incoming-* may
+        # outlive the session)
+        if self.cfg.delivery is not None and live is not None:
+            try:
+                self.cfg.delivery.files(self.cfg.state, session_id, None).gc_inbox_temps()
+            except Exception:
+                pass
         return outcome
 
 
