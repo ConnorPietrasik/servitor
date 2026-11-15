@@ -770,10 +770,12 @@ shutdown (grace < `TimeoutStopSec`); GC + disk-pressure evaluation in-process
 through `release()`; per-spawn extension recording — loaded set vs image baseline
 ⇒ new-extension warning (registry/panel/doctor/event feed; D3 — warn, never block).
 Gate: app-crash/restart drill (kill -9 the app mid-run with the mock's long
-tool call still in flight — the orphan keeps running; restart ⇒ boot
-reconciliation kills the orphan via the ladder, registry reconciles, no double
-slot allocation, session marked interrupted, transcript not interleaved; pickup
-respawns from transcript as the sole process); probe rules (list = registry only,
+tool call still in flight — the orphan's stdin closes and pi aborts the
+in-flight run and exits on its own (§4 verified); restart ⇒ boot
+reconciliation: ladder-kills any orphan still lingering, registry reconciles
+via the transcript crash signature (interrupted), no double slot allocation,
+transcript not interleaved; pickup respawns from transcript as the sole
+process); probe rules (list = registry only,
 O(1); probe as slot
 uid with run mounts; one process per session file; probe never first to touch an
 agent dir); idle-kill never fires mid-run/mid-compaction and never unmounts — a 20-minute

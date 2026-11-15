@@ -109,6 +109,7 @@ class PiSession:
         on_event: Callable[[dict[str, Any]], Any] | None = None,
         on_dialog: Callable[["PiSession", dict[str, Any]], Any] | None = None,
         on_exited: Callable[["PiSession"], Any] | None = None,
+        on_settled: Callable[["PiSession", bool], Any] | None = None,
     ) -> None:
         self.launch = launch
         self.slot = slot
@@ -118,6 +119,7 @@ class PiSession:
         self.on_event = on_event
         self.on_dialog = on_dialog
         self.on_exited = on_exited
+        self.on_settled = on_settled
 
         self._proc: asyncio.subprocess.Process | None = None
         self._launched_argv: tuple[str, ...] | None = None
@@ -155,6 +157,10 @@ class PiSession:
     @property
     def stderr_tail(self) -> str:
         return "".join(self._stderr_tail)
+
+    @property
+    def last_settled_aborted(self) -> bool | None:
+        return self._last_settled_aborted
 
     @property
     def pending_dialogs(self) -> dict[str, dict[str, Any]]:
@@ -333,6 +339,11 @@ class PiSession:
             if not fut.done():
                 fut.set_result(self._last_settled_aborted)
         self._settled_waiters.clear()
+        if self.on_settled:
+            try:
+                self.on_settled(self, self._last_settled_aborted)
+            except Exception:
+                log.exception("on_settled callback failed")
 
     def _on_extension_ui(self, record: dict[str, Any]) -> None:
         method = str(record.get("method", ""))
