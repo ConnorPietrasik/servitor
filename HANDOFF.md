@@ -17,9 +17,9 @@ router with a populated thinking field. **The final full guest-suite re-run
 on the new config passed** (`/tmp/guest_suite8.log`: 11 passed, 1 expected
 skip, GUEST_RC=0), and every host gate was re-confirmed the same night
 (make check 31/31, unit 25, api 20, stage2 update-waiting, standalone 1).
-Stage 5 is COMMITTED (see §4) and pushed to origin if the laptop had GitHub
-access at commit time — verify with `git status` ("ahead of origin" means
-push again).
+Stage 5 is COMMITTED (see §4) and **PUSHED to origin/master**
+(`692f458`, confirmed synced at session end) — the server-side `git clone`
+in INSTALL.md will have it.
 
 The last four sessions chased the guest suite to green. The failures were
 NOT in the app's model path — they were in the deploy pipeline, the test
