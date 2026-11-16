@@ -10,10 +10,9 @@
         {
           "id": "qwen35",
           "name": "Qwen 3.8 27B (IQ6)",
-          "reasoning": false,
           "input": ["text", "image"],
           "contextWindow": 250000,
-          "maxTokens": 32768
+          "maxTokens": 200000
         }
       ]
     }

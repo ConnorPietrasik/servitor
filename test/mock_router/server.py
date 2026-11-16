@@ -37,6 +37,14 @@ class MockRouter:
     def base_url(self) -> str:
         return f"http://{self._host}:{self._port}/v1"
 
+    @property
+    def host(self) -> str:
+        return self._host
+
+    @property
+    def port(self) -> int:
+        return self._port
+
     def set_script(self, script: dict[str, Any] | None) -> None:
         with self._lock:
             self._script = dict(script or {})
@@ -50,7 +58,7 @@ class MockRouter:
             self._requests.clear()
             self._script = {}
 
-    def start(self) -> None:
+    def start(self, host: str = "127.0.0.1") -> None:
         router = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -187,15 +195,32 @@ class MockRouter:
                     chunks = _run_chunks(s, model=script_model)
                 self._send_sse(chunks)
 
-        # find a free loopback port
+        # find a free port on the requested host (loopback by default; the
+        # stage-5 guest drills bind the host's bridge address so the guest
+        # can reach the mock). The host firewall default-drops inbound from
+        # the servitor edge subnet EXCEPT the test-mock range 48700:48799
+        # (one-time host setup: ufw allow in from 10.42.0.0/24 to any port
+        # 48700:48799 proto tcp comment servitor-test-mock) — prefer that
+        # range so a guest-bound mock is actually reachable from the guest.
         import socket
 
-        probe = socket.socket()
-        probe.bind(("127.0.0.1", 0))
-        self._port = probe.getsockname()[1]
-        probe.close()
-        self._host = "127.0.0.1"
-        self._server = ThreadingHTTPServer(("127.0.0.1", self._port), Handler)
+        self._port = 0
+        for candidate in range(48700, 48800):
+            probe = socket.socket()
+            try:
+                probe.bind((host, candidate))
+                self._port = candidate
+                probe.close()
+                break
+            except OSError:
+                probe.close()
+        if not self._port:
+            probe = socket.socket()
+            probe.bind((host, 0))
+            self._port = probe.getsockname()[1]
+            probe.close()
+        self._host = host
+        self._server = ThreadingHTTPServer((host, self._port), Handler)
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 

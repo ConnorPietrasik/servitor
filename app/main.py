@@ -40,6 +40,7 @@ import sys
 from pathlib import Path
 
 from app.delivery.service import Delivery
+from app.env import deployment_env
 from app.iso.configswap import active_version, next_version, stage_and_swap
 from app.iso.layout import state_paths
 from app.iso.slots import SlotPool
@@ -62,7 +63,11 @@ def _stage_config(config_root: str, config_src: str, router_url: str | None) -> 
         for prov in models.get("providers", {}).values():
             prov["baseUrl"] = router_url
         models_path.write_text(json.dumps(models, indent=2))
-    return stage_and_swap(config_root, str(stage))
+    try:
+        return stage_and_swap(config_root, str(stage))
+    finally:
+        # the staging copy lives OUTSIDE config_root; never leave it behind
+        shutil.rmtree(stage, ignore_errors=True)
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -70,10 +75,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--state", required=True, help="state volume root")
     p.add_argument("--config-src", required=True, help="agent config source dir")
     p.add_argument("--router-url", default=None, help="test only: mock router base URL")
-    p.add_argument("--pi-node", required=True)
-    p.add_argument("--pi-cli", required=True)
-    p.add_argument("--pi-ext", default=None)
-    p.add_argument("--toolkit", default="/opt/toolkit")
+    # guest unit (EnvironmentFile) passes these via env; CLI wins
+    _dep = deployment_env()
+    p.add_argument("--pi-node", default=_dep["SERVITOR_PI_NODE_BIN"])
+    p.add_argument("--pi-cli", default=_dep["SERVITOR_PI_CLI_JS"])
+    p.add_argument("--pi-ext", default=_dep["SERVITOR_PI_EXT_DIR"])
+    p.add_argument("--toolkit", default=_dep["SERVITOR_TOOLKIT_DIR"] or "/opt/toolkit")
     p.add_argument("--slots", default=",".join(f"slot{i}" for i in range(1, 17)))
     p.add_argument("--api-key-env", default="OMNISSIAH_API_KEY")
     p.add_argument("--exa-key-env", default="EXA_API_KEY")
@@ -84,7 +91,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--baseline-ext", action="append", default=[])
     p.add_argument("--registry", default=None, help="registry db path (default <state>/registry.db)")
     p.add_argument("--stdio", action="store_true", help="stage-2 JSON-over-stdio front door")
-    return p.parse_args(argv)
+    # the D8 update mechanism (host sync/update write the flag; the tick applies)
+    p.add_argument("--update-pending-path", default=None,
+                   help="default <state>/update-pending.json; empty string disables")
+    p.add_argument("--restart-cmd", default="systemctl:restart:servitor",
+                   help="colon-separated restart command")
+    p.add_argument("--doctor-cmd", default=None, help="colon-separated doctor command")
+    args = p.parse_args(argv)
+    if not args.pi_node or not args.pi_cli:
+        p.error("--pi-node and --pi-cli required (CLI or SERVITOR_PI_NODE_BIN/SERVITOR_PI_CLI_JS)")
+    if args.update_pending_path is None:
+        args.update_pending_path = f"{args.state}/update-pending.json"
+    return args
 
 
 class App:
@@ -112,6 +130,9 @@ class App:
                 gc_idle_days=args.gc_idle_days,
                 gc_interval_sec=args.gc_interval_sec,
                 delivery=self.delivery,
+                update_pending_path=args.update_pending_path or None,
+                restart_cmd=tuple(c for c in args.restart_cmd.split(":") if c) or None,
+                doctor_cmd=tuple(c for c in args.doctor_cmd.split(":") if c) if args.doctor_cmd else None,
             )
         )
         self.boot_report = self.lc.boot_reconcile()
@@ -197,6 +218,8 @@ class App:
             return {"killed": await lc.idle_kill_tick()}
         if cmd == "gc_tick":
             return {"released": await lc.gc_tick()}
+        if cmd == "update_tick":
+            return await lc.update_tick() or {"no_flag": True}
         if cmd == "boot_report":
             return {"boot_reconciled": self.boot_report}
         if cmd == "shutdown":
@@ -209,6 +232,7 @@ class App:
 
     async def run(self) -> None:
         self.lc.start_gc()
+        self.lc.start_update_tick()
         reader = asyncio.StreamReader()
         protocol = asyncio.StreamReaderProtocol(reader)
         await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, sys.stdin)
@@ -254,6 +278,9 @@ class App:
         # the SSE ring cap is a per-hub memory policy (default 50 MB):
         # wire it before any session hub is created (hubs are lazy)
         self.lc.cfg.sse_ring_bytes = cfg.sse_ring_bytes
+        # start_update_tick is idempotent; the ASGI lifespan starts the
+        # GC — the tick starts here (before the first request)
+        self.lc.start_update_tick()
         asgi = build_app(self, cfg)
         server = uvicorn.Server(
             uvicorn.Config(

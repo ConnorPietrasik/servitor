@@ -52,9 +52,14 @@ see Key rotation below).
 
 ## Production (portcullis)
 
+Step-by-step: **`deploy/portcullis/INSTALL.md`** (one-time server install:
+host packages, `.env` template, image, state disk, the libvirt domain from
+`deploy/guest/servitor-domain.xml`, first sync, portcullis merge, verify).
+
 1. **Host work (once, stage 6):** install libvirt/KVM (none exists on the
    server yet), build the guest qcow2 (`make guest`), define + start the VM
-   (`virsh define/start`), record the VM ingress IP.
+   (the domain template in `deploy/guest/servitor-domain.xml`), record the VM
+   ingress IP.
 2. Merge `deploy/portcullis/traefik-dynamic/servitor.yml` (substituting the
    VM ingress IP + port) into the portcullis repo and `make update` there
    (gated, with snapshot + auto-rollback). Authelia's

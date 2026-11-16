@@ -1,0 +1,99 @@
+<!--
+  Servitor guest — libvirt domain template (portcullis server, RUNBOOK §Provisioning).
+
+  The image ships NO bootloader on purpose (build.sh extracts the boot files
+  alongside the qcow2 and the test harness boots with -kernel/-initrd).
+  libvirt does the same via <os><kernel><initrd><cmdline> — a guest-initiated
+  reboot (virsh reboot, panel-do servitor-vm-restart) re-enters this same
+  kernel line, so no bootloader is ever needed.
+
+  Substitutions ({{...}}):
+    {{ROOT_QCOW2}}   e.g. /opt/servitor-disk/servitor-pi1.5.2-20261116.qcow2
+    {{STATE_QCOW2}}  e.g. /opt/servitor-disk/servitor-state.raw
+                     (ext4, LABEL=servitor-state — the contract in the image's
+                      fstab; see INSTALL.md §5 for the loop-free creation)
+    {{BRIDGE}}       the portcullis edge bridge (the docker "edge" network's
+                     bridge device: docker network inspect edge -f
+                     '{{(index .Options "com.docker.network.bridge.name")}}')
+                     The guest's static IP is BAKED into the image at build
+                     time (SERVITOR_VM_IP, gateway = subnet .1), so it only
+                     needs to be on this L2 segment.
+
+  Sizing is PLAN §6: 24 vCPU no quota, RAM ceiling 30 GB (not a reservation —
+  virtio-balloon returns idle memory), no GPU. The proven minimum (test
+  harness) is 4 vCPU / 8 GB — scale {{VCPU}}/{{RAM_*}} down for a weaker box.
+
+  free-page-reporting: enable it on the host's libvirt if it is supported
+  (libvirt 9.x exposes it; the base template deliberately omits the element
+  so `virsh define` is schema-safe on older libvirt).
+-->
+<domain type='kvm'>
+  <name>servitor</name>
+
+  <memory unit='GiB'>30</memory>
+  <currentMemory unit='GiB'>16</currentMemory>
+  <vcpu placement='static'>24</vcpu>
+  <cputune>
+    <!-- low host-side scheduling weight (PLAN §6: a long run should own the
+         IDLE machine; on a busy host this keeps the VM from starving the
+         edge — remove the <shares> line to give it default weight) -->
+    <shares>512</shares>
+  </cputune>
+
+  <os>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <kernel>{{KERNEL}}</kernel>
+    <initrd>{{INITRD}}</initrd>
+    <cmdline>root=LABEL=servitor-root console=ttyS0,115200 quiet</cmdline>
+  </os>
+
+  <features>
+    <acpi/>
+    <apic/>
+    <vmport state='off'/>
+  </features>
+
+  <cpu mode='host-passthrough' check='none'/>
+  <clock offset='utc'/>
+
+  <!-- a crash is an operator-visible event; the app's boot reconciliation
+       handles the unclean path (kills crash-orphans, marks interrupted,
+       respawn on pickup) — so restart, never destroy -->
+  <on_poweroff>destroy</on_poweroff>
+  <on_reboot>restart</on_reboot>
+  <on_crash>restart</on_crash>
+
+  <devices>
+    <emulator>/usr/bin/qemu-system-x86_64</emulator>
+
+    <!-- root disk (build.sh artifact, compressed qcow2, LABEL=servitor-root) -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2' discard='unmap'/>
+      <source file='{{ROOT_QCOW2}}'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+
+    <!-- state disk (operator-created raw, ext4, LABEL=servitor-state, ~200 GB
+         sized at creation — PLAN §6: no quota mechanism, near-full is a GC
+         trigger) -->
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='raw' discard='unmap'/>
+      <source file='{{STATE_QCOW2}}'/>
+      <target dev='vdb' bus='virtio'/>
+    </disk>
+
+    <!-- the edge segment (Traefik reaches the VM at SERVITOR_VM_IP:SERVITOR_PORT;
+         the VM's nftables admits the port from this subnet only) -->
+    <interface type='bridge'>
+      <source bridge='{{BRIDGE}}'/>
+      <model type='virtio'/>
+    </interface>
+
+    <!-- serial console: virsh console servitor (first-boot watch, serial log) -->
+    <console type='pty'>
+      <target type='serial' port='0'/>
+    </console>
+
+    <memballoon model='virtio'/>
+  </devices>
+</domain>

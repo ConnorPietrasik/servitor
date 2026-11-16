@@ -130,6 +130,7 @@ class PiSession:
         self._last_settled_aborted: bool | None = None
         self._exited = asyncio.Event()
         self._exit_code: int | None = None
+        self._run_active = False  # a run is in flight (prompt/steer/follow-up accepted, not yet settled)
         self._stderr_tail = deque[str](maxlen=4096)
         self._stderr_bytes = 0
         self._stdin_open = False
@@ -169,6 +170,14 @@ class PiSession:
     @property
     def last_settled_aborted(self) -> bool | None:
         return self._last_settled_aborted
+
+    @property
+    def run_active(self) -> bool:
+        """True while a run is in flight: set when a prompt/steer/
+        follow-up is ACCEPTED (disposition != "handled"), cleared at
+        ``agent_settled`` (abort settles too). The update tick uses
+        this: a restart must never land mid-run (D8)."""
+        return self._run_active
 
     def pause_events(self) -> None:
         """Backpressure: stop draining session events (the run pauses).
@@ -364,6 +373,7 @@ class PiSession:
 
     def _on_agent_settled(self, record: dict[str, Any]) -> None:
         self._last_settled_aborted = bool(record.get("aborted", False))
+        self._run_active = False
         for fut in self._settled_waiters:
             if not fut.done():
                 fut.set_result(self._last_settled_aborted)
@@ -540,19 +550,28 @@ class PiSession:
         res = await self.request(cmd)
         if not res.success:
             raise PromptRejected("prompt", res.error or "unknown error")
-        return str(res.data.get("disposition", "started"))
+        disposition = str(res.data.get("disposition", "started"))
+        if disposition != "handled":
+            self._run_active = True
+        return disposition
 
     async def steer(self, text: str) -> str:
         res = await self.request({"type": "steer", "message": text})
         if not res.success:
             raise PromptRejected("steer", res.error or "unknown error")
-        return str(res.data.get("disposition", "queued"))
+        disposition = str(res.data.get("disposition", "queued"))
+        if disposition != "handled":
+            self._run_active = True
+        return disposition
 
     async def follow_up(self, text: str) -> str:
         res = await self.request({"type": "follow_up", "message": text})
         if not res.success:
             raise PromptRejected("follow_up", res.error or "unknown error")
-        return str(res.data.get("disposition", "queued"))
+        disposition = str(res.data.get("disposition", "queued"))
+        if disposition != "handled":
+            self._run_active = True
+        return disposition
 
     async def abort(self) -> None:
         """RPC abort: waits for the session to become idle before responding

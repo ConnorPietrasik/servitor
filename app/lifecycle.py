@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.iso import mounts as M
+from app.env import optional_env
 from app.iso.configswap import active_dir as config_active_dir
 from app.iso.configswap import require_active_dir
 from app.iso.layout import SessionMountPaths, StatePaths
@@ -105,6 +106,10 @@ class LifecycleConfig:
     gc_interval_sec: float = 300.0
     delivery: "Delivery | None" = None  # stage-3 delivery service (blobs/staging)
     sse_ring_bytes: int | None = None  # per-session SSE cap (None = 50 MB default)
+    update_pending_path: str | None = None  # the D8 flag file (sync/update write)
+    update_tick_sec: float = 5.0
+    restart_cmd: tuple[str, ...] | None = None  # default: systemctl restart servitor
+    doctor_cmd: tuple[str, ...] | None = None  # default: own venv python -m app.doctor
 
 
 class LifecycleHooks:
@@ -176,6 +181,7 @@ class Lifecycle:
         self._probe_cache: dict[tuple[str, str], tuple[float, Any]] = {}
         self.shutting_down = False
         self._gc_task: Optional[asyncio.Task] = None
+        self._update_task: Optional[asyncio.Task] = None
 
     def hub(self, session_id: str) -> "SseHub":
         """The session's SSE hub (created on first use; the hub outlives
@@ -675,7 +681,167 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     def start_gc(self) -> None:
-        self._gc_task = asyncio.get_running_loop().create_task(self._gc_loop())
+        if self._gc_task is None:
+            self._gc_task = asyncio.get_running_loop().create_task(self._gc_loop())
+
+    # ------------------------------------------------------------------ #
+    # update-pending tick (PLAN §5, D8)                                    #
+    # ------------------------------------------------------------------ #
+
+    def any_run_active(self) -> list[str]:
+        """Sessions with a run in flight (the settled waiter is held
+        until agent_settled)."""
+        return [
+            sid
+            for sid, live in self.live.items()
+            if live.driver is not None
+            and not live.driver.exited
+            and live.driver.run_active
+        ]
+
+    def start_update_tick(self) -> None:
+        """The in-process tick: applies the pending restart + doctor at
+        the first idle moment; defers (and flags the sessions) while a
+        run is active. image_swap is never applied here — explicit
+        operator downtime."""
+        if self._update_task is None:
+            self._update_task = asyncio.get_running_loop().create_task(
+                self._update_loop()
+            )
+
+    async def _update_loop(self) -> None:
+        while True:
+            try:
+                await self.update_tick()
+            except Exception:
+                log.exception("update tick failed")
+            await asyncio.sleep(self.cfg.update_tick_sec)
+
+    async def update_tick(self) -> dict | None:
+        """One pass over the flag. Returns the outcome (or None when the
+        flag is absent — the normal steady state)."""
+        if self.shutting_down:
+            return None
+        from app.update_pending import UpdatePending, consume_restart, load, save
+
+        path = self.cfg.update_pending_path
+        if not path:
+            return None
+        flag = load(path)
+        if flag is None:
+            return None
+        active = self.any_run_active()
+
+        if flag.doctor and not active:
+            # doctor without restart (e.g. the boot-time flag after a
+            # deferred restart, or a config-only change that needs no
+            # restart): apply inline, then continue with the restart bit
+            result = await self._run_doctor()
+            if not flag.restart:
+                # doctor without restart (e.g. the boot-time flag after a
+                # deferred restart): the flag is fully applied — clear the
+                # FILE (its existence means "staged target pending":
+                # sync's APPLIED gate and the doctor's update.waiting check
+                # both key on it; a lingering all-false flag would wedge
+                # both). The image_swap bit is NEVER consumed by the tick
+                # (explicit operator downtime) — preserve it.
+                if flag.image_swap:
+                    save(path, UpdatePending(
+                        reason=flag.reason, image_swap=True, ts=flag.ts))
+                else:
+                    from app.update_pending import clear as _clear_flag
+                    _clear_flag(path)
+            if result.get("ok") is False:
+                # A pre-restart doctor FAIL must NOT hold the staged
+                # restart. The canonical case is provisioning: the image
+                # ships the non-key env defaults (sync owns the key
+                # slice), so the pre-restart app's tick-doctor can never
+                # pass until the restart injects the keys — the restart
+                # IS the fix. The post-restart tick re-runs the doctor on
+                # the new state and logs any real failure there.
+                log.error(
+                    "update doctor (pre-restart cert) failed — proceeding "
+                    "with the staged restart anyway:\n%s",
+                    (result.get("output") or "")[-2000:],
+                )
+
+        if flag.restart:
+            if active:
+                for sid in active:
+                    self.cfg.registry.set_update_waiting(sid, True)
+                log.info(
+                    "update deferred (run active: %s) — flag survives, tick retries",
+                    active,
+                )
+                return {"deferred": True, "active": active}
+            # clear the per-session flags, then consume the restart bit
+            # BEFORE issuing the restart (crash-safe: a crash between
+            # clear and restart leaves a doctor-only flag)
+            for row in self.cfg.registry.list_sessions(include_released=False):
+                if row.update_waiting:
+                    self.cfg.registry.set_update_waiting(row.id, False)
+            self.events.add("*", "update_applying", f"reason={flag.reason}")
+            consume_restart(path)
+            cmd = self.cfg.restart_cmd or ("systemctl", "restart", "servitor")
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+            self.events.add("*", "update_restarted", f"cmd={' '.join(cmd)} rc={proc.returncode}")
+            return {
+                "restarted": True,
+                "rc": proc.returncode,
+                "output": out.decode(errors="replace")[-2000:],
+            }
+
+        return {"no_op": True, "reason": flag.reason}
+
+    async def _run_doctor(self) -> dict:
+        """Run the guest doctor in a subprocess (own venv on the guest,
+        test override elsewhere). Bounded: doctor is read-only and fast
+        (the no-prompt spawn is ~1.5 s; the whole run is seconds). The
+        subprocess inherits the service environment (the 0600 env file)
+        — keys ride env only, as everywhere."""
+        import sys
+
+        cmd = self.cfg.doctor_cmd
+        if cmd is None:
+            active = config_active_dir(self.cfg.state.config)
+            parts: list[str] = [
+                sys.executable,
+                "-m",
+                "app.doctor",
+                "--state",
+                self.cfg.state.root,
+                "--pi-node",
+                self.cfg.pi.node_bin,
+                "--pi-cli",
+                self.cfg.pi.cli_js,
+                "--toolkit",
+                self.cfg.toolkit_dir,
+            ]
+            if active:
+                parts += ["--config-src", active]
+            if self.cfg.pi.ext_path:
+                parts += ["--pi-ext", self.cfg.pi.ext_path]
+            cmd = tuple(parts)
+        log.info("update doctor run: %s", " ".join(str(c) for c in cmd))
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=optional_env("SERVITOR_DOCTOR_CWD") or ".",
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except (asyncio.TimeoutError, OSError) as e:
+            return {"ok": False, "error": str(e)}
+        text = out.decode(errors="replace")
+        ok = proc.returncode == 0
+        log.info("update doctor rc=%s tail=%s", proc.returncode, text[-800:])
+        return {"ok": ok, "rc": proc.returncode, "output": text[-4000:]}
 
     async def _gc_loop(self) -> None:
         while True:
@@ -705,11 +871,13 @@ class Lifecycle:
             res = await self.release(row.id, reason="idle GC")
             if res.released:
                 released.append(row.id)
-        # disk pressure
+        # disk pressure (same pool-ownership guard as slot pressure:
+        # a row on a slot the app does not own is not releaseable here)
+        owned = set(self.cfg.pool.slots)
         if await asyncio.to_thread(self._disk_near_full):
             for row in sorted(
                 (r for r in self.cfg.registry.list_sessions()
-                 if r.state == LIVE and not r.stable and not self._is_running(r.id)),
+                 if r.state == LIVE and r.slot in owned and not r.stable and not self._is_running(r.id)),
                 key=lambda r: r.last_activity,
             ):
                 if not await asyncio.to_thread(self._disk_near_full):
@@ -931,12 +1099,16 @@ class Lifecycle:
     async def _release_oldest_for_pressure(self) -> bool:
         """Slot pressure: release the oldest non-stable non-running
         session and take its slot. All 16 running ⇒ False (the new
-        session waits)."""
+        session waits). Rows on slots OUTSIDE this app's pool (the
+        doctor's probe slot) are never releaseable here — the app must
+        not reach into a slot it does not own."""
+        owned = set(self.cfg.pool.slots)
         candidates = sorted(
             (
                 r
                 for r in self.cfg.registry.list_sessions()
-                if r.state in (ALLOCATED, LIVE) and not r.stable and not self._is_running(r.id)
+                if r.state in (ALLOCATED, LIVE) and r.slot in owned
+                and not r.stable and not self._is_running(r.id)
             ),
             key=lambda r: r.last_activity,
         )

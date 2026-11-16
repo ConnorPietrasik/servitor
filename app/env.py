@@ -42,12 +42,18 @@ ENV_NAMES: tuple[str, ...] = (
     # --- deploy-time intent (doctor asserts; A4) ---
     "SERVITOR_INTENDED_MODEL_ID",
     "SERVITOR_INTENDED_CONTEXT_WINDOW",
+    # --- deployment layout (absolute paths; the guest unit passes them via
+    #     the EnvironmentFile — never resolved from PATH at runtime, D8) ---
+    "SERVITOR_PI_NODE_BIN",  # absolute node binary
+    "SERVITOR_PI_CLI_JS",  # absolute pi CLI entry (never PATH resolution)
+    "SERVITOR_PI_EXT_DIR",  # absolute pi-web-access package dir (sync-owned)
+    "SERVITOR_TOOLKIT_DIR",  # absolute toolkit dir (RO overlay lower)
+    "SERVITOR_DOCTOR_CWD",  # cwd for the doctor command (the app tree)
 )
 
 
 class ConfigError(RuntimeError):
     """A required env var is missing or malformed (fail closed)."""
-
 
 @dataclass(frozen=True)
 class Config:
@@ -202,3 +208,34 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
         omnissiah_api_key=_optional(env, "OMNISSIAH_API_KEY"),
         exa_api_key=_optional(env, "EXA_API_KEY"),
     )
+
+
+# --- deployment layout (absolute paths; the only sanctioned reads) -------
+#
+# The guest's systemd unit passes these via the EnvironmentFile
+# (/etc/servitor/servitor.env). Everything below is env.py — the rest of
+# the app may only use these helpers (contract check).
+
+DEPLOYMENT_ENV_NAMES: tuple[str, ...] = (
+    "SERVITOR_PI_NODE_BIN",
+    "SERVITOR_PI_CLI_JS",
+    "SERVITOR_PI_EXT_DIR",
+    "SERVITOR_TOOLKIT_DIR",
+    "SERVITOR_DOCTOR_CWD",
+)
+
+
+def deployment_env(env: Mapping[str, str] | None = None) -> dict[str, str | None]:
+    """The deployment layout paths (absolute). Never PATH-resolved at
+    runtime (D8): the spawn line, doctor, and toolkit all use these."""
+    env = env if env is not None else os.environ
+    return {name: _optional(env, name) for name in DEPLOYMENT_ENV_NAMES}
+
+
+def optional_env(name: str, env: Mapping[str, str] | None = None) -> str | None:
+    """A single named lookup. env.py is the only file where env names may
+    appear (contract check); callers must name a contracted variable."""
+    if name not in ENV_NAMES:
+        raise ConfigError(f"{name} is not a contracted env name")
+    env = env if env is not None else os.environ
+    return _optional(env, name)

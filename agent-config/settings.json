@@ -1,7 +1,9 @@
 {
   "defaultTools": ["read", "bash", "edit", "write"],
   "compaction": {
-    "enabled": true
+    "enabled": true,
+    "keepRecentTokens": 40000,
+    "reserveTokens": 40000
   },
   "skills": []
 }

@@ -20,3 +20,8 @@ ui/dist/
 # dev state
 test/.state/
 *.log
+
+# guest image artifacts (large; reproducible via deploy/guest/build.sh —
+# only the manifest's identity record is versioned)
+deploy/guest/images/*
+!deploy/guest/images/manifest.json

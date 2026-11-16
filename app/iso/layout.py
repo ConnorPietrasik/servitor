@@ -52,6 +52,16 @@ ENV_FILE = "/etc/servitor/servitor.env"
 SLOT_NAMES: tuple[str, ...] = tuple(f"slot{i}" for i in range(1, 17))
 SLOT_HOME = "/home/{slot}"
 
+#: The DOCTOR PROBE slot — the one slot OUTSIDE the app's pool (SLOT_NAMES).
+#: The doctor's no-prompt spawn check owns it exclusively: its Lifecycle is
+#: built with a pool of (PROBE_SLOT,) only, and the app never allocates it,
+#: so the app's uid-gated kills (boot reconciliation, respawn invariant 7,
+#: release strays) can never SIGTERM the probe's pi child mid-command while
+#: the service is running or restarting (PLAN §9: the doctor certifies a
+#: LIVE guest; a probe on an app slot raced the tick's restart and was
+#: intermittently killed, code -15). Created at image build (uid 9000).
+PROBE_SLOT = "slot0"
+
 # --- state volume (PLAN §5) --------------------------------------------------
 
 #: Area names under SERVITOR_ROOT, in the order they are created.

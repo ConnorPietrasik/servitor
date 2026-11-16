@@ -122,11 +122,18 @@ class PanelActionBody(BaseModel):
 
 def _row_dict(r: SessionRow, lc: Lifecycle) -> dict:
     live = lc.live.get(r.id)
+    busy = (
+        live is not None
+        and live.driver is not None
+        and not live.driver.exited
+        and live.driver.run_active
+    )
     return {
         "id": r.id,
         "display_name": r.display_name,
         "slot": r.slot,
         "state": r.state,
+        "busy": busy,
         "stable": r.stable,
         "interrupted": r.interrupted,
         "session_file": r.session_file,
@@ -282,8 +289,22 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/probe")
     async def probe(sid: str, which: str = "messages"):
         _get_row(app_state, sid)
-        result = await app_state.lc.probe(sid, which)
-        return {"result": result}
+        live = app_state.lc.live.get(sid)
+        busy = (
+            live is not None
+            and live.driver is not None
+            and not live.driver.exited
+            and live.driver.run_active
+        )
+        try:
+            result = await app_state.lc.probe(sid, which)
+        except ValueError:
+            # fresh session, no transcript yet: the probe's short-lived
+            # spawn is refused by the first-touch rule (it must never be
+            # the first process to touch an agent dir) — the busy state is
+            # everything a waiter polling this endpoint needs
+            return {"result": None, "busy": busy}
+        return {"result": result, "busy": busy}
 
     # ------------------------------------------------------------------ #
     # transcript fetch (reattach on load: fetch, never replay) +

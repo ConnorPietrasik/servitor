@@ -117,9 +117,33 @@ class Registry:
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_slot ON sessions(slot);
             CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
+            CREATE TABLE IF NOT EXISTS versions (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                ts REAL NOT NULL
+            );
             """
         )
         self.db.commit()
+
+    # -- version stamps (stage 5: what the guest actually runs) --------
+
+    def set_version(self, key: str, value: str) -> None:
+        self.db.execute(
+            "INSERT INTO versions(key, value, ts) VALUES(?,?,?)"
+            " ON CONFLICT(key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
+            (key, value, time.time()),
+        )
+        self.db.commit()
+
+    def get_version(self, key: str) -> str | None:
+        cur = self.db.execute("SELECT value FROM versions WHERE key=?", (key,))
+        row = cur.fetchone()
+        return row["value"] if row else None
+
+    def get_versions(self) -> dict[str, str]:
+        cur = self.db.execute("SELECT key, value FROM versions")
+        return {r["key"]: r["value"] for r in cur.fetchall()}
 
     # -- rows ---------------------------------------------------------------
 

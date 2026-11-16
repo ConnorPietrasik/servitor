@@ -17,7 +17,9 @@ Wants=network-online.target
 Type=simple
 User=root
 EnvironmentFile=/etc/servitor/servitor.env
-ExecStart=/opt/servitor/app/.venv/bin/python -m app.api.main
+# the entry is app.main (there is NO app.api.main — that module does not
+# exist; an as-is install of this template crash-loops the unit)
+ExecStart=/opt/servitor/app/.venv/bin/python -m app.main --state /var/lib/servitor --config-src /opt/servitor/agent-config
 TimeoutStopSec=120
 Restart=on-failure
 RestartSec=2

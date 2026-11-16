@@ -471,3 +471,267 @@ Findings that shaped the stage-3 code (all reproduced and fixed):
   sandbox-smoke + vm-smoke. Stage 4 full stack: check 31/31, unit+
   conformance 56, stage2 5, api 20 (incl. fork/branch + 110 s
   backpressure), sandbox+vm 15.
+
+## Stage 5 findings (2026-11-16, resume after hard restart; gate run pending)
+
+- **Arch split npm out of nodejs (verified against the package DB).**
+  `nodejs` 26.13.1 ships only `usr/bin/node`; `npm`/`npx` come from the
+  separate `npm` package (12.2.2-1, optdep of nodejs: "npm: nodejs
+  package manager"). `pins.json` now lists `npm`. node and npm install
+  to `/usr/sbin/` on this Arch — the build records the REAL node path
+  (`command -v node` in the chroot → `SERVITOR_PI_NODE_BIN`) and never
+  hardcodes `/usr/bin/node` (the old bake would have ENOENT'd every pi
+  spawn).
+- **First-boot config source lives on the root fs, not the state volume.**
+  The fresh state disk mounts over `/var/lib/servitor`, so anything
+  "baked" under it is invisible at first boot. The image bakes the
+  `agent-config/` tree at `/opt/servitor/agent-config`; the unit points
+  `--config-src` there and the app's `_stage_config` stages it into the
+  state volume's `config/v1` at boot. Pointing `--config-src` at
+  `config/active` (the old unit) crash-looped a fresh guest (the path
+  does not exist yet).
+- **Config versions are content-addressed end to end.** The sync stages
+  the config dir under its own identity (`<gitsha>-c<content-sha12>`,
+  the same name the NO-OP check compares) instead of the app's
+  `stage_and_swap` vN naming — with vN, every sync saw a "changed"
+  config and restarted the service, accumulating versions forever.
+  The app's boot-time v1 staging is the only vN that ever exists; the
+  first sync replaces it. The sync records the previous active name in
+  `config/.previous-active`; the update's automatic rollback flips the
+  pointer back to it (globbing `v*` can never find a content name).
+- **Sync rc contract: 0 vs 3.** 0 = NO-OP / deployed+doctor green /
+  update-WAITING; **3 = deploy LANDED but doctor red** (the update
+  path's automatic rollback owns this outcome); 1+ = pre-deploy
+  failure (nothing to roll back). The fault-injected drill asserts
+  exit 0 + rollback on the update path, which the old sync (exit 1)
+  could never satisfy.
+- **The guest env file carries the SELECTIONS, not just the keys.**
+  The guest-side doctor compares the installed extension against the
+  .env selection, so the sync's env merge covers
+  OMNISSIAH_API_KEY / EXA_API_KEY / SERVITOR_PI_VERSION /
+  SERVITOR_PI_WEB_ACCESS_VERSION — an extension bump that landed only
+  in the registry would go red at the post-deploy doctor (installed !=
+  baked selection). The shape check's env bucket is the matching 4-line
+  sha.
+- **D8 "never blocks a run" means exit-0-immediately, not wait-150s.**
+  The sync now PROBES the app (sessions list + per-session busy) right
+  after writing the flag: a run active → exit 0 update-WAITING at once;
+  idle → wait for the tick, doctor, done. The old unconditional 150 s
+  wait made the update-waiting drill's <60 s assertion impossible.
+- **Guest app sha must exclude `__pycache__` on BOTH sides.** The guest
+  service writes `.pyc` caches after boot; the guest-side tar without
+  the same excludes as the host side would differ forever → "app
+  changed" on every sync. Excludes are now mirrored exactly.
+- **Firewall "closed" probe is a ruleset-content assert.** The guest's
+  static IP is IN the edge subnet by design, so a live negative probe
+  from the guest's own address is impossible (nft admits it). Doctor
+  asserts instead: default-deny input policy + the edge-only accept
+  rule for the port, from `nft list ruleset`.
+- **Build mount hygiene.** `umount -R` on a chroot tree with a
+  devtmpfs bind + nested pseudo mounts is unreliable (two builds died
+  at it). The build now: `--make-rprivate` the workdir, unmounts in
+  explicit reverse order with lazy fallback, and is invoked under
+  `unshare -m` so a crash leaves no host mounts behind.
+- **The agent bash tool dies with `spawn /bin/bash ENOENT` around the
+  build's mount churn** (twice, both cleared by reboot). Verified in a
+  fresh session: `/bin/bash` + interpreter valid, mount ns clean, env
+  clean; pi's own `accessSync` on the shell path succeeds while
+  `execve` ENOENTs — kernel-side exec-path state, not fixable from
+  userspace. Mitigation: `unshare -m` (the build's mount table churn no
+  longer touches the host ns). Cure: reboot. Recovery for the
+  interrupted build: `sudo deploy/guest/finish-build.sh` (one-shot;
+  hotpatches the on-disk tree to the fixed build's output, then
+  umount/convert/manifest).
+
+## Stage 5 findings (2026-11-16, second session: doctor -15 + suite config drift)
+
+- **The doctor's probe needs its own slot (slot0), outside the app's
+  pool — the intermittent `code -15` was a restart race, not a pi
+  slow-start.** The doctor's no-prompt spawn check built its own
+  Lifecycle with a fresh in-memory pool (all slots "free") and always
+  landed on slot1, writing a LIVE row for slot1 into the SHARED
+  registry.db. If the service restarted in that window — which happens
+  on every shape-changing sync, since the tick applies the restart right
+  after `consume_restart` (the flag file is gone, but the new instance
+  has not booted yet) — the new instance's boot reconciliation saw the
+  probe's LIVE row on slot1 and `kill_strays_by_uid(9001)` SIGTERMed
+  the probe's pi child mid-`get_available_models` (TERM is the kill
+  ladder's first rung; cgroup kills would be -9, and the 30 s request
+  cap raises TimeoutError, so -15 could only be an intentional signal).
+  Fix: the image bakes `slot0` (uid/gid 9000, 0700 home); the doctor's
+  probe Lifecycle is built with a pool of `(slot0,)` only, and the app's
+  pool stays `SLOT_NAMES` (slot1-16). The app's uid-gated kills (boot
+  reconciliation, respawn invariant 7, release strays) are structurally
+  blind to slot0: a probe can no longer be killed by a concurrent
+  service restart, respawn, or release.
+- **Concurrent doctors serialize on a probe lock** (`flock` on
+  `<state>/.doctor-probe.lock`, 300 s cap). The host doctor.sh and the
+  app tick's inline doctor (the D8 post-restart path) can run at the
+  same moment; both probes use the probe uid, and a release's sweep
+  deletes EVERYTHING that uid owns — including the other probe's live
+  workdir. One doctor waits; the lock is released by the kernel if a
+  doctor dies. The stale-row cleanup at the probe's start releases any
+  row a SIGKILLed previous doctor left on the probe slot (ladder +
+  sweep + free), because the app's reconciliation never looks at a slot
+  it does not own.
+- **The app never releases rows on slots outside its pool.** A leaked
+  probe row (doctor SIGKILLed, next doctor never ran) used to be a
+  candidate for slot-pressure/disk-pressure release — which would have
+  `pool.get("slot0")`'d with a KeyError. The GC/pressure candidate
+  filters now require `slot in pool`.
+- **The guest suite converges to the repo baseline after every test**
+  (autouse fixture: an unconditional repo sync). The session-scoped VM
+  is shared by the whole suite, and the shape-change / waiting-drill /
+  extension-bump / fault drills re-sync with foreign or faulted configs
+  and left `config/active` pointed at them — the next test's doctor
+  then parsed a corrupted models.json (the suite-only `JSONDecodeError:
+  Extra data` corruption was the fault drill's `NOT-JSON {{{{` append
+  surviving in the active pointer). The config is content-addressed, so
+  the convergence sync is a deterministic NO-OP when the guest already
+  matches the repo, and a full stage+restart+doctor cycle when it does
+  not — a shape-changing sync certifies itself with its own post-deploy
+  doctor.
+- **The doctor parses the active config's JSON in the STATIC section**
+  (`config.json.*`) — a truncated/appended artifact now fails with a
+  named check instead of surfacing inside the spawn check as a
+  spawn failure.
+
+## Stage 5 findings (2026-11-16, third session: D8 flag deadlock + model probe)
+
+- **The D8 flag deadlocked on a fresh image — the pre-restart doctor can
+  never pass, and the tick refused to restart on a doctor FAIL.** The
+  image ships the NON-KEY env defaults (sync owns the key slice), so the
+  pre-restart app process has no `OMNISSIAH_API_KEY` in its environment.
+  Its tick-doctor inherits that environment (doctor.sh, by contrast,
+  sources `/etc/servitor/servitor.env` — which is why the host-side
+  doctor was green while the in-service doctor failed every 5 s with
+  `env.llm_key empty` + empty `spawn.models`). `update_tick` treated the
+  doctor FAIL as a reason to skip the restart (`return {"doctor": ...}`
+  before `consume_restart`) — but the restart is exactly what injects the
+  keys, so the flag `{restart:True, doctor:True}` was never consumed, the
+  service was never restarted, and it kept running the pre-sync state
+  forever. This is the real downstream cause of the "corrupted active
+  config between tests" symptom: every shape-changing sync's restart
+  silently never happened, so `config/active` on disk (sync) and the
+  running app's world (boot-time vN staging + in-memory versions) diverged.
+  Fix: a pre-restart doctor FAIL no longer holds the staged restart — the
+  doctor certifies the RUNNING state (the WARN says so), the restart is
+  often the fix itself, and the post-restart tick re-runs the doctor on
+  the new state and logs any real failure there.
+- **A fully-consumed flag CLEARS the file (it used to save an all-false
+  flag).** Sync's APPLIED gate and the doctor's `update.waiting` check
+  both key on the file's EXISTENCE ("staged target pending"); a lingering
+  `{restart:False, doctor:False}` file wedged both — sync burned the full
+  150 s APPLIED wait and then misreported "update-WAITING (a run is
+  active)" with no run active, and every doctor carried the misleading
+  pending WARN. The image_swap bit still survives (explicit operator
+  downtime), everything else clears. Verified on the guest: flag written
+  → tick doctor → restart → post-restart doctor → file ABSENT, steady
+  state GREEN with 0 warn (modulo the exa key).
+- **The model probe needed the uid handoff the Lifecycle does for every
+  session.** A raw `PiSession` with a root-owned 0700/0755 tree (workdir,
+  agent dir, session dir) reports `model.id == "unknown"` and an empty
+  `get_available_models` even with a valid, readable models.json: pi must
+  WRITE the session dir (transcript), the agent dir (models store / auth
+  cache), and cwd (temps). The bisection was exact — chowning any one of
+  the three was insufficient; chowning all three (as
+  `mount_session`'s pre-mount handoff does) yields the intended model.
+  The probe now chowns its staged tree to the probe slot before spawn.
+- **The nbd-patched image carries the app fix, not just slot0.** The
+  image's baked app tree is what runs at first boot (sync updates the
+  files but the RUNNING process is the baked code until the first
+  restart), so a first-ever provisioning against the pre-fix code would
+  deadlock as above regardless of the repo's fix. The image was re-patched
+  (qemu-nbd, app tree re-synced from the repo) and the manifest hash
+  updated; build.sh already creates slot0, so a future clean rebuild is
+  equivalent.
+
+## Stage 5 findings (2026-11-16, fourth session: egress, env bloat, rollback nesting)
+
+- **The guest had no egress at all — three stacked host/guest bugs, all
+  fixed.** (1) build.sh derived the gateway as
+  `"${SERVITOR_EDGE_SUBNET%%/*}.1"` — for a /24 whose zero-base is
+  `a.b.c.0` that yields a 5-octet invalid string which systemd-networkd
+  silently drops, so the guest booted with NO default route. (2) The host's
+  ufw forward policy is `deny (routed)`; without an explicit
+  `ufw route allow from 10.42.0.0/24` the guest's NAT egress dies in the
+  host's FORWARD chain (the nft masquerade alone is not enough). (3) The
+  image shipped systemd-resolved DISABLED with a stale NetworkManager
+  resolv.conf pointing at the stub of a dead service — no public name
+  resolved. Fixes: gateway = first three octets + `.1`; ufw route rule
+  (one-time host setup, persistent); resolved enabled in the image with a
+  public upstream taken from `.env SERVITOR_DNS_UPSTREAM` (the no-literal
+  gate bans IP constants in deploy/). Verified: guest curl to a public IP,
+  to api.exa.ai (real exa results in a web_search tool_result), and to the
+  model router all work.
+- **The model router needs the laptop's /etc/hosts pins mirrored into the
+  guest (hairpin NAT).** `27b.pietrasik.top` is pinned to the server's LAN
+  IP in the laptop's panel-hosts block; from the guest the public DNS name
+  hairpins through the host NAT and dies. sync.sh now mirrors the pinned
+  lines into a managed block in the guest's /etc/hosts on every deploy
+  (no-op when the laptop has no pins). The doctor/doctor-model checks are
+  config-relative, so an unreachable router did NOT show up there — only
+  the live prompt did (empty assistant turns).
+- **Empty assistant turns == the model call never succeeded.** A prompt
+  against an unreachable router settles fast (10-20 s) with several
+  EMPTY-TEXT assistant entries (each a failed attempt; tool-call turns are
+  also empty-text by nature — the answer, when any, is in the final text
+  turn or in tool_results). The mock-request capture (the mock now
+  reachable from the guest) showed pi's exact request shape; replayed at
+  the router it streams fine, isolating the failure to guest egress.
+  `live_search`'s old assertion (tool activity present) passed despite a
+  dead network; it now requires a successful non-empty tool_result.
+- **sync's env rewriter bloated the guest env file exponentially.** Preserved
+  lines were written back as `line + '\n'` although they already ended in
+  '\n'; every blank line DOUBLED each sync. ~28 syncs (suite conftest
+  re-syncs + diagnostics) grew it to 184 MB / 184 M lines — past execve's
+  env limit, so the next restart hit `Failed to load environment files:
+  Argument list too long` and the service crash-looped. Rewriter now
+  normalizes (rstrip) and drops blank/comment lines, matches keys exactly;
+  idempotent and self-healing (it shrinks an already-bloated file on the
+  next sync). The image carried a pre-baked 2818-line bloat from an earlier
+  build-time sync; first sync heals it to 15 lines.
+- **App previous-tree retention nested the package and broke rollback.**
+  `cp -a src/app dest.app` with dest.app EXISTING copies INTO it
+  (`dest.app/app/...`); update.sh then moved that into `/opt/servitor/app/`,
+  so the "restored" tree was `/opt/servitor/app/app/app/...` while the
+  service kept running the stale flat tree — the rollback's doctor ran the
+  OLD code (str/Path crash in check_config_version) and reported failure
+  though the config pointer had rolled back fine. Fix: sync refreshes the
+  previous tree rm-then-copy (flat) before every push and rm's the package
+  before extracting (a bare tar -x keeps stale files, which also made
+  GUEST_APP_SHA never match and forced an app re-push on every sync);
+  update.sh guards on the directory, not the marker file; build.sh never
+  ships app.previous* at all.
+- **`harness.service_uptime()` returned boot-uptime, not service uptime.**
+  `ActiveEnterTimestampMonotonic` is the monotonic value AT activation
+  (seconds since VM boot); the waiting drill compared it to a small
+  threshold and never saw the restart. Now `now_monotonic(/proc/uptime) -
+  active_enter_monotonic`.
+- **The mock router was unreachable from the guest (ufw input drop) and now
+  allocates from the ufw-allowed range 48700:48799** (one-time host rule:
+  allow in from the edge subnet to that range, comment
+  servitor-test-mock). Ephemeral ports elsewhere were dropped by the
+  laptop's ufw default-deny input.
+- **`.env` values with spaces must be quoted.** sync.sh sources the whole
+  file (`set -a; source <(grep ...)`); an unquoted
+  `SERVITOR_DNS_UPSTREAM=1.1.1.1 9.9.9.9` made bash execute the second
+  token as a command (rc=127 before anything printed). Quoted now.
+- **Pi child processes show up as `pi`, not `node ... cli.js`** — liveness
+  checks must use `pgrep -x pi` / `ps aux | grep -iE 'pi|node'`, and
+  `pgrep -x` on names >15 chars silently matches nothing (use `-f`).
+- **Model cap aligned with the operator's proven pi config (no client-side
+  capability limit).** The guest models.json shipped
+  `maxTokens: 32768` — pi sends it as `max_completion_tokens`, and on a
+  reasoning model the thinking tokens count against it, so long reasoning
+  chains would cut off mid-turn. pi's own math
+  (`clampMaxTokensToContext`) clamps the configured value to context room
+  (contextWindow − input − 15% margin), so the configured number is a
+  CEILING, not a budget. Set `maxTokens: 200000` (matching the operator's
+  working `~/.pi/agent/models.json` entries for the same Qwen3.8-27B
+  family) and dropped the explicit `reasoning: false` (the operator's
+  working entries for this model leave it unset; the server drives
+  reasoning behavior). Dynamic clamp still protects the 250000 context at
+  large inputs. Verified on a fresh guest: the mock capture shows
+  `max_completion_tokens: 200000` and the live prompt answers over the
+  real router.

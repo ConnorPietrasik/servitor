@@ -15,7 +15,7 @@
 PY := .venv/bin/python
 PY_BOOT := python3
 
-.PHONY: venv check test test-stage2 test-api test-all sandbox-smoke vm-smoke guest sync update doctor deploy
+.PHONY: venv check test test-stage2 test-api test-all test-standalone test-guest sandbox-smoke vm-smoke guest finish-guest sync update doctor deploy
 
 venv:
 	$(PY_BOOT) -m venv .venv
@@ -64,9 +64,22 @@ sandbox-smoke: venv
 vm-smoke: venv
 	$(PY) -m pytest test/vm_smoke -v
 
-## stage 5: guest qcow2 build (host-side)
+## stage 5: guest qcow2 build (host-side, root; unshare -m keeps the
+## build's mount churn in a private mount namespace — see build.sh header)
 guest:
-	deploy/guest/build.sh
+	unshare -m deploy/guest/build.sh --env $(abspath .env) --deploy-key $(if $(DEPLOY_KEY),$(DEPLOY_KEY),$(HOME)/.srv/deploy_key.pub)
+
+## stage 5: finish the build interrupted on 2026-11-16 (one-shot recovery)
+finish-guest:
+	deploy/guest/finish-build.sh
+
+## stage 5: standalone/loopback mode behind the local reverse proxy (no root)
+test-standalone: venv
+	$(PY) -m pytest test/standalone -v
+
+## stage 5: guest test suite (live gates + update drills, root)
+test-guest: venv
+	$(PY) -m pytest test/guest -v
 
 ## stage 5: host-side one-way sync (config/lib -> guest, key slice, doctor)
 sync:
