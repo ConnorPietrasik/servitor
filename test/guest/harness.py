@@ -1,4 +1,4 @@
-"""Guest VM harness (stage 5) — boots the built image under QEMU on the
+"""Guest VM harness — boots the built image under QEMU on the
 laptop bridge ``servitor-edge`` (10.42.0.0/24), waits for ssh + healthz,
 and exposes the gate actions: doctor, sync, update drills, prompt.
 

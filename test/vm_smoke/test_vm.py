@@ -1,4 +1,4 @@
-"""Vm-smoke: the root-only half of the stage-1 gate (PLAN §8).
+"""Vm-smoke: the root-only isolation half.
 
 Runs as root on the dev laptop (loud-skip in CI — never silently green):
 
@@ -11,7 +11,7 @@ Runs as root on the dev laptop (loud-skip in CI — never silently green):
 - the REAL sweep-by-owner end to end (find / -user slotN on the live
   filesystem).
 - the FULL release() path: one call — drain, unmount, sweep, free —
-  leaves zero residue (the single cleanup path, PLAN §4/§5).
+  leaves zero residue (the single cleanup path).
 - sweep failure ⇒ QUARANTINE (the slot is not freed while the sweep
   cannot verify clean; retryable after the blocker is cleared).
 

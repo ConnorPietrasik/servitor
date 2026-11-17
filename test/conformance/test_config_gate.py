@@ -1,4 +1,4 @@
-"""Conformance: config/credential gate (PLAN §8 stage-1; runs offline).
+"""Conformance: config/credential gate (runs offline).
 
 (1) The key travelled env → models.json (`$OMNISSIAH_API_KEY`) → request:
     the mock receives `Authorization: Bearer <env value>`, and nothing
@@ -6,13 +6,13 @@
 (2) The mock-recorded leading system message contains the SYSTEM.md
     marker ([servitor-config v1]) — the synced config reached the model.
 (3) Sentinel AGENTS.md planted in the workdir, the inbox, and one ancestor
-    level up is ABSENT from that system message (--no-context-files,
-    PLAN §4; content-addressed upload naming does not stop an agent that
+    level up is ABSENT from that system message (--no-context-files;
+    content-addressed upload naming does not stop an agent that
     copies an upload into its workdir — the launch flag is the control).
 (4) NEGATIVE gate: a read-only PI_CODING_AGENT_DIR layout must FAIL (
     startup crash or prompt success:false) and NO request may reach the
     router — so nobody "simplifies" the layout back into a broken one
-    that still passes get_state (report.md N42).
+    that still passes get_state.
 """
 from __future__ import annotations
 
@@ -81,7 +81,7 @@ async def test_system_message_carries_the_config_marker(harness):
 
 
 async def test_planted_agents_md_never_reaches_the_model(harness, tmp_path):
-    """The sentinel test (stage-1 gate): AGENTS.md planted in the workdir,
+    """The sentinel test: AGENTS.md planted in the workdir,
     the inbox, and one ancestor level up — all absent from the system
     message."""
     live = await harness.start_session()
@@ -110,7 +110,7 @@ async def test_negative_gate_read_only_agent_dir_fails_closed(harness):
 
     The ro is applied AT MOUNT TIME (overlayfs refuses a later
     `remount,ro`): this reproduces the simplified/broken layout the gate
-    exists to catch (report.md N42) — a layout where get_state looks
+    exists to catch: a layout where get_state looks
     healthy but the session can never run.
     """
     live = await harness.start_session(expect_startup=False, agent_dir_ro=True)

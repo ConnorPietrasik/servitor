@@ -1,4 +1,4 @@
-"""Unit: the launch line constant (PLAN §7 — CI asserts the exact argv).
+"""Unit: the launch line constant (CI asserts the exact argv).
 
 The golden argv is the contract: any change to the launch line is a
 deliberate, reviewed change (plus the sentinel conformance tests as a

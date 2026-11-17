@@ -1,4 +1,4 @@
-"""Stage-3 gate: the Portcullis panel action endpoint — the exact
+"""Portcullis panel action endpoint — the exact
 whitelist (start|steer|prompt|abort|release), nothing else; unknown
 actions are 400; missing sessions are 404; per-session authz."""
 from __future__ import annotations

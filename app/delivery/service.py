@@ -1,4 +1,4 @@
-"""Delivery service — the app-level wiring over the store (PLAN §3.4).
+"""Delivery service — the app-level wiring over the store.
 
 One Delivery per app instance (state-volume root). Uploads:
 

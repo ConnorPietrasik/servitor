@@ -1,7 +1,7 @@
-"""Conformance: the failure modes the system must fail CLOSED on (PLAN §4,
-T25; stage-1 gate).
+"""Conformance: the failure modes the system must fail CLOSED on (the
+no-API-key no-event repro below).
 
-- **T25 no-event failure / no-API-key repro (permanent regression):** an
+- **no-event failure / no-API-key repro (permanent regression):** an
   unresolvable credential must NOT leave a healthy-looking dead session.
   Either the spawn path fails closed (model.id == "unknown") or the prompt
   returns success:false with ZERO events and the idling process. The
@@ -60,7 +60,7 @@ async def test_t25_unset_key_is_terminal_not_a_hang(harness):
 
 
 async def test_no_api_key_repro_regression(harness):
-    """The named regression (stage-1 gate): the T25 repro, re-run as a
+    """The named regression: the no-API-key repro, re-run as a
     distinct test so it can never be deleted with its sibling."""
     live = await harness.start_session(expect_startup=False, key="")
     driver = live.driver

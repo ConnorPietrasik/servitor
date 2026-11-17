@@ -1,5 +1,4 @@
-"""Stage 5 (D8): the update-waiting mechanism, tested over the stage-2
-stdio app.
+"""The update-waiting mechanism, tested over the stdio app.
 
 - a run is active  -> the tick defers: the flag SURVIVES, the running
   sessions get ``update_waiting`` set (visible in the panel), the tick

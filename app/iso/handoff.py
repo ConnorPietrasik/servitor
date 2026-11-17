@@ -1,4 +1,4 @@
-"""Chown-to-slot handoff (PLAN §5, uploads).
+"""Chown-to-slot handoff (uploads).
 
 Uploads are received by the privileged app and written into
 ``inbox/<s>/`` then **chowned to the session's slot uid before the agent
@@ -7,8 +7,8 @@ the agent must own (the outbox dir at mount time, save-script
 provenance is the exception — that one STAYS root-owned in lib/, which is
 read-only to the agent anyway).
 
-Content-addressed naming and MIME-by-magic are the upload pipeline's job
-(stage 3); this module owns the ownership transfer.
+Content-addressed naming and MIME-by-magic are the upload pipeline's job;
+this module owns the ownership transfer.
 """
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Stage-5 update drills (PLAN §9, D8) — the destructive half.
+"""Update drills — the destructive half.
 
 Runs LAST (test_z_ prefix) against the same session-scoped VM:
   1. no-op update (nothing changed -> nothing touched, no restart)
@@ -52,7 +52,7 @@ def test_update_noop_touches_nothing(guest: GuestVM):
 
 
 def test_update_waiting_drill(guest: GuestVM):
-    """THE D8 drill: a long run is active; a sync with a changed config
+    """THE update-waiting drill: a long run is active; a sync with a changed config
     must stage non-disruptively, set the flag, and EXIT 0 without
     touching the run. The app's tick then applies restart+doctor at the
     first idle moment. Nothing is ever blocked or interrupted."""
@@ -111,7 +111,7 @@ def test_update_waiting_drill(guest: GuestVM):
             f"sync blocked {sync_elapsed:.0f}s — it must not wait on a run")
         # the run was NOT interrupted: still busy immediately after the sync
         busy = guest.api("GET", f"/api/v1/sessions/{sid}/probe")[1].get("busy")
-        assert busy, "the active run must survive the sync (D8: never interrupted)"
+        assert busy, "the active run must survive the sync (never interrupted)"
 
         # the flag is set and survives
         flag = guest.run("test -f /var/lib/servitor/update-pending.json && echo yes || echo no").strip()

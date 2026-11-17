@@ -1,10 +1,10 @@
-"""Top-level test fixtures (PLAN §8).
+"""Top-level test fixtures.
 
-Laptop dev-loop layout (root required for the stack suites, DECISIONS D2):
+Laptop dev-loop layout (root required for the stack suites):
 
 - ``/srv/servitor-test/`` — shared, root-owned 0755 scratch ROOT: the
   resolved pi/extension installs (session-scoped, reused) and per-test run
-  dirs. On the root filesystem (a real fs, never overlay — T29 is asserted
+  dirs. On the root filesystem (a real fs, never overlay — asserted
   on the state volume itself).
 - ``/home/<slot>/servitor-test/<run>/state`` — the per-test STATE ROOT,
   under the slot's own home (ext4 on the laptop): the slot uid trivially
@@ -41,7 +41,7 @@ def is_root() -> bool:
 
 def require_root_or_skip(what: str) -> None:
     """LOUD skip: the suite names what it could not run. Never silently
-    green where root was required (PLAN §8)."""
+    green where root was required."""
     if not is_root():
         pytest.skip(f"LOUD-SKIP: {what} requires root (run: sudo make <target>)")
 
@@ -73,7 +73,7 @@ def run_root(test_root) -> Path:
 def pi_install(test_root):
     """The resolved pi + pi-web-access in the shared install prefix
     (session-scoped: npm installs are slow; the resolved versions come
-    from the env selections, PLAN §8 stage 1, D6)."""
+    from the env selections)."""
     require_root_or_skip("pi install prefix")
     from conformance.install import resolve_pi
 

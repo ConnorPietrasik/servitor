@@ -1,4 +1,4 @@
-"""Standalone/loopback mode behind a local reverse proxy (PLAN stage 5).
+"""Standalone/loopback mode behind a local reverse proxy.
 
 The app binds loopback only (the contract: bind comes from env; in
 standalone that's 127.0.0.1); the proxy accepts on the LAN interface and

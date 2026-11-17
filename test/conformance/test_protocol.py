@@ -1,7 +1,6 @@
-"""Conformance: framing + disposition matrix + settle-wait (PLAN §8 stage-1
-gate; §4 verified facts).
+"""Conformance: framing + disposition matrix + settle-wait.
 
-Framing (N18): U+2028/2029 legal inside JSON strings are NOT record
+Framing: U+2028/2029 legal inside JSON strings are NOT record
 boundaries — live round-trip through the real pi subprocess. The unit
 suite (test/unit/test_framer.py) covers the framer directly; this proves
 the full pipeline keeps them intact end to end.

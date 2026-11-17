@@ -1,10 +1,10 @@
-"""The launch line and env allowlist — ONE constant surface (PLAN §7).
+"""The launch line and env allowlist — ONE constant surface.
 
 CI asserts the exact argv by this builder's golden output, plus the
 conformance sentinel tests as a standing regression (an argv check alone
 would not catch a future pi default change).
 
-Hard rules encoded here (PLAN §3/§4/§7):
+Hard rules encoded here:
 - ``--no-approve`` always; ``--approve`` NEVER appears.
 - ``--no-context-files`` always (injection's favorite filenames).
 - exactly one session-dir mechanism: the ``--session-dir`` flag, identically
@@ -14,10 +14,10 @@ Hard rules encoded here (PLAN §3/§4/§7):
 - NEVER ``--api-key`` (the key rides env only — invariant 5).
 - NEVER ``PI_OFFLINE`` (disables only catalog refresh; buys nothing for a
   static models.json deploy).
-- NEVER ``--no-extensions`` (D3: baseline extension loading is deliberate;
+- NEVER ``--no-extensions`` (baseline extension loading is deliberate;
   the compensating control is the new-extension warning).
 - the search extension loads by explicit ``-e`` path — the one surface the
-  agent cannot rewrite (PLAN §4).
+  agent cannot rewrite.
 - env is an explicit allowlist, never the app's inherited environment.
 """
 from __future__ import annotations

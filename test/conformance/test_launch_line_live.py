@@ -1,4 +1,4 @@
-"""Conformance: the launch line AS EXECUTED (PLAN §7; stage-1 gate).
+"""Conformance: the launch line AS EXECUTED.
 
 The unit suite asserts the golden argv from the builder; this asserts
 what the kernel actually ran (and what environment the child actually

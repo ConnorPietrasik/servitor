@@ -1,4 +1,4 @@
-"""Conformance: steer / follow_up / abort during a live run (PLAN §4/§8).
+"""Conformance: steer / follow_up / abort during a live run.
 
 All three are RPC commands (`steer`, `follow_up`, `abort`) — no custom
 protocol. Delivery is asserted ROUTER-SIDE: the mock records what the
@@ -35,7 +35,7 @@ async def test_follow_up_delivered_after_run(harness):
     (queue_update inside the run; ONE agent_settled for prompt+follow-up,
     verified in the event stream). From a fully idle session a queued
     follow-up simply waits — it never starts a run (documented in
-    test_controls' sibling; the stage-3 delivery layer uses it as the
+    test_controls' sibling; the delivery layer uses it as the
     queued-continuation mechanism).
     """
     live = await harness.start_session()
@@ -92,9 +92,9 @@ async def test_prompt_while_streaming_requires_behavior(harness):
 
 
 async def test_abort_is_available_for_a_waiting_dialog(harness):
-    """D4: a dialog pauses the run indefinitely; abort remains available
+    """A dialog pauses the run indefinitely; abort remains available
     for a dialog the user never wants to answer. (The full dialog
-    wait/re-offer cycle is the stage-3 delivery gate; here we prove the
+    wait/re-offer cycle is the delivery gate; here we prove the
     RPC path: a parked dialog + abort settles the session.)"""
     live = await harness.start_session()
     # no dialog will actually appear from the mock (the extension is not

@@ -1,9 +1,9 @@
-# Portcullis route for servitor (DECISIONS A6).
+# Portcullis route for servitor.
 #
 # Operator merges this file into portcullis's compose/traefik/dynamic/ and
 # runs portcullis `make update` (gated by `make doctor` with snapshot +
 # auto-rollback). portcullis prunes deployed traefik files absent from its
-# repo, so the route must live there, not hand-placed (A2).
+# repo, so the route must live there, not hand-placed.
 #
 # Before merging, substitute from the guest's .env:
 #   VM_INGRESS_IP  -> the VM ingress address (assigned at provisioning)
@@ -16,7 +16,7 @@
 #
 # The *.pietrasik.top two_factor wildcard already makes this private by
 # default (any authenticated user). Admins-only later = one Authelia rule
-# above the wildcard (PLAN §13).
+# above the wildcard.
 http:
   routers:
     servitor:
@@ -32,8 +32,8 @@ http:
         servers:
           - url: "http://VM_INGRESS_IP:SERVITOR_PORT"
         passHostHeader: true
-        # SSE contract (stage-6 gate: a stream cut by proxy read-timeout is
-        # the dropped-connection bug we are forbidden to reproduce):
+        # SSE contract: a stream cut by proxy read-timeout is the
+        # dropped-connection bug we are forbidden to reproduce.
         #  - no response buffering, frequent flushes (heartbeats ~15 s;
         #    deltas are disposable, but the stream must never be cut)
         #  - no load-balancer read timeout: a 20-minute bash call emits no

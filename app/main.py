@@ -1,7 +1,7 @@
-"""The servitor app entry (stage 3): the HTTP/SSE API on the one
-published port (uvicorn), with the stage-2 JSON-over-stdio protocol
-kept behind ``--stdio`` (the stage-2 crash drill and the lifecycle
-regression tests use it).
+"""The servitor app entry: the HTTP/SSE API on the one published
+port (uvicorn), with the JSON-over-stdio protocol kept behind
+``--stdio`` (the crash drill and the lifecycle regression tests use
+it).
 
 The front door is thin: the Lifecycle (registry truth, respawn-on-
 pickup, probe rules, ladder, no caps) is the same object in both modes.
@@ -90,8 +90,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--gc-interval-sec", type=float, default=300.0)
     p.add_argument("--baseline-ext", action="append", default=[])
     p.add_argument("--registry", default=None, help="registry db path (default <state>/registry.db)")
-    p.add_argument("--stdio", action="store_true", help="stage-2 JSON-over-stdio front door")
-    # the D8 update mechanism (host sync/update write the flag; the tick applies)
+    p.add_argument("--stdio", action="store_true", help="JSON-over-stdio front door")
+    # the update mechanism (host sync/update write the flag; the tick applies)
     p.add_argument("--update-pending-path", default=None,
                    help="default <state>/update-pending.json; empty string disables")
     p.add_argument("--restart-cmd", default="systemctl:restart:servitor",
@@ -263,11 +263,11 @@ class App:
         sys.stdout.flush()
 
     async def run_http(self) -> None:
-        """The stage-3 front door: uvicorn on SERVITOR_BIND:SERVITOR_PORT
+        """Front door: uvicorn on SERVITOR_BIND:SERVITOR_PORT
         (env-only, no defaults). The ASGI app is the same Lifecycle.
 
-        The fastapi/uvicorn imports are lazy: the stdio front door (the
-        stage-2 regression gate) runs without them."""
+        The fastapi/uvicorn imports are lazy: the stdio front door
+        runs without them."""
         import uvicorn
 
         from app.api.app import build_app

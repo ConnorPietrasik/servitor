@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
-# Servitor doctor — host wrapper (PLAN §9).
+# Servitor doctor — host wrapper.
 #
 # Runs the guest's read-only certification (python -m app.doctor, the
 # synced tree's own venv — the doctor is part of the deployed app), then
-# the two LIVE firewall probes that only the host can make:
-#   open  — the host (inside SERVITOR_EDGE_SUBNET) reaches SERVITOR_PORT
-#   closed — the guest itself (its own IP, NOT in the edge subnet) does not
+# the two firewall probes that only the host can make:
+#   open    — the host (inside SERVITOR_EDGE_SUBNET) reaches SERVITOR_PORT
+#             (live TCP connect)
+#   ruleset — the guest's nftables is default-deny and admits SERVITOR_PORT
+#             from SERVITOR_EDGE_SUBNET only (the guest's own IP IS in the
+#             edge subnet by design — a live negative probe from it is
+#             impossible, so the ruleset content is asserted instead)
 # Doctor must be green before the service starts serving and after every
 # sync; while the update-waiting flag is set, the guest doctor certifies
 # the running state and reports the staged target as a warning.
@@ -16,7 +20,10 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$REPO/.env"
 SSH_TARGET=""
-DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME}/.srv/deploy_key}"
+# ${HOME:-/root}: panel-do's scrubbed env has no HOME (and set -u would die
+# on a bare $HOME here, before --deploy-key is parsed); /root/.srv is the
+# canonical root-side home, and the flag overrides anyway.
+DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME:-/root}/.srv/deploy_key}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

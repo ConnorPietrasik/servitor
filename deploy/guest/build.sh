@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Servitor guest image build (PLAN §6).
+# Servitor guest image build.
 #
 # The image is the versioned artifact:
 #   images/servitor-pi<pi-version>-<YYYYMMDD>.qcow2  (+ images/manifest.json)
 # The previous image is retained (manifest entry "retained_previous") for
-# the update rollback path (§9). Not bumping is a supported steady state —
+# the update rollback path. Not bumping is a supported steady state —
 # the guest runs the last-verified version indefinitely.
 #
 # Determinism: pinned base (pins.json: url + sha256); the package set
@@ -67,7 +67,10 @@ fi
 : "${SERVITOR_EDGE_SUBNET:?SERVITOR_EDGE_SUBNET missing in $ENV_FILE}"
 : "${SERVITOR_OPS_SUBNET:?SERVITOR_OPS_SUBNET missing in $ENV_FILE}"
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
-: "${SERVITOR_DNS_UPSTREAM:?SERVITOR_DNS_UPSTREAM missing in $ENV_FILE (public DNS upstreams for the guest's resolved; no DHCP on the edge bridge)}"
+# NOTE: no apostrophes in the :? message below — a single quote inside the
+# word of ${var:?...} (even within double quotes) is a bash syntax error that
+# makes the whole script unparseable.
+: "${SERVITOR_DNS_UPSTREAM:?SERVITOR_DNS_UPSTREAM missing in $ENV_FILE (public DNS upstreams for the guest systemd-resolved; no DHCP on the edge bridge)}"
 # the guest's static edge config, derived from the .env (no literals here)
 GUEST_ADDR="${SERVITOR_VM_IP}/${SERVITOR_EDGE_SUBNET##*/}"
 # gateway = the subnet's .1 (the host bridge IP — harness invariant). NOT

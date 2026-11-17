@@ -2,7 +2,7 @@
 
 One instance per test: a scratch state tree (on ext4, never overlay), a
 staged config version, a toolkit dir, one slot, the mock router, and
-session start/respawn/release. Mirrors what the stage-2 app does, minus
+session start/respawn/release. Mirrors what the app does, minus
 the registry (the harness plays it).
 
 Root is required (mounts, setuid, sweep). Tests that do not need root
@@ -111,7 +111,7 @@ class Harness:
         probe (the recorded path, verbatim); else first spawn
         (``--session-id``). The session dir is IDENTICAL across
         spawn/respawn/probe: ``sessions/<s>/`` — with an explicit session
-        dir, transcripts land flat inside it (PLAN §4)."""
+        dir, transcripts land flat inside it."""
         assert self.state is not None
         sp = SessionMountPaths.for_session(session_id, str(self.state.scratch))
         return build_launch(
@@ -134,7 +134,7 @@ class Harness:
         session_id: str | None = None,
         *,
         respawn_file: str | None = None,
-        key: str | None = None,  # None = the harness key; "" = unset (T25)
+        key: str | None = None,  # None = the harness key; "" = unset (no key)
         extra_exts: tuple[str, ...] = (),
         expect_startup: bool = True,
         agent_dir_ro: bool = False,
@@ -164,7 +164,7 @@ class Harness:
             self.mount_ops_by_session[session_id] = ops
         launch = self.launch_args(session_id=session_id, session_file=respawn_file)
         if key == "":
-            # T25: the credential is UNSET — removed from the env entirely
+            # the credential is UNSET — removed from the env entirely
             # (never an empty string: an empty Bearer is a different, also
             # broken, case)
             launch = type(launch)(
@@ -313,7 +313,7 @@ class Harness:
 
 
 class _FakeHooks:
-    """Stage-1 stand-in for the registry seam (stage 2: the real one)."""
+    """Test stand-in for the registry seam."""
 
     def __init__(self, store: dict, session_id: str):
         self._store = store

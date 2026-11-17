@@ -1,4 +1,4 @@
-"""Stage-3 (API/delivery) test fixtures.
+"""API/delivery test fixtures.
 
 The app runs as a real subprocess (``python -m app.main`` in HTTP mode —
 uvicorn on an ephemeral loopback port), exactly as it will run under
@@ -61,7 +61,7 @@ def sse_cap() -> int | None:
 @pytest.fixture()
 def api_env(sse_cap, tmp_path_factory):
     """One full app (HTTP) + mock router + isolated state, torn down."""
-    require_root_or_skip("stage-3 API/delivery tests")
+    require_root_or_skip("API/delivery tests")
     tag = f"api-{uuid.uuid4().hex[:6]}"
     run_root = Path(f"/srv/servitor-test/run-{tag}")
     run_root.mkdir(parents=True, exist_ok=True)

@@ -1,4 +1,4 @@
-"""Unit: LF-only framer (PLAN §4, N18).
+"""Unit: LF-only framer.
 
 The framing traps, exactly:
 - U+2028/U+2029 are legal inside JSON strings and are NOT record

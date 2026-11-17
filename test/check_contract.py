@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Stage-0 gate: `make check` — contract lint (PLAN §8).
+"""Contract lint: `make check`.
 
 Asserts the interface contract before any runtime code exists:
 
 1. **Env contract** — every env var the app reads is named in
-   `.env.example` (and vice versa: ``app.env.ENV_NAMES`` equals the
-   .env.example name set). App code reads env only through
+   `.env.example`; the file is the complete record of the host `.env`, so
+   its name set equals ``app.env.ENV_NAMES`` (app-contracted) plus
+   ``HOST_DEPLOY_ENV_NAMES`` (host deploy scripts + image build — never the
+   app; asserted disjoint). App code reads env only through
    ``app/env.py`` (AST scan: no other ``os.environ``/``os.getenv`` reads).
 2. **Nothing hardcodes an address/port/path** — no IPv4 literals anywhere
    in ``app/`` or ``deploy/`` code; no loopback/any-address literal in
@@ -16,7 +18,7 @@ Asserts the interface contract before any runtime code exists:
    yml load as YAML with the expected shape (one router, the servitor
    hostname, the auth-chain middleware, SSE flush/read-timeout settings).
 4. **Agent-config sanity** — models.json: literal baseUrl (``$VAR`` is NOT
-   interpolated, PLAN §4), ``apiKey: "$OMNISSIAH_API_KEY"`` (env-only key),
+   interpolated), ``apiKey: "$OMNISSIAH_API_KEY"`` (env-only key),
    image-capable model declared; no ``auth.json``/``models-store.json``
    (a stale stored credential would silently beat the env var); no
    AGENTS.md/CLAUDE.md (context-file names); SYSTEM.md carries the
@@ -131,7 +133,7 @@ IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
 def main() -> int:
     import yaml  # PyYAML — in the venv (`make venv`)
 
-    print("servitor contract check (stage-0 gate)")
+    print("servitor contract check")
 
     # --- 1. env contract -------------------------------------------------
     print("\n[1] env contract")
@@ -139,13 +141,20 @@ def main() -> int:
     dupes = {n for n in example_names if example_names.count(n) > 1}
     check(not dupes, "no duplicate names in .env.example", str(sorted(dupes)))
 
-    from app.env import ENV_NAMES  # noqa: E402
+    from app.env import ENV_NAMES, HOST_DEPLOY_ENV_NAMES  # noqa: E402
 
+    deploy_only = set(HOST_DEPLOY_ENV_NAMES)
     check(
-        set(ENV_NAMES) == set(example_names),
-        "app.env.ENV_NAMES == .env.example names",
-        f"only-in-code={sorted(set(ENV_NAMES) - set(example_names))} "
-        f"only-in-example={sorted(set(example_names) - set(ENV_NAMES))}",
+        set(ENV_NAMES) & deploy_only == set(),
+        "app.env.HOST_DEPLOY_ENV_NAMES is disjoint from ENV_NAMES",
+        str(sorted(set(ENV_NAMES) & deploy_only)),
+    )
+    contracted = set(ENV_NAMES) | deploy_only
+    check(
+        contracted == set(example_names),
+        "app.env.ENV_NAMES + HOST_DEPLOY_ENV_NAMES == .env.example names",
+        f"only-in-code={sorted(contracted - set(example_names))} "
+        f"only-in-example={sorted(set(example_names) - contracted)}",
     )
 
     read_names = env_reads_in_app()
@@ -302,7 +311,7 @@ def main() -> int:
     settings = json.loads((ac / "settings.json").read_text())
     check(
         settings.get("defaultTools") == ["read", "bash", "edit", "write"],
-        "settings.json: default tools only (codemode off, D5)",
+        "settings.json: default tools only (codemode off)",
         str(settings.get("defaultTools")),
     )
     check(
@@ -317,7 +326,7 @@ def main() -> int:
         for f in FAILURES:
             print(f"  - {f}")
         return 1
-    print("make check: GREEN (stage-0 gate)")
+    print("make check: GREEN")
     return 0
 
 

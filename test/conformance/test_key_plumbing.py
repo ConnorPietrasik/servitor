@@ -1,4 +1,4 @@
-"""Conformance: pi-web-access key plumbing (PLAN §4 — verified against the
+"""Conformance: pi-web-access key plumbing (verified against the
 pinned 0.47.0 dist, recorded here as a standing conformance fact).
 
 The 0.47.0 dist: config lookup is agent-dir-based
@@ -13,7 +13,7 @@ literal). So:
 - nothing credential-shaped enters the synced config tree or a session
   file.
 
-(The LIVE keyed search — a real Exa round trip — is the stage-5 doctor
+(The LIVE keyed search — a real Exa round trip — is the doctor
 gate, which has the real key; here we assert the plumbing statically.)
 """
 from __future__ import annotations

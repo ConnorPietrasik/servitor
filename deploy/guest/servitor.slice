@@ -1,4 +1,4 @@
-# servitor.slice — resource slice for servitor.service (PLAN §2/§6).
+# servitor.slice — resource slice for servitor.service.
 #
 # vCPU: as many as physical cores (24), NO quota — a long run should own the
 # idle machine. CPUWeight kept low so other host processes are not starved.

@@ -1,4 +1,4 @@
-"""Per-session SSE event hub (PLAN §3.3).
+"""Per-session SSE event hub.
 
 One hub per session. Every session event — pi events (agent_*,
 message_*, tool_*, queue_update) AND app events (spawned, respawned,
@@ -6,7 +6,7 @@ idle_killed, interrupted, new_extension, waiting, released) — is
 published here, gets a monotonic integer id, and is kept in a bounded
 ring buffer (the 50 MB per-session cap) for ``Last-Event-ID`` resume.
 
-Backpressure (PLAN §3.3): when the unconsumed bytes (between the
+Backpressure: when the unconsumed bytes (between the
 slowest live consumer and the newest event) exceed the cap, the hub
 pauses the pi process's event stream (the driver stops draining the
 child's stdout — the pipe fills and pi blocks, i.e. the RUN pauses).
@@ -16,7 +16,7 @@ transcript on disk is never touched (it is pi's own file and is
 complete regardless of delivery speed).
 
 The cap is a memory policy knob (``SERVITOR_SSE_RING_BYTES``, default
-50 MB — DECISIONS.md): it bounds the delivery buffer, it is never a
+50 MB): it bounds the delivery buffer, it is never a
 capability cap. A single event larger than the cap is allowed (the
 ring holds at most the cap plus one event for a live consumer); the
 run pauses, it is never cut off.
@@ -32,7 +32,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-# the per-session delivery cap (PLAN §3.3) — a memory bound, not a
+# the per-session delivery cap — a memory bound, not a
 # capability cap: the run pauses, it is never cut off or truncated.
 # The cap is per-hub configurable (SseHub(cap_bytes=...), sourced from
 # SERVITOR_SSE_RING_BYTES); this constant is the production default.

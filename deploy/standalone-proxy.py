@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Standalone/loopback dev: a tiny local reverse proxy (PLAN stage 5).
+"""Standalone/loopback dev: a tiny local reverse proxy.
 
 The app runs loopback-only on the laptop (SERVITOR_BIND set to the
 loopback address in the local .env; the one published port). To reach it from another device on

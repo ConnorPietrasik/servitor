@@ -2,7 +2,7 @@
   "arch_bootstrap": {
     "url": "https://archive.archlinux.org/iso/2026.11.01/archlinux-bootstrap-2026.11.01-x86_64.tar.zst",
     "sha256": "655bc99849b80859173fa39338a6c910185e952173f6a1a61526cfa34ab8339c",
-    "note": "Arch bootstrap userland 2026.11.01 (PLAN \u00a76: the pinned base). Kernel/node/python and the full package set come from the Arch repos at build time; exact installed versions are recorded in images/manifest.json."
+    "note": "Arch bootstrap userland 2026.11.01 the pinned base. Kernel/node/python and the full package set come from the Arch repos at build time; exact installed versions are recorded in images/manifest.json."
   },
   "packages": [
     "ca-certificates",

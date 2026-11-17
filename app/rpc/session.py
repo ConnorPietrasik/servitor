@@ -1,4 +1,4 @@
-"""PiSession — one `pi --mode rpc` subprocess per conversation (PLAN §4/§5/§7).
+"""PiSession — one `pi --mode rpc` subprocess per conversation.
 
 Protocol rules encoded here (all verified against pi 1.5.2, docs/rpc.md,
 docs/rpc-commands.md, docs/json.md):
@@ -23,7 +23,7 @@ docs/rpc-commands.md, docs/json.md):
   the first rung of the ladder. A second signal exits at once — the
   SIGKILL rung is what guarantees exit.
 - Extension dialogs (select/confirm/input/editor) block the child until
-  answered: the driver parks them for the human (indefinitely — D4);
+  answered: the driver parks them for the human (indefinitely);
   fire-and-forget records (notify/setStatus/setWidget/setTitle/
   set_editor_text) are forwarded as events and NEVER answered (a stray
   reply desynchronizes the sub-protocol).
@@ -55,7 +55,7 @@ class PromptRejected(RuntimeError):
     """A prompt/steer/follow_up command returned success:false — terminal.
 
     The run ends with this reason; the process keeps idling (healthy-
-    looking); no retry (PLAN §4).
+    looking); no retry.
     """
 
     def __init__(self, command: str, reason: str):
@@ -79,7 +79,7 @@ class SpawnFailure(RuntimeError):
 class ModelUnavailable(RuntimeError):
     """get_state.model.id == "unknown" — no usable model (models.json
     absent or credential unresolvable). Config error: fail closed before
-    any prompt (PLAN §4)."""
+    any prompt."""
 
 
 @dataclass(frozen=True)
@@ -94,7 +94,7 @@ class PiSession:
     """One pi subprocess: spawn, commands, events, dialogs, ladder.
 
     Event flow: every session event is delivered to ``on_event`` (the
-    delivery layer's pump in stage 3; a listender in tests). Dialogs are
+    delivery layer's pump; a listender in tests). Dialogs are
     delivered to ``on_dialog`` and answered via :meth:`answer_dialog`.
     """
 
@@ -138,7 +138,7 @@ class PiSession:
         self._tasks: list[asyncio.Task] = []
         self._parse_errors: list[str] = []
         self._commands_sent: int = 0
-        # backpressure gate (PLAN §3.3): cleared = pause the event stream.
+        # backpressure gate: cleared = pause the event stream.
         # The reader stops draining the child's stdout, the pipe fills, and
         # pi blocks on write — the RUN pauses (control responses are never
         # gated, so the control plane stays responsive). Set at all times
@@ -176,7 +176,7 @@ class PiSession:
         """True while a run is in flight: set when a prompt/steer/
         follow-up is ACCEPTED (disposition != "handled"), cleared at
         ``agent_settled`` (abort settles too). The update tick uses
-        this: a restart must never land mid-run (D8)."""
+        this: a restart must never land mid-run."""
         return self._run_active
 
     def pause_events(self) -> None:
@@ -236,7 +236,7 @@ class PiSession:
 
         A spawn that cannot even exec (stored cwd gone, bad env, exec 127)
         surfaces as SpawnFailure — the fatal spawn error the caller must
-        NOT retry (T14: a respawn into a missing cwd is a dead session,
+        NOT retry (a respawn into a missing cwd is a dead session,
         never a retry loop)."""
         try:
             proc = await spawn_setuid(
@@ -274,8 +274,8 @@ class PiSession:
             for record in framer.split_records(chunk):
                 rtype = record.get("type")
                 if rtype != "response" and rtype != "extension_ui_request":
-                    # session event: gated by the backpressure valve
-                    # (PLAN §3.3). While paused this await blocks, the pipe
+                    # session event: gated by the backpressure valve:
+                    # while paused this await blocks, the pipe
                     # stops draining, and pi's in-flight run pauses.
                     await self._events_allowed.wait()
                 self._on_record(record)
@@ -388,8 +388,8 @@ class PiSession:
         method = str(record.get("method", ""))
         rid = str(record.get("id", ""))
         if method in DIALOG_METHODS:
-            # blocks the child until answered — park for the human (D4:
-            # wait indefinitely; never auto-allow, never auto-decline)
+            # blocks the child until answered — park for the human
+            # (wait indefinitely; never auto-allow, never auto-decline)
             self._pending_dialogs[rid] = record
             if self.on_dialog:
                 try:
@@ -456,7 +456,7 @@ class PiSession:
         return res.data
 
     async def assert_model_usable(self) -> dict[str, Any]:
-        """The spawn path's fail-closed model check (PLAN §4).
+        """The spawn path's fail-closed model check.
 
         ``model.id == "unknown"`` is the single no-usable-model signal.
         Returns the model object.
@@ -657,7 +657,7 @@ class PiSession:
     async def shutdown(
         self, *, eof_grace: float = 10.0, term_grace: float = 10.0
     ) -> int | None:
-        """The kill ladder (PLAN §5). Returns the exit code.
+        """The kill ladder. Returns the exit code.
 
         Rung 1: close stdin — orderly shutdown; pi waits for pending work.
         Rung 2: SIGTERM (a single signal does not interrupt an in-progress
@@ -711,7 +711,7 @@ class PiSession:
         self._tasks.clear()
 
     def classify_exit(self) -> str:
-        """Exit classification for the meters (PLAN §7): a child
+        """Exit classification for the meters: a child
         OOM-killed by MemoryMax shows as 'killed by OOM', not hung or
         successful. Signal 9 = killed; 0 = clean; else crash."""
         if self._exit_code is None:

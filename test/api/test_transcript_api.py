@@ -1,4 +1,4 @@
-"""Stage-4 gates: transcript fetch (reattach on load) + fork/branch.
+"""Transcript fetch (reattach on load) + fork/branch gates.
 
 - /messages is the reattach base: authoritative active-branch messages,
   fetch (never replay). Works with a LIVE process (pi RPC get_entries)

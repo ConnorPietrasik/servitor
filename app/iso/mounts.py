@@ -1,4 +1,4 @@
-"""Per-session mounts (PLAN §5).
+"""Per-session mounts.
 
 Mounted at allocate, before **any** spawn/respawn; live for the SESSION
 lifetime — pi runs a session in its recorded cwd, so idle-kill never
@@ -16,7 +16,7 @@ The four real mounts:
 3. **inbox bind** — state/inbox/<s> into the merged workdir as ./inbox.
 4. **models.json single-file RO bind** — over the merged agent dir (the
    agent could otherwise shadow it in the upper and steer the NEXT run's
-   endpoint; the bearer key rides along — T34 verified EROFS on write,
+   endpoint; the bearer key rides along — verified EROFS on write,
    EBUSY on unlink, even as root).
 
 Read-only to the agent = root-owned, slot-uid-unwritable.
@@ -120,10 +120,10 @@ def mount_session(
     toolkit_dir: str = TOOLKIT_DIR,
     agent_dir_ro: bool = False,
 ) -> list[MountOp]:
-    """The full ordered mount sequence (PLAN §5). Returns the ops (for
+    """The full ordered mount sequence. Returns the ops (for
     reverse-order teardown at release).
 
-    ``scratch/<s>/`` is SLOt-uid-owned (PLAN §5 areas table): the app
+    ``scratch/<s>/`` is slot-uid-owned: the app
     creates the dirs as root, then hands the whole per-session tree to
     the slot BEFORE any mount — a root-owned 0755 upper would be
     unwritable by the very session it exists for (the agent runs as the

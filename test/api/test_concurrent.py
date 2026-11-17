@@ -1,4 +1,4 @@
-"""Stage-3 gate: concurrent sessions — events do not cross over.
+"""Concurrent-sessions gate — events do not cross over.
 
 Three sessions on three slots run at the same time. Each session's SSE
 stream contains only its own session's events (its own prompt text, its

@@ -1,4 +1,4 @@
-"""Stage-3 gates: upload/download end-to-end (PLAN §3.4).
+"""Upload/download end-to-end gates.
 
 - 30 MB binary upload through the real pipeline: stored in full,
   byte-identical (sha256), MIME by magic (not extension), no truncation.

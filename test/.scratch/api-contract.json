@@ -1,6 +1,6 @@
 {
   "api": "v1",
-  "note": "Servitor API contract (stage 3 gate: contract drift = gate red). The app's OpenAPI route set (excluding /openapi.json, /docs, /redoc) must equal this set exactly. Methods/paths/required-params only — response schemas are asserted in the e2e tests.",
+  "note": "Servitor API contract (contract drift = gate red). The app's OpenAPI route set (excluding /openapi.json, /docs, /redoc) must equal this set exactly. Methods/paths/required-params only — response schemas are asserted in the e2e tests.",
   "routes": [
     {"method": "GET",  "path": "/healthz", "params": {}},
     {"method": "GET",  "path": "/api/v1/sessions", "params": {}},

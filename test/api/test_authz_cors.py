@@ -1,4 +1,4 @@
-"""Stage-3 gates: authz, CORS, and API-key hygiene.
+"""Authz, CORS, and API-key hygiene gates.
 
 - A session can only reach its own mount: unknown/released sessions are
   404 (existence never leaked); file paths cannot escape the session

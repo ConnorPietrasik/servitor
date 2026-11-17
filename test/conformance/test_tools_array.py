@@ -1,4 +1,4 @@
-"""Conformance: the declared tool set (PLAN §7/§8; D5 — codemode off).
+"""Conformance: the declared tool set (codemode off).
 
 Gates assert ROUTER-SIDE: the captured request's `tools` array is
 authoritative (the system prompt string is a red herring — it mentions
@@ -8,7 +8,7 @@ verification).
 v1 declared set: the four pi-web-access tools present
 (`web_search`, `source_check`, `fetch_content`, `get_search_content`) +
 the four default tools (`read`, `bash`, `edit`, `write`), and NO
-`codemode` (D5). Re-enabling codemode flips this assertion deliberately.
+`codemode`. Re-enabling codemode flips this assertion deliberately.
 """
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ async def test_tools_array_is_the_declared_set(harness):
     tool_names = {t["function"]["name"] for t in reqs[0]["body"].get("tools", [])}
     assert WEB_TOOLS <= tool_names, f"missing pi-web-access tools: {WEB_TOOLS - tool_names}"
     assert DEFAULT_TOOLS <= tool_names, f"missing default tools: {DEFAULT_TOOLS - tool_names}"
-    assert "codemode" not in tool_names, "codemode must be OFF (D5)"
+    assert "codemode" not in tool_names, "codemode must be OFF"
     await harness.release(live)
 
 

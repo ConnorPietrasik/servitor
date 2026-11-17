@@ -1,4 +1,4 @@
-"""Transcript reading (stage 4: reattach on load — fetch, never replay).
+"""Transcript reading (reattach on load — fetch, never replay).
 
 The session file is an append-only tree of entries with stable ids
 (``--session-dir`` flat layout: one jsonl per session). Every entry is

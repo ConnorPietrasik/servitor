@@ -1,8 +1,8 @@
-"""The servitor HTTP/SSE API (stage 3 — PLAN §3).
+"""The servitor HTTP/SSE API.
 
 One published port (the container's loopback ingress, edge-only; the
-Portcullis panel is the only public front). This module is the stage-3
-front door over the same Lifecycle the stage-2 stdio protocol used —
+Portcullis panel is the only public front). This module is the front
+door over the same Lifecycle the stdio protocol used —
 the lifecycle semantics (registry truth, respawn-on-pickup, probe
 rules, ladder, no caps) are unchanged.
 
@@ -42,7 +42,7 @@ Rules encoded:
   ``?after=``) replays from the bounded ring; a position past the ring
   edge is a ``gap`` event (the client re-syncs via the API — never
   partial data). Backpressure: a slow consumer that lets the ring pass
-  the 50 MB cap pauses the RUN (PLAN §3.3); catch-up resumes it.
+  the 50 MB cap pauses the RUN; catch-up resumes it.
 - No caps: uploads stream to disk (no 413, no truncation); downloads
   stream the whole stored file; the event ring is a memory bound, not a
   message cap.
@@ -179,7 +179,7 @@ def _sse_frame(name: str, data: str, eid: int | None = None) -> str:
 
 
 def build_app(app_state, cfg) -> FastAPI:
-    """Build the FastAPI app over the stage-2 App core (registry +
+    """Build the FastAPI app over the App core (registry +
     lifecycle + delivery). ``cfg`` is the validated env Config."""
 
     @asynccontextmanager
@@ -578,9 +578,9 @@ def build_app(app_state, cfg) -> FastAPI:
         raise HTTPException(status_code=400, detail="unreachable")
 
     # ------------------------------------------------------------------ #
-    # static UI (stage 4: served by the app, same port, no second
+    # static UI (served by the app, same port, no second
     # service). Built to ui/dist; absent in dev checkouts — the API
-    # alone is the stage-0..3 surface and keeps working.
+    # alone is the API surface and keeps working.
     # ------------------------------------------------------------------ #
     ui_dist = Path(__file__).resolve().parents[2] / "ui" / "dist"
     if ui_dist.is_dir() and (ui_dist / "index.html").is_file():

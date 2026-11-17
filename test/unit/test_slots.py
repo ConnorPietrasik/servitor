@@ -1,4 +1,4 @@
-"""Unit: the slot pool (PLAN §5) — allocation, pinning, quarantine.
+"""Unit: the slot pool — allocation, pinning, quarantine.
 
 The invariants the rest of the system stands on:
 - one live session = one slot (running OR awaiting release);

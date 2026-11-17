@@ -1,4 +1,4 @@
-"""Setuid spawn helper (PLAN §5, §3 privilege model).
+"""Setuid spawn helper (root app, slot-uid agent).
 
 The app runs privileged (root); the agent never is. Each session's pi runs
 as a slot uid. The invariant "the agent's uid is never the app's uid" is

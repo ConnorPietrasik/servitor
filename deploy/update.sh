@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Servitor update — the single versioned path (PLAN §9).
+# Servitor update — the single versioned path.
 #
 # One command takes the guest from its current state to "matches the
 # repo + the .env version selections", verified:
@@ -14,7 +14,7 @@
 #                             image is retained for rollback)
 #                extension => reuse the gate's staging
 #                config/lib/app => the sync's artifacts
-#   4. DEPLOY    the sync's swap-based path (flag + tick; D8)
+#   4. DEPLOY    the sync's swap-based path (flag + tick)
 #   5. VERIFY    doctor. Doctor fails => AUTOMATIC ROLLBACK: swap back
 #                the retained previous artifacts, restart, re-doctor,
 #                report. The host is never left half-updated.
@@ -22,7 +22,7 @@
 # No-op run: when the resolved selections match what's deployed, NOTHING
 # is touched (no restart) and the command exits 0.
 #
-# A run active at the restart step => the D8 update-waiting path (not a
+# A run active at the restart step => the update-waiting path (not a
 # failure): steps 1-3 proceed, the flag is set, the command exits 0.
 # An IMAGE swap is explicit operator downtime: the flag carries
 # image_swap, which the app's tick never applies.
@@ -33,7 +33,9 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$REPO/.env"
 SSH_TARGET=""
-DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME}/.srv/deploy_key}"
+# ${HOME:-/root}: robust under any env (set -u would die on a bare $HOME if
+# this ever runs without HOME); /root/.srv is the canonical root-side home.
+DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME:-/root}/.srv/deploy_key}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in

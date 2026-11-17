@@ -1,6 +1,6 @@
 """Mock LLM router — OpenAI-compatible, request-recording, scripted.
 
-Permanent test infrastructure (PLAN §8, stage 1): a small HTTP server that
+Permanent test infrastructure: a small HTTP server that
 records every request (headers, body) and returns scripted
 OpenAI-compatible completions — including thinking blocks (on every run,
 per the verified behavior), parallel tool_calls, error responses, and long
@@ -196,7 +196,7 @@ class MockRouter:
                 self._send_sse(chunks)
 
         # find a free port on the requested host (loopback by default; the
-        # stage-5 guest drills bind the host's bridge address so the guest
+        # the guest drills bind the host's bridge address so the guest
         # can reach the mock). The host firewall default-drops inbound from
         # the servitor edge subnet EXCEPT the test-mock range 48700:48799
         # (one-time host setup: ufw allow in from 10.42.0.0/24 to any port

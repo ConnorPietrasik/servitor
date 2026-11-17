@@ -1,4 +1,4 @@
-"""16 static slot uids (PLAN §5).
+"""16 static slot uids.
 
 One per LIVE session (running or awaiting release), not per simultaneous
 run. A stable session pins its slot until closed. Uids are discovered from
@@ -19,12 +19,12 @@ from app.iso.layout import SLOT_HOME, SLOT_NAMES
 
 class NoFreeSlot(RuntimeError):
     """No free slot: release the oldest non-stable non-running session
-    (the caller's policy), or wait — the panel says so (PLAN §5)."""
+    (the caller's policy), or wait — the panel says so."""
 
 
 class SlotQuarantined(RuntimeError):
     """A slot failed its sweep verification. It is quarantined: visible in
-    the panel, retryable, NEVER reused until clean (PLAN §5)."""
+    the panel, retryable, NEVER reused until clean."""
 
 
 @dataclass
@@ -53,7 +53,7 @@ def discover_slot(name: str) -> Slot:
 
 
 class SlotPool:
-    """The static pool. State lives in the registry (stage 2 — the only
+    """The static pool. State lives in the registry (the only
     source of session truth); this is the in-process view iso code works
     against, rebuilt from the registry at boot."""
 

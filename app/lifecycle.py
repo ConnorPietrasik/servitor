@@ -1,4 +1,4 @@
-"""Session lifecycle — the stage-2 coordinator (PLAN §5, Stage 2).
+"""Session lifecycle — the coordinator.
 
 Owns, in one process:
 - boot reconciliation (proc-scan for live slot-uid processes ⇒ kill
@@ -13,7 +13,7 @@ Owns, in one process:
 - abort-then-drain on app shutdown (grace < TimeoutStopSec);
 - GC + disk pressure in-process through release();
 - per-spawn extension recording (loaded set vs image baseline ⇒
-  new-extension warning — D3: warn, never block).
+  new-extension warning — warn, never block).
 
 No wall-clock/iteration/token caps anywhere (no capability caps — the
 only controls are human steer/abort and these lifecycle rules).
@@ -104,9 +104,9 @@ class LifecycleConfig:
     shutdown_grace_sec: float = 90.0  # strictly < the unit's TimeoutStopSec
     gc_idle_days: float = 14.0
     gc_interval_sec: float = 300.0
-    delivery: "Delivery | None" = None  # stage-3 delivery service (blobs/staging)
+    delivery: "Delivery | None" = None  # delivery service (blobs/staging)
     sse_ring_bytes: int | None = None  # per-session SSE cap (None = 50 MB default)
-    update_pending_path: str | None = None  # the D8 flag file (sync/update write)
+    update_pending_path: str | None = None  # the update-pending flag file (sync/update write)
     update_tick_sec: float = 5.0
     restart_cmd: tuple[str, ...] | None = None  # default: systemctl restart servitor
     doctor_cmd: tuple[str, ...] | None = None  # default: own venv python -m app.doctor
@@ -139,11 +139,11 @@ class LifecycleHooks:
 
 
 class EventFeed:
-    """The event feed (registry/panel/doctor consume it; stage 3 serves it).
+    """The event feed (registry/panel/doctor consume it; the SSE hub serves it).
 
     Bounded in memory; the doctor reads `new_extensions` from the registry
     directly, so dropping old feed entries is safe. App-level events are
-    also published to the session's SseHub (stage 3) so the SSE stream is
+    also published to the session's SseHub so the SSE stream is
     the single per-session event source."""
 
     def __init__(self, maxlen: int = 1000, hub_getter=None):
@@ -198,7 +198,7 @@ class Lifecycle:
 
     def boot_reconcile(self) -> list[dict]:
         """Kill crash-orphans / mark interrupted sessions BEFORE any
-        spawn/respawn (PLAN §5).
+        spawn/respawn.
 
         Two crash signatures (both ⇒ interrupted):
         1. a live slot-uid process still exists — a crash-orphan the
@@ -240,7 +240,7 @@ class Lifecycle:
                 log.warning("boot reconcile: slot %s session %s: %s", slot.name, row.id, detail or "killed")
         # delivery GC: any surviving staging dir is an interrupted upload
         # (a completed upload removes its staging dir); no half-blobs can
-        # survive a crash (PLAN §3.4 crash drill)
+        # survive a crash (the crash drill)
         if self.cfg.delivery is not None:
             self.cfg.delivery.gc_boot()
             for row in self.cfg.registry.list_sessions():
@@ -274,7 +274,7 @@ class Lifecycle:
         return _pids_of_uid(uid)
 
     # ------------------------------------------------------------------ #
-    # extension recording (D3: warn, never block)                         #
+    # extension recording (warn, never block)                               #
     # ------------------------------------------------------------------ #
 
     def _extension_names(self, sp: SessionMountPaths) -> tuple[str, ...]:
@@ -343,7 +343,7 @@ class Lifecycle:
         ident = slot_identity(slot_name)
         driver = PiSession(launch, ident, cwd=live.sp.workdir)
         driver.on_settled = lambda *a, **k: self._on_settled(session_id)
-        # stage 3: the session's event stream is the SSE hub (pi events +
+        # the session's event stream is the SSE hub (pi events +
         # app events; backpressure pauses THIS driver's event stream)
         hub = self.hub(session_id)
         driver.on_event = hub.on_event
@@ -397,7 +397,7 @@ class Lifecycle:
         lower = require_active_dir(str(self.cfg.state.config))
         version = _config_version_of(lower)
 
-        # mounts BEFORE any spawn (PLAN §5)
+        # mounts BEFORE any spawn
         await asyncio.to_thread(M.ensure_session_dirs, sp, self.cfg.state)
         ops = await asyncio.to_thread(
             M.mount_session, sp, lower, self.cfg.state, slot.uid, slot.gid, self.cfg.toolkit_dir
@@ -630,7 +630,7 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     async def shutdown(self, cause: str = "app stop") -> None:
-        """Abort-then-drain (PLAN §5). Order is load-bearing:
+        """Abort-then-drain. Order is load-bearing:
         1. stop GC/pressure triggers, refuse new prompts;
         2. send RPC `abort` with recorded cause to every run-active child
            WHILE ITS STDIN IS STILL OPEN (commands travel only over stdin);
@@ -685,7 +685,7 @@ class Lifecycle:
             self._gc_task = asyncio.get_running_loop().create_task(self._gc_loop())
 
     # ------------------------------------------------------------------ #
-    # update-pending tick (PLAN §5, D8)                                    #
+    # update-pending tick                                                    #
     # ------------------------------------------------------------------ #
 
     def any_run_active(self) -> list[str]:
@@ -911,7 +911,7 @@ class Lifecycle:
         """Panel action `start`: make sure the session's process is up.
 
         Live process ⇒ no-op. Dead process with a transcript ⇒ respawn
-        (the stage-2 pickup path). No transcript ⇒ the session is simply
+        (the pickup path). No transcript ⇒ the session is simply
         idle (nothing to start — not an error). Never starts a run: the
         panel cannot inject a prompt it does not have."""
         row = self.cfg.registry.get(session_id)
@@ -926,7 +926,7 @@ class Lifecycle:
         return {"alive": True, "respawned": True}
 
     # ------------------------------------------------------------------ #
-    # transcript fetch (stage 4: reattach on load — fetch, never replay)
+    # transcript fetch (reattach on load — fetch, never replay)
     # ------------------------------------------------------------------ #
 
     def _live_driver(self, session_id: str):

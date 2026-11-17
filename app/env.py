@@ -1,11 +1,11 @@
 """Servitor environment contract — the single source for env var names.
 
-PLAN stage-0 gate: every env var the app reads is named in `.env.example`,
+Contract: every env var the app reads is named in `.env.example`,
 and nothing hardcodes an address/port/path. This module is the one place
 env vars are read; app code goes through :class:`Config` and never touches
 ``os.environ`` directly (the gate AST-scans for violations).
 
-Settled values (PLAN §13) appear here as *documented* defaults for the
+Settled values appear here as *documented* defaults for the
 ops parameters only. Addresses, ports, subnets, and the state-volume root
 have no defaults: they come from the env file, full stop.
 """
@@ -16,11 +16,12 @@ from dataclasses import dataclass
 from typing import Mapping
 
 # Every env var the app (and the deploy scripts it drives) reads, exactly
-# once. test/check_contract.py asserts this set equals the names in
-# .env.example and that no env read in app/ escapes it.
+# once. test/check_contract.py asserts ENV_NAMES + HOST_DEPLOY_ENV_NAMES
+# (disjointly) equals the names in .env.example, and that no env read in
+# app/ escapes ENV_NAMES.
 ENV_NAMES: tuple[str, ...] = (
     # --- machine credentials (the only secrets; invariant 5: env-only) ---
-    "OMNISSIAH_API_KEY",  # router bearer (host's LLM_API_KEY, PLAN §13)
+    "OMNISSIAH_API_KEY",  # router bearer (host's LLM_API_KEY)
     "EXA_API_KEY",  # search extension key; env-first in pi-web-access 0.47.0
     # --- network contract (the edge is the only auth gate) ---
     "SERVITOR_BIND",
@@ -36,19 +37,30 @@ ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_COALESCE_MS",
     "SERVITOR_HEARTBEAT_SECS",
     "SERVITOR_SSE_RING_BYTES",  # per-session SSE delivery cap (memory bound; default 50 MB)
-    # --- version selections (npm semver specs, exact by default; D6) ---
+    # --- version selections (npm semver specs, exact by default) ---
     "SERVITOR_PI_VERSION",
     "SERVITOR_PI_WEB_ACCESS_VERSION",
-    # --- deploy-time intent (doctor asserts; A4) ---
+    # --- deploy-time intent (doctor asserts) ---
     "SERVITOR_INTENDED_MODEL_ID",
     "SERVITOR_INTENDED_CONTEXT_WINDOW",
     # --- deployment layout (absolute paths; the guest unit passes them via
-    #     the EnvironmentFile — never resolved from PATH at runtime, D8) ---
+    #     the EnvironmentFile — never resolved from PATH at runtime) ---
     "SERVITOR_PI_NODE_BIN",  # absolute node binary
     "SERVITOR_PI_CLI_JS",  # absolute pi CLI entry (never PATH resolution)
     "SERVITOR_PI_EXT_DIR",  # absolute pi-web-access package dir (sync-owned)
     "SERVITOR_TOOLKIT_DIR",  # absolute toolkit dir (RO overlay lower)
     "SERVITOR_DOCTOR_CWD",  # cwd for the doctor command (the app tree)
+)
+
+# Host-side deploy names — read ONLY by the host deploy scripts
+# (deploy/sync|doctor|update.sh) and the guest image build
+# (deploy/guest/build.sh): never by the app, and never synced into the guest
+# (the build bakes them into the image). They live in .env.example so that
+# file is the complete record of the host .env, but they are outside the app
+# contract on purpose — the gate asserts they stay disjoint from ENV_NAMES.
+HOST_DEPLOY_ENV_NAMES: tuple[str, ...] = (
+    "SERVITOR_VM_IP",  # the VM's edge address (ssh target; baked into the image)
+    "SERVITOR_DNS_UPSTREAM",  # guest public DNS upstreams (baked into the image)
 )
 
 
@@ -67,7 +79,7 @@ class Config:
     browser_origin: str | None  # the one browser origin (CORS allow-list); None = API-only
     # state volume
     root: str  # real ext4 path; no default — env-only
-    # lifecycle / delivery (settled defaults, PLAN §13 — ops, not caps)
+    # lifecycle / delivery (settled defaults — ops, not caps)
     gc_idle_days: int = 14
     drain_grace_secs: int = 90
     coalesce_ms: int = 1000
@@ -80,7 +92,7 @@ class Config:
     intended_model_id: str = "qwen35"
     intended_context_window: int = 250000
     # machine credentials (may be absent at app boot; spawn fails closed
-    # without OMNISSIAH_API_KEY — model.id == "unknown", PLAN §4)
+    # without OMNISSIAH_API_KEY — model.id == "unknown")
     omnissiah_api_key: str | None = None
     exa_api_key: str | None = None
 
@@ -140,7 +152,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     if not (1 <= port <= 65535):
         raise ConfigError(f"SERVITOR_PORT out of range: {port}")
 
-    # INVARIANT (PLAN §5): the app runs privileged (root on the guest).
+    # INVARIANT: the app runs privileged (root on the guest).
     # The agent never is. This is a boot assertion, not a hint.
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         # Laptop dev may run unprivileged for pure-protocol work, but any
@@ -171,7 +183,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
 
 
 def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Config:
-    """Config for the HTTP front door (stage 3).
+    """Config for the HTTP front door.
 
     Requires only the network contract (SERVITOR_BIND / SERVITOR_PORT —
     no defaults, env-only) and the state root (from the --state arg when
@@ -227,7 +239,7 @@ DEPLOYMENT_ENV_NAMES: tuple[str, ...] = (
 
 def deployment_env(env: Mapping[str, str] | None = None) -> dict[str, str | None]:
     """The deployment layout paths (absolute). Never PATH-resolved at
-    runtime (D8): the spawn line, doctor, and toolkit all use these."""
+    runtime: the spawn line, doctor, and toolkit all use these."""
     env = env if env is not None else os.environ
     return {name: _optional(env, name) for name in DEPLOYMENT_ENV_NAMES}
 

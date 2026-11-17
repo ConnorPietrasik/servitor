@@ -1,4 +1,4 @@
-"""Stage-5 guest test setup: root only, session-scoped VM."""
+"""Guest test setup: root only, session-scoped VM."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from harness import GuestVM, active_image, ensure_bridge, remove_bridge, REPO
 
 def require_root_or_skip() -> None:
     if os.geteuid() != 0:
-        pytest.skip("stage-5 guest tests need root (qemu, bridge, mkfs, sshd)")
+        pytest.skip("guest tests need root (qemu, bridge, mkfs, sshd)")
 
 
 @pytest.fixture(autouse=True)

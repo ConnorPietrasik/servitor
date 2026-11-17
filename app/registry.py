@@ -1,5 +1,4 @@
-"""The session registry — SQLite, the ONLY source of session truth
-(PLAN §5, Stage 2).
+"""The session registry — SQLite, the ONLY source of session truth.
 
 The session list reads this table only — O(1), zero pi processes,
 always. Everything else (probe, respawn, GC, the panel) derives from it.
@@ -75,7 +74,7 @@ class SessionRow:
     waiting: bool = False          # slot pressure: queued for a free slot
     update_waiting: bool = False   # deferred restart requested while it ran
     loaded_extensions: tuple[str, ...] = ()
-    new_extensions: tuple[str, ...] = ()  # D3 warnings: loaded, not in baseline
+    new_extensions: tuple[str, ...] = ()  # new-extension warnings: loaded, not in baseline
 
     def is_running_or_awaiting_release(self) -> bool:
         """'16 slots = 16 live sessions (running OR awaiting release)'."""
@@ -126,7 +125,7 @@ class Registry:
         )
         self.db.commit()
 
-    # -- version stamps (stage 5: what the guest actually runs) --------
+    # -- version stamps (what the guest actually runs) -----------------
 
     def set_version(self, key: str, value: str) -> None:
         self.db.execute(

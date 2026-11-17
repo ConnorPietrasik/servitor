@@ -1,12 +1,11 @@
 """Unit tests for the SSE hub (app/api/sse.py).
 
-The production default cap is pinned here: 50 MB per session (PLAN
-§3.3). The backpressure GATE (test/api/test_backpressure.py) runs the
+The production default cap is pinned here: 50 MB per session. The
+backpressure GATE (test/api/test_backpressure.py) runs the
 same code path at a scaled cap — pi's cumulative message_update
 semantics (each update carries the whole accumulated message) bound a
 single context window's SSE volume far below 50 MB, so exercising the
-mechanism end-to-end at 50 MB in one run is impossible by construction
-(DECISIONS.md).
+mechanism end-to-end at 50 MB in one run is impossible by construction.
 """
 from __future__ import annotations
 
@@ -16,7 +15,7 @@ from app.api.sse import EVENT_BUFFER_CAP, SseHub
 
 
 def test_default_cap_is_50mb():
-    """The production default ring cap is 50 MB per session (PLAN §3.3)."""
+    """The production default ring cap is 50 MB per session."""
     assert EVENT_BUFFER_CAP == 50 * 1024 * 1024
     hub = SseHub("s1")
     assert hub.cap == 50 * 1024 * 1024

@@ -1,9 +1,9 @@
-"""servitorctl doctor — the deploy gate (PLAN §9).
+"""servitorctl doctor — the deploy gate.
 
 Certifies the guest, read-only (with respect to the DEPLOYED
 artifacts: config, image, env file), with a pass/fail report. Runs as
 root on the guest, invoked from the host by ``deploy/doctor.sh`` and,
-in-process, by the app's update tick (the D8 deferred-doctor path):
+in-process, by the app's update tick (the deferred-doctor path):
 
     .venv/bin/python -m app.doctor --state ROOT [--config-src DIR]
         [--pi-node BIN --pi-cli JS --pi-ext DIR] [--toolkit DIR]
@@ -41,7 +41,7 @@ from typing import Any
 PASS, FAIL, WARN, SKIP = "PASS", "FAIL", "WARN", "SKIP"
 
 CONTEXT_FILE_NAMES = ("AGENTS.md", "SYSTEM.md", "APPEND_SYSTEM.md")
-# slice constants (PLAN §6) — asserted from the LIVE unit, not the file
+# slice constants — asserted from the LIVE unit, not the file
 # systemctl show reports MemoryHigh/MemoryMax in BYTES, so the expected
 # values are the byte form of the slice unit's 25G/30G limits
 SLICE_EXPECT = {"CPUWeight": "50", "MemoryHigh": str(25 * 1024 ** 3), "MemoryMax": str(30 * 1024 ** 3)}
@@ -99,7 +99,7 @@ def check_env(rep: Report, args: argparse.Namespace) -> None:
     for var in ("SERVITOR_INTENDED_MODEL_ID", "SERVITOR_INTENDED_CONTEXT_WINDOW"):
         v = os.environ.get(var, "")
         if not v:
-            rep.add(f"env.{var.lower()}", FAIL, f"{var} not set (A4: intended values are env)")
+            rep.add(f"env.{var.lower()}", FAIL, f"{var} not set (intended values are env)")
 
 
 def check_state_fs(rep: Report, root: str) -> None:
@@ -369,7 +369,7 @@ class ProbeLockTimeout(Exception):
 async def _probe_lock(state_root: str, timeout: float = 300.0):
     """Serialize the stateful probe section across CONCURRENT doctors.
 
-    The host doctor.sh and the app tick's inline doctor (the D8
+    The host doctor.sh and the app tick's inline doctor (the
     post-restart path) can run at the same moment — a shape-changing sync
     runs its own post-deploy doctor while the tick may be applying a flag.
     Both probes would use the probe uid, and a release's sweep deletes
@@ -556,7 +556,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
             rep.add("spawn.models", PASS, f"provider {pname} + baseUrl {pbase} listed")
         else:
             rep.add("spawn.models", FAIL, f"provider/baseUrl not listed: {blob[:300]}")
-        # intended model id + context window (runtime discovery, A4)
+        # intended model id + context window (runtime discovery)
         intended_id = optional_env("SERVITOR_INTENDED_MODEL_ID") or ""
         intended_ctx = optional_env("SERVITOR_INTENDED_CONTEXT_WINDOW") or ""
         flat: list[dict[str, Any]] = []
@@ -624,13 +624,13 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
                     rep.add("spawn.ro_bind.unlink", PASS, "unlink on RO bind -> EBUSY")
                 else:
                     rep.add("spawn.ro_bind.unlink", FAIL, f"unlink on RO bind -> {e}")
-        # extension baseline (drift = warning, D3)
+        # extension baseline (drift = warning)
         row2 = registry.get(sid)
         loaded = tuple(row2.loaded_extensions) if row2 else ()
         baseline = lc.cfg.baseline_extensions
         extra = tuple(sorted(set(loaded) - set(baseline)))
         if extra:
-            rep.add("spawn.extensions", WARN, f"loaded beyond image baseline: {extra} (drift, D3)")
+            rep.add("spawn.extensions", WARN, f"loaded beyond image baseline: {extra} (drift)")
         else:
             rep.add("spawn.extensions", PASS, f"loaded set == baseline ({list(loaded) or 'none'})")
     except Exception as e:

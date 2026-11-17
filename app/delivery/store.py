@@ -1,7 +1,7 @@
 """Delivery store: uploads (staged → blob → inbox), outbox, manifests
-(PLAN §3.4).
+manifests.
 
-Guarantees (stage-3 gates):
+Guarantees:
 
 - **No truncation, no caps**: uploads are streamed to a spooled temp
   file on the state volume (never buffered in memory), hashed
@@ -183,7 +183,7 @@ def _hash_outbox_file(key: tuple, path: str) -> None:
 class SessionFiles:
     """One session's delivery state.
 
-    Layout (the stage-1 mount contract):
+    Layout (the mount contract):
     - inbox:  ``state/inbox/<s>`` (the bind source; uploads land here)
     - outbox: ``scratch/<s>/workdir/outbox`` (agent artifacts; inside the
       merged workdir — only meaningful while the session is mounted)

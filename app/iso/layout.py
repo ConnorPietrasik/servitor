@@ -3,12 +3,12 @@
 Two distinct kinds of path live here, and only here:
 
 1. **Image-baked guest paths** — defined by the guest image build
-   (``deploy/guest/``, PLAN §6). The image is the versioned artifact; these
+   (``deploy/guest/``). The image is the versioned artifact; these
    constants mirror it. ``/opt/toolkit`` and the session tree roots must
    stay free of AGENTS.md/CLAUDE.md/SYSTEM.md/.pi context files (they are
    overlay lowers / cwd ancestors of every session).
 2. **State-volume areas** — relative to ``SERVITOR_ROOT`` (the only
-   env-supplied path, PLAN §5). Computed by :func:`state_paths`; never
+   env-supplied path). Computed by :func:`state_paths`; never
    hardcoded elsewhere.
 
 Nothing in this module is an address or a port. Deployment parameters come
@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# --- image-baked guest paths (PLAN §6) -------------------------------------
+# --- image-baked guest paths -----------------------------------------------
 
 #: Baked toolkit — overlay lower of every session workdir. Root-owned 0755
 #: (read-only to slots), a plain directory, never a mount. Must contain no
@@ -26,12 +26,12 @@ from dataclasses import dataclass
 TOOLKIT_DIR = "/opt/toolkit"
 
 #: pi-web-access install root. Created by the sync pipeline (stage +
-#: rename), never baked into the image (PLAN §6).
+#: rename), never baked into the image.
 PI_EXT_DIR = "/opt/pi-ext/pi-web-access"
 
 #: npm prefix for the pinned pi install (``npm install --ignore-scripts``).
 #: The absolute CLI path is a constant in the harness — never PATH
-#: resolution (PLAN §6).
+#: resolution.
 PI_PREFIX = "/opt/servitor/pi"
 NODE_BIN = "/usr/bin/node"  # LTS, pinned by the image build
 PI_CLI_JS = f"{PI_PREFIX}/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
@@ -43,7 +43,7 @@ APP_HOME = "/opt/servitor/app"
 #: 0600 env file consumed by the systemd unit (the key slice).
 ENV_FILE = "/etc/servitor/servitor.env"
 
-# --- slots (PLAN §5) ---------------------------------------------------------
+# --- slots ------------------------------------------------------------------
 
 #: 16 static slot uids, one per live session (running or awaiting release).
 #: Fixed uids, real passwd homes, created at guest image build. ``$HOME``
@@ -57,18 +57,18 @@ SLOT_HOME = "/home/{slot}"
 #: built with a pool of (PROBE_SLOT,) only, and the app never allocates it,
 #: so the app's uid-gated kills (boot reconciliation, respawn invariant 7,
 #: release strays) can never SIGTERM the probe's pi child mid-command while
-#: the service is running or restarting (PLAN §9: the doctor certifies a
+#: the service is running or restarting (the doctor certifies a
 #: LIVE guest; a probe on an app slot raced the tick's restart and was
 #: intermittently killed, code -15). Created at image build (uid 9000).
 PROBE_SLOT = "slot0"
 
-# --- state volume (PLAN §5) --------------------------------------------------
+# --- state volume -----------------------------------------------------------
 
 #: Area names under SERVITOR_ROOT, in the order they are created.
 STATE_AREAS: tuple[str, ...] = ("config", "lib", "inbox", "scratch", "sessions")
 
 #: Context-file names that must never exist under the session tree root's
-#: ancestors or the toolkit lower (PLAN §4 — --no-context-files removes them
+#: ancestors or the toolkit lower (--no-context-files removes them
 #: from loading; the doctor asserts the chains are free of them anyway).
 CONTEXT_FILE_NAMES: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md", ".pi")
 
@@ -108,7 +108,7 @@ def state_paths(root: str) -> StatePaths:
 
 @dataclass(frozen=True)
 class SessionMountPaths:
-    """Per-session scratch layout (PLAN §5, per-session mounts).
+    """Per-session scratch layout.
 
     Mounted at allocate, before any spawn/respawn; live for the session
     lifetime (idle-kill never unmounts — only release does).

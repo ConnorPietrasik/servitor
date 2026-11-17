@@ -1,4 +1,4 @@
-"""Sweep by owner (PLAN §5).
+"""Sweep by owner.
 
 ``find / -user slotN`` catches what a session dropped *outside*
 ``scratch/`` (``/tmp``, ``/var/tmp``, ``/``) and makes slot release a
@@ -149,7 +149,7 @@ def kill_strays_by_uid(uid: int, *, term_grace: float = 2.0) -> list[int]:
     """Kill every live process of the uid (crash-orphans included).
 
     This is release step 3's primitive, also used by boot reconciliation
-    (PLAN §5: the respawn path re-checks its slot uid for a live process
+    (the respawn path re-checks its slot uid for a live process
     and kills it first if present — invariant 7 is enforced at the spawn
     boundary, not assumed). TERM first, KILL after grace; the session's
     own pi child is handled by the driver's ladder in release step 2.

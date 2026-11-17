@@ -1,10 +1,10 @@
 # ============================================================================
-# Servitor interface contract — CONTRACT ONLY (DECISIONS D1).
+# Servitor interface contract — CONTRACT ONLY.
 #
 # The runtime is a systemd service on the guest (deploy/guest/servitor.service);
 # there is NO docker in the VM. This file is the machine-readable interface
 # contract: env var names, the one published port, bind, and mount layout.
-# `make check` (stage-0 gate) parses it and enforces:
+# `make check` parses it and enforces:
 #   - every env name referenced here is named in .env.example
 #   - exactly one published port, referenced as ${SERVITOR_PORT}
 #   - no value appears here (all ${VAR})
@@ -25,7 +25,7 @@ services:
       - SERVITOR_PORT=${SERVITOR_PORT}
       - SERVITOR_EDGE_SUBNET=${SERVITOR_EDGE_SUBNET}
       - SERVITOR_OPS_SUBNET=${SERVITOR_OPS_SUBNET}
-      # state volume (guest ext4, never overlay/container storage — T29)
+      # state volume (guest ext4, never overlay/container storage)
       - SERVITOR_ROOT=${SERVITOR_ROOT}
       # lifecycle / delivery (ops parameters, never capability caps)
       - SERVITOR_GC_IDLE_DAYS=${SERVITOR_GC_IDLE_DAYS}
@@ -42,8 +42,8 @@ services:
       # the ONE published port; bind from the env file, never a literal
       - "${SERVITOR_BIND}:${SERVITOR_PORT}:${SERVITOR_PORT}"
     volumes:
-      # state volume — guest ext4 (T29). Areas: config/, lib/, inbox/<s>/,
-      # scratch/<s>/, sessions/<s>/ (PLAN §5). The agent's per-session mounts
+      # state volume — guest ext4. Areas: config/, lib/, inbox/<s>/,
+      # scratch/<s>/, sessions/<s>. The agent's per-session mounts
       # (overlays, binds) are created by the app from this volume; they are
       # not container mounts.
       - "${SERVITOR_ROOT}:/var/lib/servitor"

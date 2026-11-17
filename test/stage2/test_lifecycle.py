@@ -1,4 +1,4 @@
-"""Stage 2 gate: session registry + lifecycle (PLAN §8, Stage 2).
+"""Lifecycle gate: session registry + lifecycle.
 
 The gates, verbatim:
 - app-crash/restart drill: kill -9 the app mid-run with the mock's long
@@ -17,7 +17,7 @@ The gates, verbatim:
   error.
 - planted-extension test: drop an extension into the agent upper,
   respawn, assert the warning lands in the event feed + registry and
-  the run is unaffected (pi loaded it; D3: warn, never block).
+  the run is unaffected (pi loaded it; warn, never block).
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ SLOT = "slot1"
 
 
 class AppClient:
-    """JSON-lines client for `python -m app.main` (the stage-2 app)."""
+    """JSON-lines client for `python -m app.main` (the stdio app)."""
 
     def __init__(self, proc: subprocess.Popen, *, api_key: str = "test-key"):
         self.proc = proc
@@ -193,9 +193,9 @@ def stage2_env(run_root):
 
 def test_crash_restart_drill(stage2_env):
     """kill -9 the app mid-run with the mock's long tool call still in
-    flight (PLAN §8 stage-2 gate, on pi 1.5.2 verified behavior: the
+    flight (on pi 1.5.2 verified behavior: the
     orphan's stdin closes at app death and pi's EOF shutdown ABORTS the
-    in-flight run and exits — §4 correction, cited in the test history).
+    in-flight run and exits — verified behavior, cited in the test history).
     Restart ⇒ boot reconciliation: any still-alive orphan is killed via
     the ladder, the registry reconciles (interrupted — by the live
     orphan OR the transcript crash signature), no double slot
@@ -239,7 +239,7 @@ def test_crash_restart_drill(stage2_env):
         # KILL -9 THE APP — the drain never runs. The crash sends the orphan
         # no signal (SIGKILL is not propagated): the orphan's stdin simply
         # closes, and pi 1.5.2's EOF shutdown aborts the in-flight run and
-        # exits on its own — within a few hundred ms (verified §4). What is
+        # exits on its own — within a few hundred ms (verified). What is
         # deterministic and asserted: the run never completed (no second
         # request), and after restart nothing slot-uid is alive, the registry
         # is reconciled (interrupted), and the session survived for pickup.
@@ -519,14 +519,14 @@ def test_respawn_transcriptless_is_idle_not_error(stage2_env):
 
 
 # ---------------------------------------------------------------------- #
-# planted extension (D3: warn, never block)                               #
+# planted extension (warn, never block)                               #
 # ---------------------------------------------------------------------- #
 
 
 PLANTED = """import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("svplanted", {
-    description: "planted by the stage-2 gate",
+    description: "planted extension test",
     handler: async () => "planted-ok",
   });
 }
@@ -536,7 +536,7 @@ export default function (pi: ExtensionAPI) {
 def test_planted_extension_warns_and_run_unaffected(stage2_env):
     """Drop an extension into the agent upper, respawn, assert the warning
     lands in the event feed + registry and the run is unaffected (pi
-    loaded it — D3: warn, never block)."""
+    loaded it — warn, never block)."""
     env = stage2_env
     state_root, pi, run_root = env["state_root"], env["pi"], env["run_root"]
     state = env["state"]

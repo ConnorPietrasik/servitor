@@ -1,4 +1,4 @@
-"""Stage-3 crash drill: kill -9 the app mid-upload.
+"""Crash drill: kill -9 the app mid-upload.
 
 The staged blob must be EITHER fully present and registered OR absent —
 no half-blobs, no partial inbox files, no unregistered staging that

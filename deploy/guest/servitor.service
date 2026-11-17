@@ -1,7 +1,7 @@
-# servitor.service — the app on the guest (DECISIONS D1: systemd, no docker).
+# servitor.service — the app on the guest (systemd, no docker).
 #
-# Privilege model (PLAN §3): the app runs as root (privileged); the agent
-# never is. The stop path is the abort-then-drain path (PLAN §5): the app's
+# Privilege model (README → Invariants): the app runs as root (privileged);
+# the agent never is. The stop path is the abort-then-drain path: the app's
 # SIGTERM handler sends RPC abort (with recorded cause) to every run-active
 # child while its stdin is still open, marks sessions interrupted, then
 # closes stdin for orderly shutdown. SERVSITOR_DRAIN_GRACE_SECS (90) is

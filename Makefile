@@ -1,13 +1,13 @@
-# Servitor — gates (PLAN §8).
+# Servitor — gates.
 #
 # Gate vocabulary:
-#   check          contract lint (stage-0 gate; stdlib-fast, no venv needed)
-#   test           unit + conformance vs mock router (stage 1)
+#   check          contract lint (stdlib-fast, no venv needed)
+#   test           unit + conformance vs mock router
 #   sandbox-smoke  root/laptop-CI runnable: overlays, EROFS, sweep walk,
 #                  config/credential/context-file gates, protocol suite
 #   vm-smoke       root-only: setuid spawn, chown handoff, cross-uid EPERM,
 #                  real find -user sweep — loud-skip + merge-blocking in CI
-#   doctor         guest-side certification (stage 5)
+#   doctor         guest-side certification
 #
 # Every gate states which half it actually ran; vm-smoke is NEVER silently
 # green where root is unavailable.
@@ -22,23 +22,23 @@ venv:
 	$(PY) -m pip install --upgrade pip
 	$(PY) -m pip install -e '.[dev]'
 
-## stage-0 gate: contract lint (env names, no hardcoded address/port/path,
+## contract lint (env names, no hardcoded address/port/path,
 ## route/compose parse, one published port, agent-config sanity)
 check: venv
 	$(PY) test/check_contract.py
 
-## stage-1 gate: unit + conformance vs mock router (needs pi install into a
+## unit + conformance vs mock router (needs pi install into a
 ## scratch prefix — the runner handles it; version-parameterized per .env)
 test: venv
 	$(PY) -m pytest test/unit test/conformance -v
 
-## stage-2 gate: lifecycle (spawn/settle/respawn/idle-kill/crash drills)
-## over the JSON-over-stdio app. Separate invocation: the stage-2 and
-## api test dirs both define a `conftest` (imported by bare name).
+## lifecycle (spawn/settle/respawn/idle-kill/crash drills) over the
+## JSON-over-stdio app. Separate invocation: the stage2 and api test dirs
+## both define a `conftest` (imported by bare name).
 test-stage2: venv
 	$(PY) -m pytest test/stage2 -v
 
-## stage-3/4 gate: HTTP/SSE API + delivery + transcript/fork over a real
+## HTTP/SSE API + delivery + transcript/fork over a real
 ## subprocess app (root: real uids/mounts). The backpressure gate test
 ## is in here (slow: ~110s).
 test-api: venv
@@ -53,46 +53,53 @@ test-all: venv
 	$(PY) -m pytest test/sandbox_smoke -q
 	$(PY) -m pytest test/vm_smoke -q
 
-## stage-1 isolation gates, root half: overlay mounts, EROFS, whiteouts,
+## isolation, root half: overlay mounts, EROFS, whiteouts,
 ## upper paths, teardown order, sweep walk, config/credential/context-file
 ## gates, the whole protocol suite
 sandbox-smoke: venv
 	$(PY) -m pytest test/sandbox_smoke -v
 
-## stage-1 isolation gates, vm half (laptop-root or guest only): setuid
+## isolation, vm half (laptop-root or guest only): setuid
 ## spawn, chown handoff, cross-uid EPERM, real sweep-by-owner, full release()
 vm-smoke: venv
 	$(PY) -m pytest test/vm_smoke -v
 
-## stage 5: guest qcow2 build (host-side, root; unshare -m keeps the
+## guest qcow2 build (host-side, root; unshare -m keeps the
 ## build's mount churn in a private mount namespace — see build.sh header)
 guest:
 	unshare -m deploy/guest/build.sh --env $(abspath .env) --deploy-key $(if $(DEPLOY_KEY),$(DEPLOY_KEY),$(HOME)/.srv/deploy_key.pub)
 
-## stage 5: finish the build interrupted on 2026-11-16 (one-shot recovery)
+## one-shot recovery for an interrupted guest build
 finish-guest:
 	deploy/guest/finish-build.sh
 
-## stage 5: standalone/loopback mode behind the local reverse proxy (no root)
+## standalone/loopback mode behind the local reverse proxy (no root)
 test-standalone: venv
 	$(PY) -m pytest test/standalone -v
 
-## stage 5: guest test suite (live gates + update drills, root)
+## guest test suite (live gates + update drills, root)
 test-guest: venv
 	$(PY) -m pytest test/guest -v
 
-## stage 5: host-side one-way sync (config/lib -> guest, key slice, doctor)
+## host-side one-way sync (config/lib -> guest, key slice, doctor)
 sync:
 	deploy/sync.sh
 
-## stage 5: single versioned update path (resolve -> gate -> swap -> doctor)
+## single versioned update path (resolve -> gate -> swap -> doctor)
 update:
 	deploy/update.sh
 
-## stage 5: guest-side certification (via host wrapper)
+## guest-side certification (via host wrapper)
 doctor:
 	deploy/doctor.sh
 
-## stage 6: full server deploy (portcullis merge + libvirt + sync + doctor)
+## server deploy: NO SCRIPT BY DESIGN — prints where the one-time
+## documented install lives. There is no deploy/deploy.sh on purpose:
+## the operator decisions (VM IP, image build vs fast path, first-boot
+## console watch) are load-bearing, and a scripted one-shot would hide them.
 deploy:
-	deploy/deploy.sh
+	@echo "no deploy script on purpose (one-time documented install — the"
+	@echo "operator decisions must stay visible). Follow, in order:"
+	@echo "  this repo:    deploy/portcullis/INSTALL.md (host work, .env, image,"
+	@echo "                state disk, domain, first sync, portcullis merge, verify)"
+	@echo "  portcullis:   docs/RUNBOOK.md (Servitor agent VM section)"

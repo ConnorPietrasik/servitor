@@ -1,4 +1,4 @@
-"""release() — the single cleanup path (PLAN §5).
+"""release() — the single cleanup path.
 
 Every release trigger (UI close, GC timer, slot pressure, disk pressure)
 goes through this one function. Steps, in order:
@@ -38,8 +38,7 @@ log = logging.getLogger("servitor.iso.release")
 
 
 class ReleaseHooks(Protocol):
-    """The registry seam (stage 2 implements it; stage 1 tests use a
-    fake). The registry is the only source of session truth."""
+    """The registry seam (tests use a fake). The registry is the only source of session truth."""
 
     def mark_draining(self, session_id: str, reason: str) -> None: ...
 

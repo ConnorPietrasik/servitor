@@ -1,4 +1,4 @@
-"""Stage-3 gate: SSE backpressure (PLAN §3.3).
+"""SSE backpressure gate.
 
 A deliberately slow consumer: the unconsumed bytes pass the cap and the
 RUN PAUSES (the driver stops draining pi's stdout — the pipe fills and
@@ -13,7 +13,7 @@ is the same code path at 1 MB as at 50 MB. The production default is
 pinned by a unit test (test/unit/test_sse.py: the default cap is
 50 MB), and 50 MB is the right default because pi's per-delta
 message_update events bound a single context window's SSE volume well
-below it (DECISIONS.md).
+below it.
 
 Event anatomy (measured, pi 1.5.2): each model content delta is its
 own small message_update (~250 B). A 32 KB preamble streamed as

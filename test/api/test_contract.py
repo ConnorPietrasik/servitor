@@ -1,4 +1,4 @@
-"""Stage-3 gate: the API contract (versioned in-repo; drift = gate red).
+"""API contract gate (versioned in-repo; drift = gate red).
 
 The live app's OpenAPI route set must equal test/.scratch/api-contract.json
 exactly (method + path). Nothing extra is published; nothing contract

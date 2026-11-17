@@ -1,15 +1,14 @@
-"""Sandbox-smoke: the isolation gates runnable on laptop/CI root
-(PLAN §8 stage-1).
+"""Sandbox-smoke: the isolation gates runnable on laptop/CI root.
 
 Overlay lower+upper/work on one fs; writes land in upper; whiteouts;
 EROFS on the RO binds incl. models.json unlink-EBUSY; mount-before-spawn
 ordering; teardown order; sweep walk; config swap atomicity (no live
-lower mutated); state-fs-type assert per T29; ancestor chain free of
+lower mutated); state-fs-type assert; ancestor chain free of
 context-file names.
 
 Slot: slot2 (suite allocation, test/conftest.py). No pi process is
 spawned — these prove the isolation PRIMITIVES the protocol suite runs
-on (isolation is proven before stage 2 builds on it).
+on (isolation is proven before the lifecycle builds on it).
 """
 from __future__ import annotations
 
@@ -98,7 +97,7 @@ def _ro_fs_type(path: str) -> str:
 
 
 def test_state_fs_type_is_real_not_overlay():
-    """T29: the state volume is a real filesystem, never overlay
+    """The state volume is a real filesystem, never overlay
     (overlayfs refuses upperdir/workdir on overlayfs)."""
     require_root_or_skip("state fs type assert")
     assert _ro_fs_type("/srv/servitor-test") != "overlay"
@@ -139,7 +138,7 @@ def test_overlay_whiteout(iso_env):
 
 
 def test_models_json_ro_bind_erofs_and_ebusy(iso_env):
-    """T34: the single-file RO bind of models.json — write ⇒ EROFS,
+    """The single-file RO bind of models.json — write ⇒ EROFS,
     unlink ⇒ EBUSY, even as ROOT (the agent is not root; this proves the
     bind, and root's failure proves it is the MOUNT, not the uid)."""
     sp, ops, lower_dir = _mount_session(iso_env, "s-robind")

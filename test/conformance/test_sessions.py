@@ -1,5 +1,5 @@
 """Conformance: sessions — first spawn, transcript, respawn, identity
-(PLAN §4; stage-1 gate; invariant 6/7).
+(invariant 6/7).
 
 - First spawn `--session-id <minted uuid>`; the transcript path comes
   from `get_state.sessionFile`, captured VERBATIM.

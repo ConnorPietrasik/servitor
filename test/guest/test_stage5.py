@@ -1,4 +1,4 @@
-"""Stage-5 live gates (PLAN §9) — the fresh-guest certification suite.
+"""Live guest gates — the fresh-guest certification suite.
 
 These run against the ACTIVE manifest image under QEMU on the laptop
 bridge, with the real router (key-gated) and the mock router (drills).

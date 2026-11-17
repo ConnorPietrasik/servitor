@@ -1,4 +1,4 @@
-"""LF-only JSONL framer (PLAN §4, N18).
+"""LF-only JSONL framer.
 
 The pi RPC protocol is strict JSONL: one JSON object per record, LF-
 terminated. Splitting rules, exactly:

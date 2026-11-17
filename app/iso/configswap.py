@@ -1,4 +1,4 @@
-"""Versioned config swap (PLAN §5): stage + rename; a live lower is never
+"""Versioned config swap: stage + rename; a live lower is never
 mutated.
 
 The synced agent config lives in versioned dirs ``config/v<N>/`` under the

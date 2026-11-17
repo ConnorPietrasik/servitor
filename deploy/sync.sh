@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Servitor host-side one-way sync (PLAN §5/§6, D8).
+# Servitor host-side one-way sync.
 #
 # Fast config/app push for daily edits:
 #   1. config  -> versioned dir under /var/lib/servitor/config + atomic
@@ -14,7 +14,7 @@
 #                 rename on the guest, installed version stamped in the
 #                 registry)
 #
-# Restart policy (D8): when the deployed SHAPE changed, the sync writes
+# Restart policy: when the deployed SHAPE changed, the sync writes
 # the update-pending flag (restart + doctor) and NEVER blocks on a run:
 #   - no run active  -> the app's tick restarts within a few seconds; the
 #                       sync waits briefly, runs the doctor, and reports
@@ -30,7 +30,10 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$REPO/.env"
 SSH_TARGET=""
-DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME}/.srv/deploy_key}"
+# ${HOME:-/root}: panel-do's scrubbed env has no HOME (and set -u would die
+# on a bare $HOME here, before --deploy-key is parsed); /root/.srv is the
+# canonical root-side home, and the flag overrides anyway.
+DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME:-/root}/.srv/deploy_key}"
 STAGING_WAIT_SECS="${STAGING_WAIT_SECS:-150}"
 
 while [[ $# -gt 0 ]]; do
@@ -307,7 +310,7 @@ print('stamp: pi-web-access $EXT_VERSION')
 \""
 fi
 
-# ---- the D8 restart (flag, never a block) ---------------------------------
+# ---- the restart (flag, never a block) ------------------------------------
 run_guest "cd /opt/servitor/app && .venv/bin/python -c \"
 from app.update_pending import UpdatePending, save
 save('/var/lib/servitor/update-pending.json', UpdatePending(
@@ -316,7 +319,7 @@ save('/var/lib/servitor/update-pending.json', UpdatePending(
 print('update-pending flag written')
 \""
 
-# D8: if a run is ACTIVE right now, exit 0 IMMEDIATELY (never block on a
+# If a run is ACTIVE right now, exit 0 IMMEDIATELY (never block on a
 # run). The flag survives; the app's tick applies restart+doctor at the
 # first idle moment. Query the app over the edge (the port is open from
 # the edge subnet by design).

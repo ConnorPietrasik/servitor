@@ -1,4 +1,4 @@
-"""The update-pending flag (PLAN §5, D8).
+"""The update-pending flag.
 
 Host-side ``sync.sh`` / ``update.sh`` write this file when a deployed
 shape change (config / extension / keys / image) needs a service
@@ -17,7 +17,7 @@ which the new instance's tick applies.
 
 ``image_swap`` is NEVER consumed by the tick: an image-level swap is an
 explicit operator downtime action (the flag survives until the operator
-applies it — PLAN §9).
+applies it).
 """
 from __future__ import annotations
 

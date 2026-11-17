@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Guest nftables (PLAN §2/§6): default-deny input; admit SERVITOR_PORT from
+# Guest nftables: default-deny input; admit SERVITOR_PORT from
 # the edge subnet ONLY (plus loopback, established/related, ops SSH from the
 # LAN subnet). All values from the 0600 env file — nothing hardcoded here.
 # IPv4-only in v1 (the edge subnet is the host's docker network).

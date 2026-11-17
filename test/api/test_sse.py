@@ -1,4 +1,4 @@
-"""Stage-3 gates: the SSE event stream (PLAN §3.3).
+"""SSE event stream gates.
 
 - Reconnect: kill the SSE connection mid-run, reconnect with
   Last-Event-ID — no lost events, no duplicates (ids strictly
