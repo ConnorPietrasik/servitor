@@ -42,10 +42,9 @@ see Key rotation below).
 
 1. `cp .env.example .env`; set `SERVITOR_BIND=127.0.0.1`,
    `SERVITOR_PORT=8787`, `SERVITOR_ROOT=<path on ext4, never overlay>`,
-   `SERVITOR_PI_VERSION`, `SERVITOR_PI_WEB_ACCESS_VERSION`, the two keys,
-   and the intended model values (discover live from the router —
-   off-LAN the public URL works; on-LAN pin `*.pietrasik.top` to the host
-   LAN IP in `/etc/hosts`, the same workaround portcullis ships).
+   `SERVITOR_PI_VERSION`, `SERVITOR_PI_WEB_ACCESS_VERSION`, the two keys
+   (off-LAN the public router URL works; on-LAN pin `*.pietrasik.top` to
+   the host LAN IP in `/etc/hosts`, the same workaround portcullis ships).
 2. `make venv && make test` (mock router + conformance suite, no server).
 3. Run the app with root (iso/rpc need CAP_SYS_ADMIN: overlays, setuid):
    `sudo -E set -a; . ./.env; set +a; .venv/bin/python -m app.api.main`.
@@ -92,8 +91,9 @@ host packages, `.env` template, image, state disk, the libvirt domain from
    key slice into the 0600 env file, pi-web-access install at the `.env`
    selection, service restart (or the update-waiting flag when a run is
    active — never blocks, always exit 0), then `deploy/doctor.sh`.
-4. `doctor` green is the deploy gate: no-prompt spawn resolves the intended
-   provider/baseUrl, `model.id != "unknown"`, launch line == the asserted
+4. `doctor` green is the deploy gate: no-prompt spawn resolves a usable
+   model (provider/baseUrl listed, `model.id != "unknown"` — no id/context
+   pin), launch line == the asserted
    constant, state volume is real ext4, firewall probe, key material absent
    from the synced tree/session files/app logs, live search works, one live
    prompt end-to-end.

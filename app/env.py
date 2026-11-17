@@ -40,9 +40,6 @@ ENV_NAMES: tuple[str, ...] = (
     # --- version selections (npm semver specs, exact by default) ---
     "SERVITOR_PI_VERSION",
     "SERVITOR_PI_WEB_ACCESS_VERSION",
-    # --- deploy-time intent (doctor asserts) ---
-    "SERVITOR_INTENDED_MODEL_ID",
-    "SERVITOR_INTENDED_CONTEXT_WINDOW",
     # --- deployment layout (absolute paths; the guest unit passes them via
     #     the EnvironmentFile — never resolved from PATH at runtime) ---
     "SERVITOR_PI_NODE_BIN",  # absolute node binary
@@ -88,9 +85,6 @@ class Config:
     # version selections (semver specs, exact by default)
     pi_version: str = "1.5.2"
     pi_web_access_version: str = "0.47.0"
-    # deploy-time intent
-    intended_model_id: str = "qwen35"
-    intended_context_window: int = 250000
     # machine credentials (may be absent at app boot; spawn fails closed
     # without OMNISSIAH_API_KEY — model.id == "unknown")
     omnissiah_api_key: str | None = None
@@ -173,10 +167,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         sse_ring_bytes=_optional_int(env, "SERVITOR_SSE_RING_BYTES"),
         pi_version=_require(env, "SERVITOR_PI_VERSION"),
         pi_web_access_version=_require(env, "SERVITOR_PI_WEB_ACCESS_VERSION"),
-        intended_model_id=_require(env, "SERVITOR_INTENDED_MODEL_ID"),
-        intended_context_window=_int(
-            env, "SERVITOR_INTENDED_CONTEXT_WINDOW", 250000
-        ),
         omnissiah_api_key=_optional(env, "OMNISSIAH_API_KEY"),
         exa_api_key=_optional(env, "EXA_API_KEY"),
     )
@@ -215,8 +205,6 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
         sse_ring_bytes=_optional_int(env, "SERVITOR_SSE_RING_BYTES"),
         pi_version=_optional(env, "SERVITOR_PI_VERSION") or "1.5.2",
         pi_web_access_version=_optional(env, "SERVITOR_PI_WEB_ACCESS_VERSION") or "0.47.0",
-        intended_model_id=_optional(env, "SERVITOR_INTENDED_MODEL_ID") or "qwen35",
-        intended_context_window=_int(env, "SERVITOR_INTENDED_CONTEXT_WINDOW", 250000),
         omnissiah_api_key=_optional(env, "OMNISSIAH_API_KEY"),
         exa_api_key=_optional(env, "EXA_API_KEY"),
     )

@@ -3,13 +3,17 @@
 #
 # Runs the guest's read-only certification (python -m app.doctor, the
 # synced tree's own venv — the doctor is part of the deployed app), then
-# the two firewall probes that only the host can make:
-#   open    — the host (inside SERVITOR_EDGE_SUBNET) reaches SERVITOR_PORT
-#             (live TCP connect)
-#   ruleset — the guest's nftables is default-deny and admits SERVITOR_PORT
-#             from SERVITOR_EDGE_SUBNET only (the guest's own IP IS in the
-#             edge subnet by design — a live negative probe from it is
-#             impossible, so the ruleset content is asserted instead)
+# the ONE live probe only the host can make:
+#   open — the host (inside SERVITOR_EDGE_SUBNET) reaches SERVITOR_PORT
+#          (live TCP connect — the only check anywhere that proves edge
+#          ingress reachability: the app's tick path runs the doctor
+#          in-guest and cannot probe its own ingress from the edge).
+# The ruleset CONTENT (default-deny, port admitted from the edge subnet
+# only) is certified guest-side by app.doctor's firewall.ruleset /
+# firewall.port checks — asserting the same nft state again over the same
+# ssh a few seconds later would add nothing (and the guest's own IP IS in
+# the edge subnet by design, so a live negative probe from it is
+# impossible — the content assertion is the right form).
 # Doctor must be green before the service starts serving and after every
 # sync; while the update-waiting flag is set, the guest doctor certifies
 # the running state and reports the staged target as a warning.
@@ -59,26 +63,16 @@ set +e
 GUEST_RC=$?
 set -e
 
-echo "=== doctor: firewall probes (host-side) ==="
+echo "=== doctor: firewall probe (host-side) ==="
 PROBE_RC=0
-# open: from the host (edge subnet) -> the port is admitted
+# open: from the host (edge subnet) -> the port is admitted end-to-end
+# (routing + nft input chain + app listening). The ruleset CONTENT is the
+# guest doctor's job (firewall.ruleset / firewall.port — same nft state,
+# asserted seconds earlier in the same run).
 if timeout 5 bash -c "exec 3<>/dev/tcp/${SERVITOR_VM_IP}/${SERVITOR_PORT}" 2>/dev/null; then
   echo "PASS  firewall.probe_open   — port ${SERVITOR_PORT} open from ${SERVITOR_VM_IP} (edge subnet)"
 else
   echo "FAIL  firewall.probe_open   — port ${SERVITOR_PORT} NOT reachable from the host"
-  PROBE_RC=1
-fi
-# closed: the guest's own IP IS in the edge subnet by design (static edge
-# address), so a live negative probe from it is impossible. Instead, assert
-# the ruleset content: default-deny input, and the port admitted from the
-# edge subnet only.
-RULESET="$("${SSH[@]}" "nft list ruleset" 2>/dev/null || true)"
-if grep -q "policy drop" <<<"$RULESET" \
-   && grep -q "$SERVITOR_EDGE_SUBNET" <<<"$RULESET" \
-   && grep -q "dport ${SERVITOR_PORT} accept" <<<"$RULESET"; then
-  echo "PASS  firewall.ruleset — default-deny; port ${SERVITOR_PORT} admitted from ${SERVITOR_EDGE_SUBNET} only"
-else
-  echo "FAIL  firewall.ruleset — expected default-deny input + edge-only accept for port ${SERVITOR_PORT}"
   PROBE_RC=1
 fi
 

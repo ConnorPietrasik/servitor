@@ -1,16 +1,17 @@
 {
   "$schema": "https://pi.dev/schemas/models.schema.json",
   "providers": {
-    "pietrasik": {
-      "name": "Pietrasik LLM fleet",
-      "baseUrl": "https://27b.pietrasik.top/v1",
+    "omnissiah": {
+      "baseUrl": "https://llm.pietrasik.top/v1",
       "api": "openai-completions",
       "apiKey": "$OMNISSIAH_API_KEY",
       "models": [
         {
-          "id": "qwen35",
-          "name": "Qwen 3.8 27B (IQ6)",
-          "input": ["text", "image"],
+          "id": "default",
+          "input": [
+            "text",
+            "image"
+          ],
           "contextWindow": 250000,
           "maxTokens": 200000
         }

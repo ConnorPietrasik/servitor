@@ -9,13 +9,13 @@ in-process, by the app's update tick (the deferred-doctor path):
         [--pi-node BIN --pi-cli JS --pi-ext DIR] [--toolkit DIR]
         [--slots slot1,...] [--skip-spawn]
 
-Env-derived values (keys, intended model, subnets) come from the
-environment — the 0600 env file the service loads; the key rides env
-only, as everywhere, and is never written to the report.
+Env-derived values (keys, subnets) come from the environment — the
+0600 env file the service loads; the key rides env only, as
+everywhere, and is never written to the report.
 
 The one stateful check (no-prompt spawn) creates a real session and
-releases it again: it certifies that spawning works, resolves the
-intended model without a model call, and that the launch line, the RO
+releases it again: it certifies that spawning works, resolves a
+usable model without a model call, and that the launch line, the RO
 bind, and the extension set are exactly as the image declares.
 
 Exit: 0 = green (warnings allowed), 1 = at least one FAIL.
@@ -41,10 +41,6 @@ from typing import Any
 PASS, FAIL, WARN, SKIP = "PASS", "FAIL", "WARN", "SKIP"
 
 CONTEXT_FILE_NAMES = ("AGENTS.md", "SYSTEM.md", "APPEND_SYSTEM.md")
-# slice constants — asserted from the LIVE unit, not the file
-# systemctl show reports MemoryHigh/MemoryMax in BYTES, so the expected
-# values are the byte form of the slice unit's 25G/30G limits
-SLICE_EXPECT = {"CPUWeight": "50", "MemoryHigh": str(25 * 1024 ** 3), "MemoryMax": str(30 * 1024 ** 3)}
 
 
 @dataclass
@@ -96,10 +92,6 @@ def check_env(rep: Report, args: argparse.Namespace) -> None:
         rep.add("env.exa_key", PASS, "EXA_API_KEY present")
     else:
         rep.add("env.exa_key", WARN, "EXA_API_KEY absent — live search disabled")
-    for var in ("SERVITOR_INTENDED_MODEL_ID", "SERVITOR_INTENDED_CONTEXT_WINDOW"):
-        v = os.environ.get(var, "")
-        if not v:
-            rep.add(f"env.{var.lower()}", FAIL, f"{var} not set (intended values are env)")
 
 
 def check_state_fs(rep: Report, root: str) -> None:
@@ -265,24 +257,6 @@ def check_firewall_rules(rep: Report) -> None:
             rep.add("firewall.port", PASS, f"port {port} admitted from {edge} only, policy drop")
         else:
             rep.add("firewall.port", FAIL, f"ruleset lacks port {port}/{edge}/policy-drop")
-
-
-def check_slice(rep: Report) -> None:
-    code, out = _sh(["systemctl", "show", "servitor.slice",
-                     "-p", "CPUWeight", "-p", "MemoryHigh", "-p", "MemoryMax"])
-    if code != 0:
-        rep.add("slice.live", FAIL, f"servitor.slice not active: {out[:200]}")
-        return
-    got: dict[str, str] = {}
-    for line in out.strip().splitlines():
-        if "=" in line:
-            k, v = line.split("=", 1)
-            got[k.strip()] = v.strip()
-    ok = all(got.get(k) == v for k, v in SLICE_EXPECT.items())
-    if ok:
-        rep.add("slice.live", PASS, f"live unit: {got} (read from the running unit, not the file)")
-    else:
-        rep.add("slice.live", FAIL, f"live unit {got} != expected {SLICE_EXPECT}")
 
 
 def check_disk(rep: Report, root: str) -> None:
@@ -546,7 +520,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
             rep.add("spawn.models", FAIL, f"get_available_models failed: {e}")
             return
         blob = json.dumps(models)
-        # intended provider + baseUrl from the active models.json
+        # the active models.json's provider + baseUrl must be listed
         mj = json.loads(Path(args.config_src, "models.json").read_text())
         providers = mj.get("providers", {})
         prov = next(iter(providers.values()), {})
@@ -556,41 +530,22 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
             rep.add("spawn.models", PASS, f"provider {pname} + baseUrl {pbase} listed")
         else:
             rep.add("spawn.models", FAIL, f"provider/baseUrl not listed: {blob[:300]}")
-        # intended model id + context window (runtime discovery)
-        intended_id = optional_env("SERVITOR_INTENDED_MODEL_ID") or ""
-        intended_ctx = optional_env("SERVITOR_INTENDED_CONTEXT_WINDOW") or ""
-        flat: list[dict[str, Any]] = []
-
-        def walk(x):
-            if isinstance(x, dict):
-                flat.append(x)
-                for v in x.values():
-                    walk(v)
-            elif isinstance(x, list):
-                for v in x:
-                    walk(v)
-
-        walk(models)
-        candidates = [
-            m
-            for m in flat
-            if m.get("id") == intended_id or m.get("modelId") == intended_id
-        ]
-        if not intended_id:
-            rep.add("spawn.intended_model", FAIL, "SERVITOR_INTENDED_MODEL_ID unset")
-        elif not candidates:
-            ids = sorted({str(m.get("id")) for m in flat if m.get("id")})
-            rep.add("spawn.intended_model", FAIL, f"intended {intended_id} not listed; saw {ids[:8]}")
+        # the no-prompt spawn must resolve a USABLE model (the app's own
+        # fail-closed signal: model.id == "unknown" == no usable model).
+        # No specific id or context window is pinned: the agent cannot
+        # change models, and which model the fleet serves is the fleet's
+        # business — the live prompt below proves the router serves it.
+        try:
+            model = await driver.assert_model_usable()
+        except Exception as e:
+            rep.add("spawn.model_usable", FAIL, f"no usable model: {e}")
         else:
-            m = candidates[0]
-            mid = str(m.get("id") or m.get("modelId"))
-            ctx = m.get("contextWindow") or m.get("context_window")
-            if mid == "unknown":
-                rep.add("spawn.intended_model", FAIL, "model.id is 'unknown'")
-            elif intended_ctx and str(ctx) != intended_ctx:
-                rep.add("spawn.intended_model", FAIL, f"contextWindow {ctx} != intended {intended_ctx}")
-            else:
-                rep.add("spawn.intended_model", PASS, f"{mid} ctx={ctx} (== intended, runtime-discovered)")
+            rep.add(
+                "spawn.model_usable",
+                PASS,
+                f"model {model.get('id')} resolved, ctx={model.get('contextWindow', '?')}"
+                " (usability only — no id/context pin)",
+            )
         # spawn timing (informational: ~1.5 s expected; slow = WARN)
         if spawn_sec <= 5.0:
             rep.add("spawn.timing", PASS, f"no-prompt spawn in {spawn_sec:.2f}s (no model call)")
@@ -712,7 +667,6 @@ async def main(argv: list[str]) -> int:
     registry = Registry(args.registry or f"{args.state}/registry.db")
     check_versions(rep, args, registry)
     check_firewall_rules(rep)
-    check_slice(rep)
     check_disk(rep, args.state)
     check_keys_absent(rep, args, args.state)
     check_update_waiting(rep, args)

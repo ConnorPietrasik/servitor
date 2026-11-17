@@ -99,7 +99,7 @@ class MockRouter:
                             "object": "list",
                             "data": [
                                 {
-                                    "id": router._script.get("model_id", "qwen35"),
+                                    "id": router._script.get("model_id", "default"),
                                     "object": "model",
                                     "capabilities": {
                                         "chat": True,
@@ -151,7 +151,7 @@ class MockRouter:
 
             def _handle_chat(self, body: dict[str, Any]) -> None:
                 s = dict(router._script)
-                script_model = s.get("model_id", "qwen35")
+                script_model = s.get("model_id", "default")
                 # an error scenario responds before streaming anything
                 status = s.get("status", 200)
                 if status >= 400:

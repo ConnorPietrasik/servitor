@@ -35,9 +35,6 @@ services:
       # version selections (npm semver specs, exact by default)
       - SERVITOR_PI_VERSION=${SERVITOR_PI_VERSION}
       - SERVITOR_PI_WEB_ACCESS_VERSION=${SERVITOR_PI_WEB_ACCESS_VERSION}
-      # deploy-time intent (doctor asserts the live router against these)
-      - SERVITOR_INTENDED_MODEL_ID=${SERVITOR_INTENDED_MODEL_ID}
-      - SERVITOR_INTENDED_CONTEXT_WINDOW=${SERVITOR_INTENDED_CONTEXT_WINDOW}
     ports:
       # the ONE published port; bind from the env file, never a literal
       - "${SERVITOR_BIND}:${SERVITOR_PORT}:${SERVITOR_PORT}"

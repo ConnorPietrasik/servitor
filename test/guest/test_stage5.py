@@ -90,11 +90,12 @@ def test_no_prompt_spawn_is_fast_and_promptless(guest: GuestVM):
         guest.release(sid)
 
 
-def test_model_assert_matches_intended(guest: GuestVM):
-    """model.id is the runtime-discovered id (never hardcoded) and matches
-    the intended value; the context window matches too. Independent of the
-    doctor's own check: the guest runs the app's own PiSession against the
-    real router and reads get_available_models back."""
+def test_model_assert_usable(guest: GuestVM):
+    """the spawn resolves at least one usable model (the app's fail-closed
+    signal is id == "unknown"; no id/context pin — the model floats with
+    the fleet). Independent of the doctor's own check: the guest runs the
+    app's own PiSession against the real router and reads
+    get_available_models back."""
     require_root_or_skip()
     probe = r'''
 import asyncio, os, tempfile
@@ -181,15 +182,16 @@ async def main():
             for v in x:
                 walk(v)
     walk(raw)
-    intended = env["SERVITOR_INTENDED_MODEL_ID"]
-    cw = int(env["SERVITOR_INTENDED_CONTEXT_WINDOW"])
-    m = next((x for x in flat if x["id"] == intended), None)
-    assert m is not None, f"intended model {intended!r} not in get_available_models: " \
-                          f"{[x.get('id') for x in flat][:10]}"
-    assert m["id"] != "unknown"
-    got_cw = m.get("contextWindow", m.get("context_window"))
-    assert got_cw == cw, f"context window {got_cw} != intended {cw}"
-    print("MODEL-OK", m["id"], got_cw)
+    # usability only — no id/context pin (the model floats with the fleet):
+    # the guest's agent dir + credential must yield at least one usable
+    # model entry (the app's own fail-closed signal is id == "unknown")
+    usable = [x for x in flat if x["id"] and x["id"] != "unknown"]
+    assert usable, f"no usable model in get_available_models: " \
+                   f"{[x.get('id') for x in flat][:10]}"
+    m = usable[0]
+    cw = m.get("contextWindow", m.get("context_window"))
+    assert cw, f"usable model {m['id']} has no context window"
+    print("MODEL-OK", m["id"], cw)
 
 # serialize with the doctor's probe (same lock on the state volume): a
 # concurrent doctor's release sweep deletes every file the probe uid owns —

@@ -80,8 +80,6 @@ GUEST_ADDR="${SERVITOR_VM_IP}/${SERVITOR_EDGE_SUBNET##*/}"
 # route and every live-router gate dies (empty assistant turns on the real
 # router; exa searches time out)
 GUEST_GW="$(cut -d. -f1-3 <<<"${SERVITOR_EDGE_SUBNET%%/*}").1"
-: "${SERVITOR_INTENDED_MODEL_ID:=qwen35}"
-: "${SERVITOR_INTENDED_CONTEXT_WINDOW:=250000}"
 [[ -f "$DEPLOY_KEY" ]] || {
   echo "deploy key not found: $DEPLOY_KEY" >&2
   echo "  ssh-keygen -t ed25519 -N '' -f ${DEPLOY_KEY%.pub}" >&2
@@ -282,8 +280,6 @@ SERVITOR_PI_NODE_BIN=$NODE_BIN
 SERVITOR_PI_CLI_JS=/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
 SERVITOR_PI_EXT_DIR=/opt/pi-ext/pi-web-access
 SERVITOR_TOOLKIT_DIR=/opt/toolkit
-SERVITOR_INTENDED_MODEL_ID=$SERVITOR_INTENDED_MODEL_ID
-SERVITOR_INTENDED_CONTEXT_WINDOW=$SERVITOR_INTENDED_CONTEXT_WINDOW
 EOF
 chmod 0600 "$WORK/disk/etc/servitor/servitor.env"
 

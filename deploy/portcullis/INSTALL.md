@@ -95,10 +95,6 @@ SERVITOR_DNS_UPSTREAM="1.1.1.1 9.9.9.9"
 # version selections (must match the image you install)
 SERVITOR_PI_VERSION=1.5.2
 SERVITOR_PI_WEB_ACCESS_VERSION=0.47.0
-
-# deploy-time intent (doctor asserts live against the router)
-SERVITOR_INTENDED_MODEL_ID=qwen35
-SERVITOR_INTENDED_CONTEXT_WINDOW=250000
 ```
 
 ## 4. The guest image

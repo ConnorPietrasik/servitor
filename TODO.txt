@@ -1,0 +1,2 @@
+Add model switching
+Add image / video gen calls
