@@ -16,7 +16,8 @@ Asserts the interface contract before any runtime code exists:
    the route file references the VM via placeholders, no literal port.
 3. **Contract files parse** — compose contract and the portcullis route
    yml load as YAML with the expected shape (one router, the servitor
-   hostname, the auth-chain middleware, SSE flush/read-timeout settings).
+   hostname, the auth-chain middleware, the SSE flush setting, and the
+   absence of the dead readTimeout key (not a Traefik v3 field)).
 4. **Agent-config sanity** — models.json: literal baseUrl (``$VAR`` is NOT
    interpolated), ``apiKey: "$OMNISSIAH_API_KEY"`` (env-only key),
    image-capable model declared; no ``auth.json``/``models-store.json``
@@ -242,8 +243,9 @@ def main() -> int:
         "route sets responseForwarding.flushInterval (SSE, no buffering)",
     )
     check(
-        str(lb.get("readTimeout")) in ("0s", "0", "0ms"),
-        "route disables the load-balancer read timeout (long silent gaps)",
+        "readTimeout" not in lb,
+        "route has no readTimeout key (not a Traefik v3 loadBalancer field — "
+        "silently ignored; the no-cut contract rides the v3 defaults)",
     )
 
     # --- 3/4. agent-config sanity ------------------------------------------

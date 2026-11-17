@@ -4,7 +4,7 @@
 # the agent never is. The stop path is the abort-then-drain path: the app's
 # SIGTERM handler sends RPC abort (with recorded cause) to every run-active
 # child while its stdin is still open, marks sessions interrupted, then
-# closes stdin for orderly shutdown. SERVSITOR_DRAIN_GRACE_SECS (90) is
+# closes stdin for orderly shutdown. SERVITOR_DRAIN_GRACE_SECS (90) is
 # STRICTLY LESS than TimeoutStopSec below (120) — or systemd escalates to
 # SIGKILL mid-drain and the recorded cause lies.
 [Unit]

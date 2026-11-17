@@ -18,10 +18,15 @@
                      The guest's static IP is BAKED into the image at build
                      time (SERVITOR_VM_IP, gateway = subnet .1), so it only
                      needs to be on this L2 segment.
+    {{VCPU}}         vCPU count — default 24 (no quota: a long run owns the
+                     idle machine; proven minimum 4, see Sizing)
+    {{RAM_MAX}}      RAM ceiling in GiB — default 30 (not a reservation;
+                     virtio-balloon returns idle memory)
+    {{RAM_CURRENT}}  initial RAM in GiB — default 16
 
-  Sizing: 24 vCPU no quota, RAM ceiling 30 GB (not a reservation —
-  virtio-balloon returns idle memory), no GPU. The proven minimum (test
-  harness) is 4 vCPU / 8 GB — scale {{VCPU}}/{{RAM_*}} down for a weaker box.
+  Sizing: defaults are 24 vCPU no quota, RAM ceiling 30 GB, no GPU. The
+  proven minimum (test harness) is 4 vCPU / 8 GB — scale
+  {{VCPU}}/{{RAM_MAX}}/{{RAM_CURRENT}} down for a weaker box.
 
   free-page-reporting: enable it on the host's libvirt if it is supported
   (libvirt 9.x exposes it; the base template deliberately omits the element
@@ -30,9 +35,9 @@
 <domain type='kvm'>
   <name>servitor</name>
 
-  <memory unit='GiB'>30</memory>
-  <currentMemory unit='GiB'>16</currentMemory>
-  <vcpu placement='static'>24</vcpu>
+  <memory unit='GiB'>{{RAM_MAX}}</memory>
+  <currentMemory unit='GiB'>{{RAM_CURRENT}}</currentMemory>
+  <vcpu placement='static'>{{VCPU}}</vcpu>
   <cputune>
     <!-- low host-side scheduling weight: a long run should own the
          IDLE machine; on a busy host this keeps the VM from starving the

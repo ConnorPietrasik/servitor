@@ -32,12 +32,18 @@ http:
         servers:
           - url: "http://VM_INGRESS_IP:SERVITOR_PORT"
         passHostHeader: true
-        # SSE contract: a stream cut by proxy read-timeout is the
+        # SSE contract: a stream cut by a proxy timeout is the
         # dropped-connection bug we are forbidden to reproduce.
-        #  - no response buffering, frequent flushes (heartbeats ~15 s;
-        #    deltas are disposable, but the stream must never be cut)
-        #  - no load-balancer read timeout: a 20-minute bash call emits no
-        #    events at all; the heartbeat keeps the connection live
+        #  - frequent flushes (heartbeats ~15 s; deltas are disposable, but
+        #    the stream must never be cut)
+        #  - timeouts: Traefik v3 has NO per-service response timeout —
+        #    entrypoint writeTimeout defaults to 0 and backend forwarding
+        #    timeouts default to 0, so a 20-minute bash call (zero events)
+        #    is never cut; the heartbeat is what keeps the client-side
+        #    connection live. flushInterval is v3's only responseForwarding
+        #    field (default 100ms, ignored for responses v3 recognizes as
+        #    streaming) — set for the record. Do NOT re-add a readTimeout
+        #    key: v3 has no such loadBalancer field and silently ignores
+        #    unknown ones (that would be dead config).
         responseForwarding:
           flushInterval: 100ms
-        readTimeout: 0s
