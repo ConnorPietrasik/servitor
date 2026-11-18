@@ -79,7 +79,7 @@ host packages, `.env` template, image, state disk, the libvirt domain from
 `deploy/guest/servitor-domain.xml`, first sync, portcullis merge, verify).
 
 1. **Host work (once):** install libvirt/KVM (none exists on the
-   server yet), build the guest qcow2 (`make guest`), create the state disk,
+   server yet), build the guest qcow2 (`sudo make guest`), create the state disk,
    define + start the VM (the domain template in
    `deploy/guest/servitor-domain.xml`) — the VM ingress IP is CHOSEN in the
    host `.env` before the build (it is baked into the image).
@@ -115,7 +115,12 @@ the `.env` specs → conformance suite against the *resolved* versions
 host-side (the guest is untouched until the gate passes) → provision only
 what changed (image / extension / config) → swap-based deploy with previous
 artifacts retained → doctor → automatic rollback on doctor failure.
-`sync` remains the fast config-only push for daily edits. A run active at
+`sync` remains the fast config-only push for daily edits (it also carries
+the built chat-UI dist, so `ui/` changes deploy without an image rebuild).
+The conformance gate runs host-side (root), so the host checkout needs its
+own `make venv` and the slot users the suite spawns into (`slot1` for the
+gate, `slot2` for `make test`'s unit half) — the guest image's slots are a
+different namespace (INSTALL.md §10 for the server). A run active at
 the restart step sets the update-waiting flag instead of restarting;
 image-level swaps are always explicit operator downtime. Not bumping is a
 supported steady state — the guest runs the last-verified pi indefinitely.

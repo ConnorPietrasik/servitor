@@ -800,10 +800,12 @@ class Lifecycle:
 
     async def _run_doctor(self) -> dict:
         """Run the guest doctor in a subprocess (own venv on the guest,
-        test override elsewhere). Bounded: doctor is read-only and fast
-        (the no-prompt spawn is ~1.5 s; the whole run is seconds). The
-        subprocess inherits the service environment (the 0600 env file)
-        — keys ride env only, as everywhere."""
+        test override elsewhere). Bounded: the doctor is read-only with
+        respect to the DEPLOYED artifacts, and with the live run check
+        (one prompt that searches the web, 300 s budget) the whole run
+        is ~1–5 min (subprocess timeout 600 s). The subprocess inherits
+        the service environment (the 0600 env file) — keys ride env
+        only, as everywhere."""
         import sys
 
         cmd = self.cfg.doctor_cmd

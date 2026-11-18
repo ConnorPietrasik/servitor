@@ -16,7 +16,7 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 
 1. Host: install libvirt/KVM + the deploy key + the one egress ufw rule —
    INSTALL.md §1–§2 and §6 (none of it exists on a fresh box).
-2. Host: `make guest` in a servitor checkout — builds the qcow2 (name =
+2. Host: `sudo make guest` in a servitor checkout — builds the qcow2 (name =
    pi version + date; the previous image is retained for rollback). The VM's
    edge IP (`SERVITOR_VM_IP` in the host `.env`) is CHOSEN BEFORE the build
    — it is baked into the image.
@@ -24,9 +24,9 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
    `deploy/guest/servitor-domain.xml` (24 vCPU no quota, balloon, ~200 GB
    state disk, NIC on the portcullis EDGE bridge, no GPU) + the state disk
    (ext4, LABEL=servitor-state). Watch the serial console on first boot.
-4. Guest: the image ships with slots 1-16, the toolkit, the app, nftables
-   applied (8787 from the edge subnet only, 22 from the LAN subnet, default
-   deny), systemd-resolved with a public upstream.
+4. Guest: the image ships with slots 1-16, the toolkit, the app, the chat UI
+   dist, nftables applied (8787 from the edge subnet only, 22 from the LAN
+   subnet, default deny), systemd-resolved with a public upstream.
 5. Host: `sudo deploy/sync.sh` — provisioning (config + keys + extension +
    doctor). Success marker: "sync: OK — shape deployed, doctor GREEN".
 6. Portcullis: commit the route (this repo's
@@ -42,7 +42,7 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 | task | how |
 |---|---|
 | change prompts/skills/lib | edit `agent-config/` / `lib/` in the host checkout, panel `servitor-sync` (or `sudo deploy/sync.sh`) |
-| bump pi / pi-web-access | edit `.env` specs, `sudo deploy/update.sh` (SSH — long, network-bound; the conformance suite gates the resolved versions host-side before anything touches the guest) |
+| bump pi / pi-web-access | edit `.env` specs, `sudo deploy/update.sh` (SSH — long, network-bound; the conformance suite gates the resolved versions host-side before anything touches the guest; first run on a fresh server: host checkout needs `sudo make venv` + the `slot1` user — INSTALL.md §10) |
 | rotate keys | host `.env` → `sudo deploy/sync.sh` (re-injects the key slice into the guest's 0600 env file, sets the restart flag) — the portcullis stack's copy of the key floats with its own `make update` as usual |
 | ssh into the VM | from the server: `sudo ssh -i /root/.srv/deploy_key root@$SERVITOR_VM_IP`. From a LAN workstation additionally needs a host forward rule (`sudo ufw route allow from <LAN subnet> to $SERVITOR_VM_IP port 22`) — not added by default; the designed flows (panel + server) don't need it |
 | release a session | UI close, GC timer (idle >14 d, non-stable), slot/disk pressure — all through the single `release()` (sweep by owner before the slot is reused; sweep-fail ⇒ quarantined, visible, retryable) |

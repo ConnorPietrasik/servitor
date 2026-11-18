@@ -17,6 +17,7 @@
 //                        exit 0)
 //   servitor-doctor      /opt/servitor-repo/deploy/doctor.sh — guest
 //                        certification + firewall probes + live prompt
+//                        + live search (one live run that searches the web)
 //
 // Contract points the merged code enforces (violations would be portcullis
 // bugs, not servitor's):
@@ -31,8 +32,8 @@
 //     repo's .env) is validated as plain IPv4 + port before use: a bounded
 //     one-shot to a fixed, non-argument target — a documented exception to
 //     panel-do's "no network" rule, degrading to a string on any failure;
-//   - no action takes arguments; sync/doctor budgets (600s/300s) fit
-//     panel-api's 660s HTTP cap (timeout_sec + 10).
+//   - no action takes arguments; sync/doctor budgets (600s/600s) fit
+//     panel-api's 660s HTTP cap (timeout_sec + 10, clamped at 660).
 
 package main
 
@@ -183,7 +184,8 @@ func servitorScriptTail(what, script, out string, err error, logf func(string, .
 // it stages everything, sets the update-waiting flag, and exits 0; the
 // app's tick applies restart+doctor at the first idle moment. It therefore
 // can run for a long while (staging wait ≤150 s + service wait + the
-// doctor's live prompt): 600 s keeps it inside the panel-api's 660 s HTTP
+// post-deploy doctor's live run — one prompt that searches the web, a
+// real model call): 600 s keeps it inside the panel-api's 660 s HTTP
 // cap with headroom. On an action timeout the ctx deadline KILLS the
 // script at the deadline (runCmd: direct child dies, in-flight scp/ssh
 // grandchildren may linger) — safe because the script is idempotent and
@@ -202,9 +204,11 @@ func servitorSync(ctx context.Context, args []string, logf func(string, ...any))
 }
 
 // servitorDoctor — the servitor deploy gate (guest certification + the
-// host-side firewall probes + one live prompt + one live search). Read-
-// only with respect to the VM (it never changes state), so no confirm —
-// but it spends one model turn, hence its own 300 s budget.
+// host-side firewall probes + one live run that searches the web, which
+// certifies the live prompt and the live search in a single model call).
+// Read-only with respect to the VM (it never changes state), so no
+// confirm — but it spends a live model run (300 s budget), hence its
+// own 600 s action budget.
 func servitorDoctor(ctx context.Context, args []string, logf func(string, ...any)) error {
 	script, err := checkManagedScript(servitorRepoPath, filepath.Join("deploy", "doctor.sh"))
 	if err != nil {
@@ -234,14 +238,24 @@ var _ = map[string]Action{
 	"servitor-sync": {
 		Summary: "Push the host checkout (config/lib/app + key slice) into the servitor VM; never blocks a run",
 		Args:    nil,
+		// 10 min: the post-deploy doctor now ends with one live run that
+		// makes the agent search the web (a real model call; ~1–5 min,
+		// 300 s settle cap), so the doctor itself runs at most ~6 min
+		// (static checks + the cap) — on top of the npm stages +
+		// artifact pushes + the tick wait. Keep this at or below 650 s:
+		// panel-api clamps the action's subprocess to timeout_sec + 10,
+		// capped at 660 s, so a bigger budget here would be dead.
 		Timeout: 600 * time.Second,
 		Confirm: true,
 		Run:     servitorSync,
 	},
 	"servitor-doctor": {
-		Summary: "Run the servitor deploy doctor (guest certification + firewall probes + live prompt)",
+		Summary: "Run the servitor deploy doctor (guest certification + firewall probes + live prompt + live search)",
 		Args:    nil,
-		Timeout: 300 * time.Second,
+		// 10 min: the live run (one prompt that searches the web; 300 s
+		// budget) is a real model call; the static checks are seconds.
+		// Same panel-api clamp as servitor-sync (timeout_sec + 10, cap 660 s).
+		Timeout: 600 * time.Second,
 		Confirm: false,
 		Run:     servitorDoctor,
 	},

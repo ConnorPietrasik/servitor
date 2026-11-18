@@ -81,6 +81,7 @@ print(r.get_version('pi_web_access') or '')
 r.close()")"
 GUEST_EXT_INSTALLED="$(run_guest "node -e \"try{console.log(require('/opt/pi-ext/pi-web-access/package.json').version)}catch(e){console.log('')}\"" || true)"
 GUEST_APP_SHA="$(run_guest "cd /opt/servitor/app && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
+GUEST_UI_SHA="$(run_guest "cd /opt/servitor/app/ui/dist 2>/dev/null && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1" || true)"
 GUEST_ENV_SHA="$(run_guest "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1" || true)"
 
 # ---- artifacts (host) ----------------------------------------------------
@@ -112,6 +113,23 @@ fi
 # metadata (owner name vs numeric uid, mtime, traversal order), so a second
 # sync of an unchanged tree is a deterministic NO-OP
 APP_SHA="$(cd "$REPO" && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)"
+
+# UI: build host-side when the ui/ source moved since the last build
+# (stamp: ui/.ui-src-sha), then hash the dist — the same content
+# addressing as config/app, so a second sync of an unchanged tree is a
+# deterministic NO-OP. NO --ignore-scripts (vite/esbuild need install
+# scripts — unlike the pinned pi stage). The app serves the dist on the
+# same port; a UI-only change deploys here without an image rebuild.
+# (The stamp is excluded from the source hash — it is the hash's output,
+# and hashing it in would re-trigger a build on every run.)
+UI_SRC_SHA="$(cd "$REPO/ui" && find . -type f -not -path './node_modules/*' -not -path './dist/*' -not -path './.ui-src-sha' | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)"
+if [[ ! -f "$REPO/ui/dist/index.html" || "$(cat "$REPO/ui/.ui-src-sha" 2>/dev/null || true)" != "$UI_SRC_SHA" ]]; then
+  echo "sync: building ui (vite)…"
+  ( cd "$REPO/ui" && npm ci --no-audit --no-fund >/dev/null && npm run build >/dev/null ) \
+    || { echo "ui build failed (npm ci + npm run build in $REPO/ui)" >&2; exit 1; }
+  echo "$UI_SRC_SHA" > "$REPO/ui/.ui-src-sha"
+fi
+UI_DIST_SHA="$(cd "$REPO/ui/dist" && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)"
 KEYS_SHA="$( { printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
 
 # extension: host npm stage at the .env selection (the same command the
@@ -146,6 +164,7 @@ CHANGED=()
 [[ "$CONFIG_VERSION" != "$(basename "${GUEST_ACTIVE:-}")" ]] && CHANGED+=("config")
 [[ "$EXT_VERSION" != "${GUEST_EXT_INSTALLED:-}" ]] && CHANGED+=("extension")
 [[ "$APP_SHA" != "$GUEST_APP_SHA" ]] && CHANGED+=("app")
+[[ "$UI_DIST_SHA" != "$GUEST_UI_SHA" ]] && CHANGED+=("ui")
 [[ "$KEYS_SHA" != "$GUEST_ENV_SHA" ]] && CHANGED+=("env")
 
 if [[ ${#CHANGED[@]} -eq 0 ]]; then
@@ -179,6 +198,18 @@ run_guest "rm -rf /opt/servitor/app/app"
 tar -C "$REPO" --exclude='app/__pycache__' --exclude='app/*/__pycache__' -cf "$WORK/app.tar" app pyproject.toml
 SCp "$WORK/app.tar" "$SSH_TARGET:/tmp/servitor-app.tar"
 run_guest "tar -xf /tmp/servitor-app.tar -C /opt/servitor/app && rm -f /tmp/servitor-app.tar"
+
+# ui (the static dist; the app serves it on the same port — rm+extract
+# like the app: a tar -x over the old tree keeps deleted asset files)
+tar -C "$REPO/ui/dist" -cf "$WORK/ui.tar" .
+SCp "$WORK/ui.tar" "$SSH_TARGET:/tmp/servitor-ui.tar"
+run_guest "
+  set -e
+  rm -rf /opt/servitor/app/ui
+  mkdir -p /opt/servitor/app/ui
+  tar -xf /tmp/servitor-ui.tar -C /opt/servitor/app/ui
+  rm -f /tmp/servitor-ui.tar
+"
 
 # config: versioned stage + atomic active-pointer swap. The version dir is
 # the CONTENT-ADDRESSed name (== CONFIG_VERSION): the directory IS the

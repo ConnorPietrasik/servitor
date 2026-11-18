@@ -188,6 +188,20 @@ rm -rf "$WORK/disk/opt/servitor/app.previous" \
        "$WORK/disk/opt/servitor/app.previous.app" \
        "$WORK/disk/opt/servitor/app.previous.pyproject"
 
+# The chat UI (static): the app serves ui/dist on the same port
+# (app/api/app.py resolves <app root>/ui/dist — on the guest that is
+# /opt/servitor/app/ui/dist). Built host-side at image time with vite
+# (nodejs is a required host package). NO --ignore-scripts here, unlike
+# the pi stage: esbuild (a vite dep) needs its install script to lay down
+# its binary. A dist-less image is API-only — the phone gets a 404 behind
+# the 2FA gate and nothing in the API-only gate stack says why — so this
+# is a hard build step, not a convenience. sync.sh keeps it current on
+# the guest for UI-only changes (no image rebuild).
+( cd "$REPO/ui" && npm ci --no-audit --no-fund >/dev/null && npm run build >/dev/null )
+rm -rf "$WORK/disk/opt/servitor/app/ui"
+mkdir -p "$WORK/disk/opt/servitor/app/ui"
+rsync -a --delete "$REPO/ui/dist/" "$WORK/disk/opt/servitor/app/ui/dist/"
+
 echo "==> [4/7] pi ($SERVITOR_PI_VERSION) + app venv + toolkit + slots"
 # note: unquoted heredoc — $SERVITOR_PI_VERSION expands at write time;
 # the in-chroot shell variables stay escaped

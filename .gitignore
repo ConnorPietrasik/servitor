@@ -22,6 +22,9 @@ ui/dist/
 test/.state/
 *.log
 
+# ui build stamp (the ui/ source sha the dist was built from)
+ui/.ui-src-sha
+
 # guest image artifacts (large; reproducible via deploy/guest/build.sh —
 # only the manifest's identity record is versioned)
 deploy/guest/images/*

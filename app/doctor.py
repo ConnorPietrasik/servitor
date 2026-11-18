@@ -13,10 +13,16 @@ Env-derived values (keys, subnets) come from the environment — the
 0600 env file the service loads; the key rides env only, as
 everywhere, and is never written to the report.
 
-The one stateful check (no-prompt spawn) creates a real session and
-releases it again: it certifies that spawning works, resolves a
-usable model without a model call, and that the launch line, the RO
-bind, and the extension set are exactly as the image declares.
+The stateful checks (no-prompt spawn, then one live run on the same
+probe session) create a real session and release it again: the
+no-prompt part certifies that spawning works, resolves a usable model
+WITHOUT a model call, and that the launch line, the RO bind, and the
+extension set are exactly as the image declares; the live run certifies
+what no control command can — that a REAL model call leaves the VM
+(VM -> edge -> router -> model), and, when EXA_API_KEY is present,
+that public egress + the search extension work: the one prompt makes
+the agent search the web, so both ride the same run (one settle wait,
+fewer model calls). LLM-key-gated; the search leg is EXA-key-gated.
 
 Exit: 0 = green (warnings allowed), 1 = at least one FAIL.
 """
@@ -76,6 +82,22 @@ def _sh(cmd: list[str]) -> tuple[int, str]:
         return 1, str(e)
 
 
+def _msg_text(m: dict[str, Any]) -> str:
+    """Flatten a raw pi message (driver.get_messages() shape) to its text.
+    The doctor reads driver messages directly — NOT the API's transcript
+    mapping — so content parts are joined here, once."""
+    c = m.get("content")
+    if isinstance(c, str):
+        return c
+    if isinstance(c, list):
+        return "".join(
+            p.get("text", "")
+            for p in c
+            if isinstance(p, dict) and p.get("type") == "text"
+        )
+    return ""
+
+
 # ---------------------------------------------------------------------- #
 # static checks (no session)                                             #
 # ---------------------------------------------------------------------- #
@@ -101,6 +123,32 @@ def check_state_fs(rep: Report, root: str) -> None:
         rep.add("state.fs", PASS, f"{root} is {fstype} (real ext4, not overlay)")
     else:
         rep.add("state.fs", FAIL, f"{root} is {fstype} — the state volume must be real ext4")
+
+
+def check_state_mount(rep: Report, root: str) -> None:
+    # The state volume contract is a separate ext4 DISK (the guest: the
+    # LABEL=servitor-state mount). The fstype check alone cannot catch a
+    # MISSING disk: the unmounted fallback dir is on the 24G root disk,
+    # which is also ext4 — the state would silently live there.
+    # findmnt --mountpoint (exact match), NOT -T: -T reports the mount
+    # CONTAINING the path, so the fallback dir on the root fs would pass
+    # with the root device — the missing disk is the case to catch.
+    # WARN, not FAIL: laptop dev uses a plain dir on the home fs by design
+    # (no mount), so the check must not red-light that; on the guest it is
+    # the operator-visible signal that INSTALL.md step 5 (the state disk)
+    # was skipped.
+    code, out = _sh(["findmnt", "--mountpoint", root, "-n", "-o", "SOURCE"])
+    src = out.strip().splitlines()[0] if code == 0 and out.strip() else ""
+    if src:
+        rep.add("state.mount", PASS, f"state root is a separate mount ({src})")
+    else:
+        rep.add(
+            "state.mount",
+            WARN,
+            "state root is NOT a separate mount point — laptop dev is fine with "
+            "this; on the guest it means the state disk is missing and all state "
+            "silently lives on the 24G root disk (create + attach it, reboot)",
+        )
 
 
 def check_ancestors(rep: Report, root: str, toolkit: str) -> None:
@@ -340,7 +388,7 @@ class ProbeLockTimeout(Exception):
 
 
 @asynccontextmanager
-async def _probe_lock(state_root: str, timeout: float = 300.0):
+async def _probe_lock(state_root: str, timeout: float = 240.0):
     """Serialize the stateful probe section across CONCURRENT doctors.
 
     The host doctor.sh and the app tick's inline doctor (the
@@ -348,8 +396,15 @@ async def _probe_lock(state_root: str, timeout: float = 300.0):
     runs its own post-deploy doctor while the tick may be applying a flag.
     Both probes would use the probe uid, and a release's sweep deletes
     EVERYTHING that uid owns — including the other probe's live workdir.
-    One lock on the state volume (visible to both paths); the probe is
-    ~10 s, so the second doctor simply waits."""
+    One lock on the state volume (visible to both paths). The probe is
+    ~1–5 min with the live run (one prompt that searches the web, 300 s
+    budget) — so the second doctor usually CANNOT wait out a concurrent
+    probe AND still finish its own live run inside the capped doctor
+    budget (600 s subprocess: the panel action, the app tick). The
+    default deadline (240 s) is set to fail the spawn check with a
+    re-run hint BEFORE that cap can kill the process silently; an
+    unbounded manual run fails the same way at 240 s (waiting out the
+    full concurrent probe would leave no time for its own live run)."""
     import fcntl as _fcntl
 
     lock_path = f"{state_root.rstrip('/')}/.doctor-probe.lock"
@@ -588,6 +643,125 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
             rep.add("spawn.extensions", WARN, f"loaded beyond image baseline: {extra} (drift)")
         else:
             rep.add("spawn.extensions", PASS, f"loaded set == baseline ({list(loaded) or 'none'})")
+        # ---- live run (THE integration gate) -----------------------------
+        # Every check above makes NO network call: spawn + control
+        # commands prove the agent starts and resolves a model, but the
+        # classic deploy failures (hairpin NAT on the router's public
+        # name, a dead key, a broken router path, a dead PUBLIC egress
+        # path) only surface when a REAL model call leaves the VM. One
+        # live run end to end certifies VM -> edge -> router -> model
+        # (deploy/README: "one live prompt end-to-end … is THE
+        # integration gate"). ONE prompt does both jobs: it makes the
+        # agent search the web, so the same run certifies public egress
+        # + the installed pi-web-access (the model router is reached
+        # edge-internally — a dead public path looks green to the
+        # no-prompt gate — while one Exa round trip sees it). Two report
+        # lines, one settle wait, fewer model calls. Conformance asserts
+        # the key plumbing statically and defers the live round trip to
+        # the doctor (test/conformance/test_key_plumbing.py).
+        # Key-gated: env.llm_key already FAILs the doctor without the
+        # LLM key; without EXA_API_KEY (env.exa_key already WARNs —
+        # search disabled is degraded, not failed) the run degrades to
+        # the echo-only prompt and spawn.live_search is not reported.
+        exa_key = os.environ.get(args.exa_key_env, "")
+        if api_key:
+            prompt_text = (
+                "Use the web search tool to search for 'pi coding agent'. "
+                "Reply with the first result's title, and make your final "
+                "line exactly: SERVITOR-LIVE-OK"
+                if exa_key else "Reply with exactly: SERVITOR-LIVE-OK")
+            t1 = time.monotonic()
+            try:
+                # prompt_and_wait_settled installs the settle waiter
+                # BEFORE the prompt (a fast run can settle between the
+                # prompt's reply and a post-hoc waiter) and discards it
+                # on timeout/rejection. 300 s: two model turns + one Exa
+                # round trip — real calls.
+                disposition, aborted = await driver.prompt_and_wait_settled(
+                    prompt_text, timeout=300)
+                if disposition == "handled":
+                    # pi consumed the prompt WITHOUT starting a run —
+                    # there is no model call to certify. A precise
+                    # failure here, not a 300 s settle timeout that
+                    # would blame key/router/egress.
+                    rep.add(
+                        "spawn.live_prompt", FAIL,
+                        f"prompt disposition {disposition!r} — consumed "
+                        "without a run; no model call to certify")
+                    if exa_key:
+                        rep.add(
+                            "spawn.live_search", FAIL,
+                            "no run started — no search evidence (same "
+                            "cause as spawn.live_prompt)")
+                elif aborted:
+                    rep.add(
+                        "spawn.live_prompt", FAIL,
+                        "run aborted before settling — key? router? (VM journal: "
+                        "sudo virsh console servitor)")
+                    if exa_key:
+                        rep.add(
+                            "spawn.live_search", FAIL,
+                            "run aborted before settling — no search evidence "
+                            "(same cause as spawn.live_prompt)")
+                else:
+                    msgs = await driver.get_messages()
+                    answers = [
+                        _msg_text(m)
+                        for m in msgs
+                        if m.get("role") == "assistant" and _msg_text(m)
+                    ]
+                    echoed = any("SERVITOR-LIVE-OK" in a for a in answers)
+                    rep.add(
+                        "spawn.live_prompt",
+                        PASS if echoed else FAIL,
+                        f"live run settled in {time.monotonic() - t1:.1f}s "
+                        "(VM -> edge -> router -> model end to end)"
+                        if echoed else
+                        "no SERVITOR-LIVE-OK echo "
+                        f"(last answer: {(answers[-1][:120] if answers else 'none')}) — "
+                        "hairpin NAT / router path / key")
+                    if exa_key:
+                        # Match the SEARCH tool by name, not just any
+                        # successful toolResult: a file/bash success would
+                        # otherwise certify egress. `web_search` is the
+                        # extension's tool name per the conformance contract
+                        # (test_tools_array.py) — a rename shows up here as
+                        # FAIL, which is the point.
+                        ok = [
+                            m for m in msgs
+                            if m.get("role") == "toolResult"
+                            and m.get("toolName") == "web_search"
+                            and not m.get("isError") and _msg_text(m).strip()
+                        ]
+                        rep.add(
+                            "spawn.live_search",
+                            PASS if ok else FAIL,
+                            "live search succeeded (public egress + extension, "
+                            "same run as spawn.live_prompt)"
+                            if ok else
+                            "no successful web_search tool result — "
+                            "public egress from the guest (host ufw route rule?), "
+                            "the extension, or the tool name drifted off the "
+                            "contract (web_search) — see the transcript")
+            except asyncio.TimeoutError:
+                rep.add(
+                    "spawn.live_prompt", FAIL,
+                    "live run did not settle within 300 s — the model call "
+                    "is hanging (key? router?; VM journal: "
+                    "sudo virsh console servitor)")
+                if exa_key:
+                    rep.add(
+                        "spawn.live_search", FAIL,
+                        "live run did not settle within 300 s — no search "
+                        "evidence (same cause as spawn.live_prompt)")
+            except Exception as e:
+                rep.add(
+                    "spawn.live_prompt", FAIL,
+                    f"live run failed: {type(e).__name__}: {e}")
+                if exa_key:
+                    rep.add(
+                        "spawn.live_search", FAIL,
+                        f"live run failed: {type(e).__name__}: {e}")
     except Exception as e:
         rep.add("spawn.no_prompt", FAIL, f"no-prompt spawn failed: {type(e).__name__}: {e}")
     finally:
@@ -659,6 +833,7 @@ async def main(argv: list[str]) -> int:
     print(f"DOCTOR servitor — {socket.gethostname()} {time.strftime('%Y-%m-%d %H:%M:%S')}")
     check_env(rep, args)
     check_state_fs(rep, args.state)
+    check_state_mount(rep, args.state)
     check_ancestors(rep, args.state, args.toolkit)
     check_config_version(rep, f"{args.state.rstrip('/')}/config")
     check_slots(rep, args.slots + [args.probe_slot])
@@ -680,9 +855,10 @@ async def main(argv: list[str]) -> int:
             rep.add(
                 "spawn.no_prompt",
                 FAIL,
-                "probe lock held by another doctor > 300 s — the spawn check "
-                "did not run (doctors serialize on the probe uid; they are "
-                "never concurrent)",
+                "probe lock held by another doctor > 240 s — the spawn check "
+                "did not run (doctors serialize on the probe uid; the "
+                "concurrent doctor's live run is probably still in progress — "
+                "re-run the doctor once it finishes)",
             )
     print(f"RESULT: {'FAIL' if rep.fails else 'GREEN'} ({rep.fails} fail, {rep.warns} warn)")
     return 1 if rep.fails else 0

@@ -36,7 +36,7 @@ convention is `.15`; the gateway is the subnet's `.1` by build convention).
 ## 1. Host packages
 
 ```bash
-sudo pacman -S --needed libvirt qemu nodejs npm git e2fsprogs
+sudo pacman -S --needed libvirt qemu nodejs npm git e2fsprogs rsync zstd curl
 sudo systemctl enable --now libvirtd
 ```
 
@@ -44,8 +44,12 @@ sudo systemctl enable --now libvirtd
 - `qemu` — provides `qemu-img` (state disk) and the emulator.
 - `nodejs` + `npm` — `deploy/sync.sh` stages the pi-web-access extension with
   host npm and reads its resolved version with `node -e` (same command the
-  conformance gate uses).
+  conformance gate uses), and builds the chat UI (vite) for the image and
+  for `ui/`-changing syncs.
 - `e2fsprogs` — `mkfs.ext4` for the state disk.
+- `rsync` + `zstd` + `curl` — `build.sh` needs them (rsync for the app/ui
+  trees into the chroot, `tar --zstd` for the pinned base, the base
+  download). CachyOS usually has all three; the line is idempotent.
 
 ## 2. Checkout + deploy key
 
@@ -104,8 +108,11 @@ network):**
 
 ```bash
 cd /opt/servitor-repo
-make guest     # = sudo unshare -m deploy/guest/build.sh --env .env \
-               #        --deploy-key /root/.srv/deploy_key.pub
+sudo make guest   # = unshare -m deploy/guest/build.sh --env .env
+                  #        --deploy-key /root/.srv/deploy_key.pub
+                  # (the target runs as the invoking user — the build needs
+                  # root, so the sudo is on `make`, and sudo's HOME=/root is
+                  # where the deploy key's pub half lives by §2)
 ```
 
 The bake reads `SERVITOR_VM_IP` / `SERVITOR_EDGE_SUBNET` / `SERVITOR_OPS_SUBNET`
@@ -136,8 +143,7 @@ for the app to work).
 
 ```bash
 IMG=/opt/servitor-repo/deploy/guest/images
-NAME=$($IMG/../images/manifest.json >/dev/null; \
-  python3 -c "import json;print(json.load(open('$IMG/manifest.json'))['active'])")
+NAME=$(python3 -c "import json;print(json.load(open('$IMG/manifest.json'))['active'])")
 # -> e.g. servitor-pi1.5.2-20261116
 
 BRIDGE=$(sudo docker network inspect edge -f '{{(index .Options "com.docker.network.bridge.name")}}')
@@ -200,12 +206,16 @@ non-root run would need `--deploy-key /root/.srv/deploy_key` plus read access
 to the `.env`, which it does not have.
 
 The first sync is NOT a no-op by design. It pushes the app tree (when the sha
-differs), stages the content-addressed config, pushes `lib/`, installs
-pi-web-access 0.47.0 (host npm stage → self-contained dir on the guest),
-re-injects the key slice into the guest's 0600 env file, mirrors any host
-`/etc/hosts` pins (hairpin NAT — none on a clean server), self-heals the
-edge gateway, writes the update-pending flag, waits for the app's tick to
-restart at idle, then runs the doctor.
+differs), the chat UI's built dist (built host-side when the `ui/` source
+moved since the last build), stages the content-addressed config, pushes
+`lib/`, installs pi-web-access 0.47.0 (host npm stage → self-contained dir
+on the guest), re-injects the key slice into the guest's 0600 env file,
+mirrors any host `/etc/hosts` pins (hairpin NAT — none on a clean server),
+self-heals the edge gateway, writes the update-pending flag, waits for the
+app's tick to restart at idle, then runs the doctor (now including one
+live run that makes the agent search the web — a real model call, the
+VM → router → model and public-egress proof; that is why the panel's
+`servitor-doctor`/`servitor-sync` budget is 10 min).
 
 **Success marker:** `sync: OK — shape deployed, doctor GREEN` (exit 0).
 Exit 3 = deploy landed but doctor red (the `update.sh` path owns automatic
@@ -251,22 +261,51 @@ deploy/doctor.sh                             # RESULT: GREEN
 
 Then, from a phone/LAN browser: `https://servitor.pietrasik.top` → Authelia
 2FA → the chat UI → send one live prompt → a real assistant answer comes back
-(this exercises VM → router → model end-to-end; it is THE integration gate).
-Finally: panel → `servitor-status` (vm: running + healthz ok) and
+(this exercises VM → router → model end-to-end; it is THE integration gate —
+and it is now automated: the doctor's own `spawn.live_prompt` / `spawn.live_search`
+checks do exactly this, key-gated). Finally: panel →
+`servitor-status` (vm: running + healthz ok) and
 `servitor-doctor` (green). Portcullis `make doctor` now reports its own
 servitor section (VM running, endpoint answering, egress rule present,
 actions in the registry) — a stopped VM shows as WARN there by design.
 
 ---
 
+## 10. Host prerequisites for the first version bump (the update gate)
+
+`deploy/update.sh` gates pi/extension bumps with the conformance suite, and
+that suite runs **host-side** (root) — so the server's checkout needs what
+the suite spawns into, none of which §1–§9 created:
+
+```bash
+cd /opt/servitor-repo
+sudo make venv                                        # the gate runs the repo venv
+sudo useradd -u 9001 -m -s /usr/sbin/nologin slot1    # the gate's spawn uid
+# also (for `make test` / `make sandbox-smoke`, not the gate itself):
+sudo useradd -u 9002 -m -s /usr/sbin/nologin slot2
+```
+
+The guest image creates its own slot0–16; the HOST gate needs its own — the
+conformance harness setuid-spawns a real pi as `slot1` and keeps its scratch
+under `/home/slot1`. `slot2` is only wanted if you also run the wider suites
+on the server: `make test`'s unit half is in-process (no spawn) but
+`test/unit/test_slots.py` still resolves BOTH `slot1` and `slot2` from passwd,
+and `make sandbox-smoke` spawns as `slot2`. Without `slot1` the gate is RED
+on the first pi/extension bump: nothing deploys. That is the gate working as
+intended, but the fix is two commands, not a debug session.
+
+---
+
 ## Appendix A — fast path: reuse the laptop image (off-contract)
 
 The laptop's `servitor-pi1.5.2-20261116.qcow2` is the proven artifact (guest
-suite green), but it bakes **10.42.0.15/24 + the laptop's deploy key**. If the
+suite green), but it bakes **10.42.0.15/24 + the laptop's deploy key** and
+predates the in-image chat UI (the first sync pushes the built UI dist,
+so the UI arrives via sync, not the image — the phone works either way). If the
 server's edge subnet differs (it will, unless the server edge is literally
 10.42.0.0/24), patch three things before first boot. Takes ~10 min; the cost
 is that the manifest sha no longer matches the file (the manifest is
-harness-only — `virsh` never reads it; a later `make guest` on the server
+harness-only — `virsh` never reads it; a later `sudo make guest` on the server
 supersedes it cleanly).
 
 ```bash
@@ -301,8 +340,10 @@ Then continue at §5 (state disk) and §6 (point `{{ROOT_QCOW2}}` at
 ## Appendix B — what the image already contains (do NOT re-provision)
 
 slots slot0–16 (uid 9000–9016, 0700 homes; slot0 = the doctor probe slot,
-outside the app pool), the app tree + venv at `/opt/servitor/app`, the toolkit
-at `/opt/toolkit`, pi 1.5.2 at the pinned global npm path, nftables
+outside the app pool), the app tree + venv at `/opt/servitor/app`, the chat
+UI's built dist at `/opt/servitor/app/ui/dist` (host vite build at image
+time; sync.sh refreshes it for `ui/`-only changes), the toolkit at
+`/opt/toolkit`, pi 1.5.2 at the pinned global npm path, nftables
 default-deny (edge-only 8787, LAN-only 22), resolved with the public
 upstream, systemd units (`servitor`, `servitor-firewall`), the 0600 env file
 with the non-key deploy defaults, and the deploy key in root's

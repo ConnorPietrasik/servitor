@@ -589,7 +589,9 @@ class PiSession:
 
         Race note: for a prompt whose run may finish before this call is
         made, install the waiter with :meth:`settle_waiter` BEFORE sending
-        the prompt (the pattern pi's own promptAndWait uses).
+        the prompt (the pattern pi's own promptAndWait uses);
+        :meth:`prompt_and_wait_settled` does prompt + pre-installed waiter
+        + cleanup in one call.
         """
         fut = self.settle_waiter()
         try:
@@ -617,6 +619,55 @@ class PiSession:
         fut = asyncio.get_running_loop().create_future()
         self._settled_waiters.append(fut)
         return fut
+
+    async def prompt_and_wait_settled(
+        self,
+        text: str,
+        *,
+        timeout: float | None = None,
+    ) -> tuple[str, bool]:
+        """Prompt, then wait for the resulting run to settle.
+
+        Returns ``(disposition, aborted)``. The settle waiter is
+        installed BEFORE the prompt is sent — the race-free pattern from
+        :meth:`wait_settled`'s note; a fast run can settle between the
+        prompt's reply and a post-hoc waiter. The waiter is discarded
+        wherever it would otherwise linger: on prompt rejection, on
+        ``disposition == "handled"`` (consumed, no run started — no
+        settle was ever coming, so nothing is awaited and
+        ``("handled", False)`` is returned immediately), and on settle
+        timeout (a raw ``asyncio.wait_for`` around
+        :meth:`settle_waiter` would leave the cancelled future in
+        ``_settled_waiters``). The caller still has to honor the
+        returned ``disposition`` — ``"handled"`` means nothing was
+        certified.
+        """
+        fut = self.settle_waiter()
+        try:
+            disposition = await self.prompt(text)
+        except Exception:
+            self._discard_settle_waiter(fut)
+            raise
+        if disposition == "handled":
+            self._discard_settle_waiter(fut)
+            return disposition, False
+        try:
+            if timeout is None:
+                return disposition, await fut
+            return disposition, await asyncio.wait_for(fut, timeout)
+        except asyncio.TimeoutError:
+            self._discard_settle_waiter(fut)
+            raise
+
+    def _discard_settle_waiter(self, fut: asyncio.Future[bool]) -> None:
+        """Remove a waiter that will no longer be awaited (rejection /
+        "handled" / timeout). A settle or exit event that fired in the
+        meantime already consumed and cleared the list — nothing left
+        to remove then."""
+        try:
+            self._settled_waiters.remove(fut)
+        except ValueError:
+            pass
 
     # --- dialogs ----------------------------------------------------------- #
 
