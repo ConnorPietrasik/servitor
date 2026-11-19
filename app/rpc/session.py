@@ -491,12 +491,6 @@ class PiSession:
             raise SpawnFailure(f"get_entries failed: {res.error}")
         return res.data
 
-    async def get_tree(self) -> dict[str, Any]:
-        res = await self.request({"type": "get_tree"})
-        if not res.success:
-            raise SpawnFailure(f"get_tree failed: {res.error}")
-        return res.data
-
     async def get_session_stats(self) -> dict[str, Any]:
         res = await self.request({"type": "get_session_stats"})
         if not res.success:
@@ -509,23 +503,11 @@ class PiSession:
             raise SpawnFailure(f"get_commands failed: {res.error}")
         return list(res.data.get("commands", []))
 
-    async def get_fork_messages(self) -> list[dict[str, Any]]:
-        res = await self.request({"type": "get_fork_messages"})
-        if not res.success:
-            raise SpawnFailure(f"get_fork_messages failed: {res.error}")
-        return list(res.data.get("messages", []))
-
     async def fork(self, entry_id: str) -> dict[str, Any]:
         res = await self.request({"type": "fork", "entryId": entry_id})
         if not res.success:
             raise SpawnFailure(f"fork failed: {res.error}")
         return res.data
-
-    async def switch_session(self, session_path: str) -> bool:
-        res = await self.request({"type": "switch_session", "sessionPath": session_path})
-        if not res.success:
-            raise SpawnFailure(f"switch_session failed: {res.error}")
-        return not res.data.get("cancelled", False)
 
     # --- prompting & control --------------------------------------------- #
 

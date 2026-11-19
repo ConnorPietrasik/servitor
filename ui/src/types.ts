@@ -47,22 +47,6 @@ export interface MessagesResp {
   messages: Msg[];
 }
 
-export interface TreeNode {
-  entry: Record<string, unknown>;
-  children: TreeNode[];
-}
-
-export interface TreeResp {
-  roots: TreeNode[];
-  leaf_id: string | null;
-  files: string[];
-}
-
-export interface ForkPoint {
-  entryId: string;
-  text: string;
-}
-
 export interface OutboxFile {
   path: string;
   size: number;

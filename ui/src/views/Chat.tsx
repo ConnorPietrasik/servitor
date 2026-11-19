@@ -1,10 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
-import type { ForkPoint, Msg, SessionRow, ToolCall } from "../types";
+import type { Msg, SessionRow, ToolCall } from "../types";
 import Message from "../components/Message";
 import Outbox from "../components/Outbox";
-import Tree from "../components/Tree";
 import { fmtBytes } from "../format";
 
 // ---- client settings (persisted locally; rendering-only) -------------
@@ -51,9 +50,8 @@ export default function Chat() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [tools, setTools] = useState<ToolLine[]>([]);
   const [running, setRunning] = useState(false);
-  const [subview, setSubview] = useState<"chat" | "outbox" | "tree">("chat");
+  const [subview, setSubview] = useState<"chat" | "outbox">("chat");
   const [settings, setSettings] = useState<Settings>(loadSettings);
-  const [forkPoints, setForkPoints] = useState<ForkPoint[]>([]);
   const [composerPrefill, setComposerPrefill] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
@@ -256,13 +254,6 @@ export default function Chat() {
       setMsgs(m.messages);
       setRunning(false);
       setRow(await api.getSession(s));
-      void (async () => {
-        try {
-          setForkPoints((await api.getForkMessages(s)).messages);
-        } catch {
-          setForkPoints([]);
-        }
-      })();
       unsubRef.current = api.subscribeEvents(
         s,
         m.cursor,
@@ -369,12 +360,20 @@ export default function Chat() {
     }
   }
 
-  async function editAt(point: ForkPoint) {
+  // "edit + go from here" (user message context menu): fork the
+  // conversation back to this user message, prefill the composer with
+  // its text, and re-attach for the new branch.
+  async function editAt(m: Msg) {
     if (!sid) return;
     try {
-      await api.fork(sid, point.entryId);
-      setComposerPrefill(point.text); // "edit that message": prefilled
-      setSubview("chat");
+      const r = await api.fork(sid, m.id);
+      if (r.cancelled) {
+        // an extension canceled the fork: the process is still on the
+        // original branch — nothing to re-attach to
+        setBanner("Fork was canceled — the conversation is unchanged");
+        return;
+      }
+      setComposerPrefill(m.text); // "edit that message": prefilled
       setBanner(null);
       // the fork switches the process to a new session file: re-attach
       // for the fresh (empty-so-far) transcript
@@ -386,6 +385,9 @@ export default function Chat() {
 
   if (!sid) return null;
   const showThinking = settings.show_thinking;
+  // the last user message is the current position — forking from it is a
+  // no-op, so its context menu offers no "edit + go from here"
+  const lastUserId = [...msgs].reverse().find((m) => m.role === "user")?.id;
   const lastAssistant = [...msgs].reverse().find((m) => m.role === "assistant");
   void lastAssistant;
 
@@ -445,13 +447,13 @@ export default function Chat() {
       </header>
 
       <nav className="tabs">
-        {(["chat", "outbox", "tree"] as const).map((t) => (
+        {(["chat", "outbox"] as const).map((t) => (
           <button
             key={t}
             className={`tab ${subview === t ? "on" : ""}`}
             onClick={() => setSubview(t)}
           >
-            {t === "chat" ? "chat" : t === "outbox" ? "outbox" : "tree / fork"}
+            {t}
           </button>
         ))}
       </nav>
@@ -476,6 +478,11 @@ export default function Chat() {
                   tools={tool}
                   streaming={
                     i === msgs.length - 1 && m.role === "assistant" && running
+                  }
+                  onEdit={
+                    m.role === "user" && m.text !== "" && m.id !== lastUserId
+                      ? editAt
+                      : undefined
                   }
                 />
               );
@@ -598,14 +605,6 @@ export default function Chat() {
       )}
 
       {subview === "outbox" && <Outbox sid={sid} />}
-
-      {subview === "tree" && (
-        <Tree
-          sid={sid}
-          forkPoints={forkPoints}
-          onEdit={(p) => void editAt(p)}
-        />
-      )}
     </div>
   );
 }

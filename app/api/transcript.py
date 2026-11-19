@@ -5,13 +5,13 @@ The session file is an append-only tree of entries with stable ids
 ``{type, id, parentId, timestamp, ...}``; message entries carry
 ``message: {role: user|assistant|toolResult, content: [parts], ...}``.
 
-A live process is authoritative (pi RPC: get_entries/get_tree). When the
+A live process is authoritative (pi RPC: get_entries). When the
 process is dead (idle-killed, crashed, app restarted) the file on disk is
 the same truth — the readers here work on it directly so the UI can
 reattach to any session without a live process.
 
 The ACTIVE BRANCH is the parent chain from the current leaf. For a live
-process pi reports the leaf (get_entries.leafId / get_tree.leafId); for a
+process pi reports the leaf (get_entries.leafId); for a
 dead process the leaf is the last entry in append order (pi appends to
 the file in write order, and after a fork all new entries belong to the
 new branch — the file's tail is the active branch's tail).
@@ -25,10 +25,7 @@ from typing import Any
 __all__ = [
     "read_entries",
     "active_branch",
-    "build_tree",
-    "build_forest",
     "entry_to_message",
-    "forkable_messages",
 ]
 
 
@@ -70,50 +67,6 @@ def active_branch(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
         pid = cur.get("parentId")
         cur = by_id.get(pid) if pid else None
     return list(reversed(chain))
-
-
-def build_tree(entries: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
-    """The full entry tree (all branches), pi get_tree shape:
-    ``[{entry, children: [...]}, ...]`` roots + leafId (last entry in
-    append order). Orphaned entries (broken parent chain) are roots —
-    same as pi's documented behavior."""
-    by_id = {e["id"]: e for e in entries}
-    nodes: dict[str, dict[str, Any]] = {
-        e["id"]: {"entry": e, "children": []} for e in entries
-    }
-    roots: list[dict[str, Any]] = []
-    for e in entries:
-        pid = e.get("parentId")
-        if pid and pid in by_id:
-            nodes[pid]["children"].append(nodes[e["id"]])
-        else:
-            roots.append(nodes[e["id"]])
-    leaf_id = entries[-1]["id"] if entries else None
-    return roots, leaf_id
-
-
-def build_forest(session_dir: str) -> tuple[list[dict[str, Any]], str | None, list[str]]:
-    """All session FILES in the session dir as one read-only forest.
-
-    pi's fork creates a NEW session file (same dir, new id) and the
-    process switches to it; the original file stays. The session's full
-    branch picture = every file in the dir. Returns (roots, leaf_id,
-    files): roots = concatenated per-file trees; leaf_id = the last
-    entry of the newest file; files = file names, oldest first."""
-    import glob
-
-    files = sorted(glob.glob(os.path.join(session_dir, "*.jsonl")))
-    if not files:
-        return [], None, []
-    all_roots: list[dict[str, Any]] = []
-    leaf_id: str | None = None
-    newest = files[-1]
-    for f in files:
-        roots, leaf = build_tree(read_entries(f))
-        all_roots.extend(roots)
-        if f == newest:
-            leaf_id = leaf
-    return all_roots, leaf_id, [os.path.basename(f) for f in files]
 
 
 def entry_to_message(entry: dict[str, Any]) -> dict[str, Any] | None:
@@ -184,15 +137,4 @@ def entry_to_message(entry: dict[str, Any]) -> dict[str, Any] | None:
     for extra in ("model", "usage", "api", "stopReason"):
         if extra in msg:
             out[extra] = msg[extra]
-    return out
-
-
-def forkable_messages(branch: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """User messages on the active branch (pi get_fork_messages shape):
-    [{entryId, text}]. These are the fork points ("edit that message")."""
-    out = []
-    for e in branch:
-        m = entry_to_message(e)
-        if m and m["role"] == "user" and m["text"]:
-            out.append({"entryId": m["id"], "text": m["text"]})
     return out

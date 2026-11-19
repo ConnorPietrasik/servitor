@@ -1,10 +1,8 @@
 import type {
   FilesResp,
-  ForkPoint,
   MessagesResp,
   SessionRow,
   SseHandler,
-  TreeResp,
 } from "./types";
 
 async function jget<T>(path: string): Promise<T> {
@@ -58,13 +56,13 @@ export const abort = (sid: string) =>
 // ---- transcript fetch (reattach: fetch, never replay) ----
 export const getMessages = (sid: string) =>
   jget<MessagesResp>(`/api/v1/sessions/${sid}/messages`);
-export const getTree = (sid: string) => jget<TreeResp>(`/api/v1/sessions/${sid}/tree`);
-export const getForkMessages = (sid: string) =>
-  jget<{ messages: ForkPoint[] }>(`/api/v1/sessions/${sid}/fork-messages`);
 export const fork = (sid: string, entryId: string) =>
-  jpost<{ forked: boolean; text: string }>(`/api/v1/sessions/${sid}/fork`, {
-    entry_id: entryId,
-  });
+  jpost<{ forked: boolean; cancelled?: boolean; text: string }>(
+    `/api/v1/sessions/${sid}/fork`,
+    {
+      entry_id: entryId,
+    },
+  );
 
 // ---- files ----
 export const listFiles = (sid: string) => jget<FilesResp>(`/api/v1/sessions/${sid}/files`);

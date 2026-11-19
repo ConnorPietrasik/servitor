@@ -42,9 +42,7 @@ from app.iso.release import release_session
 from app.api.sse import SseHub
 from app.api.transcript import (
     active_branch,
-    build_forest,
     entry_to_message,
-    forkable_messages,
     read_entries,
 )
 from app.registry import (
@@ -63,6 +61,21 @@ log = logging.getLogger("servitor.lifecycle")
 
 #: probe result cache TTL (seconds) — "results briefly cached"
 PROBE_CACHE_TTL = 30.0
+# probe kinds (``which=``); anything else is rejected at both entry
+# points (HTTP 400 / stdio error) — there are no legacy clients to
+# degrade for
+PROBES = ("messages", "stats")
+
+#: orphan transcript GC grace (seconds): a fork abandons its session
+#: file, and it is retired only once a write CONFIRMS the fork (so a
+#: misclicked fork is recoverable while the user decides). This sweep
+#: bounds how long an ABANDONED fork's file lingers: once the row's
+#: `updated_at` — bumped by the fork transition (set_session_file), and
+#: only ever lengthened by any later row event — is this old, the
+#: orphan is swept. 24 h: long enough for a human to notice a
+#: misclick, short enough that the dead weight never approaches the
+#: 14-day idle release.
+ORPHAN_IDLE_GRACE_SEC = 86_400.0
 
 #: disk pressure: release oldest non-stable until usage is below this
 DISK_PRESSURE_FRACTION = 0.90
@@ -444,7 +457,12 @@ class Lifecycle:
 
     async def prompt(self, session_id: str, text: str) -> str:
         """Steer/prompt with respawn-on-pickup. A transcript-less row is
-        `idle, nothing to resume` — a disposition, not an error."""
+        `idle, nothing to resume` — a disposition, not an error.
+
+        An accepted prompt is a write on the active transcript: it also
+        confirms any pending fork, so the registry is re-synced to the
+        process's file and the orphaned session files are retired
+        ("handled" — consumed, nothing appended — confirms nothing)."""
         if self.shutting_down:
             raise RuntimeError("app is shutting down; prompts refused")
         row = self.cfg.registry.get(session_id)
@@ -452,14 +470,18 @@ class Lifecycle:
             raise KeyError(session_id)
         live = self.live.get(session_id)
         if live is not None and live.driver is not None and not live.driver.exited:
-            return await live.driver.prompt(text)
-        # no live process: respawn only when the registry says a transcript
-        # exists (the transcript-exists guard)
-        if not row.session_file:
-            return "idle_no_transcript"
-        await self._respawn(session_id)
-        live = self.live[session_id]
-        return await live.driver.prompt(text)  # type: ignore[union-attr]
+            disposition = await live.driver.prompt(text)
+        else:
+            # no live process: respawn only when the registry says a
+            # transcript exists (the transcript-exists guard)
+            if not row.session_file:
+                return "idle_no_transcript"
+            await self._respawn(session_id)
+            live = self.live[session_id]
+            disposition = await live.driver.prompt(text)  # type: ignore[union-attr]
+        if disposition != "handled":
+            await self.retire_after_write(session_id, live.driver)  # type: ignore[union-attr]
+        return disposition
 
     async def _respawn(self, session_id: str) -> None:
         row = self.cfg.registry.get(session_id)
@@ -532,6 +554,8 @@ class Lifecycle:
         coalesce), never the first to touch an agent dir (the registry
         says a transcript exists), stdin EOF, no model call. Results are
         briefly cached."""
+        if which not in PROBES:
+            raise ValueError(f"unknown probe {which!r}")
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
@@ -849,12 +873,16 @@ class Lifecycle:
 
     async def gc_tick(self) -> list[str]:
         """Releases sessions idle > gc_idle_days (not stable, not
-        running); disk pressure (scratch fs near full) releases the
-        oldest non-stable until headroom. Slot pressure is handled at
+        running); sweeps abandoned fork transcripts past the orphan
+        grace; disk pressure (scratch fs near full) releases the oldest
+        non-stable until headroom. Slot pressure is handled at
         allocation (start_session)."""
         if self.shutting_down:
             return []
         released: list[str] = []
+        # orphan transcript sweep (gc_orphaned_files) — before the disk
+        # pressure check: the reclaimed space may be the headroom
+        await self.gc_orphaned_files()
         # idle GC
         cutoff = time.time() - self.cfg.gc_idle_days * 86400
         for row in self.cfg.registry.list_sessions():
@@ -991,26 +1019,91 @@ class Lifecycle:
             "messages": self._branch_messages(branch),
         }
 
-    async def fetch_tree(self, session_id: str) -> dict[str, Any]:
-        """The full branch picture (read-only): every session FILE in the
-        session dir as one forest. pi's fork creates a new file and the
-        process switches to it; the originals stay — the session's tree
-        is the union of all of them. Uniform across live/dead (the files
-        are written as events happen)."""
+    async def retire_after_write(self, session_id: str, driver) -> None:
+        """After an accepted write on the live process: re-sync the
+        registry to the process's file (the fork's file is created
+        lazily, on the first write, and may have just appeared) and
+        retire the orphaned session files. The accepted write is what
+        confirms a fork — until it lands the abandoned file stays put
+        (see :meth:`retire_orphaned_files`)."""
+        await self._live_sync_file(session_id, driver)
+        self.retire_orphaned_files(session_id)
+
+    def retire_orphaned_files(self, session_id: str) -> int:
+        """Delete the session files the registry no longer points at
+        (orphaned by a fork). Call ONLY after a write extended the
+        active file: the fork is confirmed once the user's next message
+        lands on the new branch, and until then the old file stays — a
+        misclicked or abandoned fork is still recoverable, and a crash
+        between the fork and the resend loses nothing. An orphan never
+        confirmed is reclaimed by the grace-bounded sweep
+        (:meth:`gc_orphaned_files`) long before the release sweep takes
+        the whole dir. The live process's file can never be swept: the
+        registry always points at a file that exists, and the sweep
+        spares it. Best-effort: a failure leaves the file — deletion is
+        a space optimization, never a correctness gate.
+
+        Returns the number of files deleted."""
         row = self.cfg.registry.get(session_id)
-        if row is None:
-            raise KeyError(session_id)
-        roots, leaf_id, files = build_forest(
-            self.cfg.state.sessions_for(session_id)
-        )
-        return {"roots": roots, "leaf_id": leaf_id, "files": files}
+        if row is None or not row.session_file:
+            return 0
+        sdir = self.cfg.state.sessions_for(session_id)
+        active = os.path.basename(row.session_file)
+        try:
+            names = os.listdir(sdir)
+        except OSError:
+            return 0
+        swept = 0
+        for name in names:
+            if name == active or not name.endswith(".jsonl"):
+                continue
+            try:
+                os.unlink(os.path.join(sdir, name))
+                swept += 1
+            except OSError:
+                log.warning("could not delete orphaned session file %s",
+                            os.path.join(sdir, name), exc_info=True)
+        return swept
+
+    async def gc_orphaned_files(self) -> int:
+        """Sweep orphaned transcripts in sessions past the grace
+        (ORPHAN_IDLE_GRACE_SEC): forks never confirmed by a write.
+        Runs from the GC tick. Safe even for a session with a live
+        process: the process only writes to its current file, which is
+        either the registry's file (spared) or — a lazy fork file the
+        registry has not flipped to yet — re-synced FIRST, below.
+        `updated_at` makes the grace conservative: the fork transition
+        bumps it, and any later row event only lengthens the window,
+        so a sweep is never too early.
+
+        Returns the number of files deleted."""
+        cutoff = time.time() - ORPHAN_IDLE_GRACE_SEC
+        swept = 0
+        for row in self.cfg.registry.list_sessions():
+            if row.state != LIVE or row.updated_at > cutoff:
+                continue
+            driver = self._live_driver(row.id)
+            if driver is not None:
+                # a live process may sit on a file the registry has not
+                # flipped to yet (lazy fork file): sync first so the
+                # sweep can never touch the file being written
+                await self._live_sync_file(row.id, driver)
+            swept += self.retire_orphaned_files(row.id)
+        if swept:
+            log.info("orphan sweep: deleted %d abandoned session file(s)",
+                     swept)
+        return swept
 
     async def _sync_session_file(self, session_id: str, driver) -> None:
-        """After fork/switch the process's sessionFile changes (fork
-        creates a NEW file — but pi creates it lazily, on the next write,
-        so it may not exist yet). The registry follows it when it exists;
-        a fetch-time sync picks it up otherwise. The registry must never
-        point at a missing file (the probe/respawn/disk paths trust it)."""
+        """After a fork the process's sessionFile changes (fork creates
+        a NEW file — but pi creates it lazily, on the next write, so it
+        may not exist yet). The registry follows it when it exists; a
+        fetch-time (or write-time) sync picks it up otherwise. The
+        abandoned file is NOT deleted at the transition — retirement
+        waits for the next accepted write (retire_after_write), so a
+        misclicked or abandoned fork is still recoverable until the
+        user confirms it. The registry must never point at a missing
+        file (the probe/respawn/disk paths trust it)."""
         try:
             st = await driver.get_state()
             new_file = st.get("sessionFile")
@@ -1019,11 +1112,13 @@ class Lifecycle:
                 if row is not None and row.session_file != new_file:
                     self.cfg.registry.set_session_file(session_id, new_file)
         except Exception:
-            log.warning("could not sync sessionFile after fork/switch", exc_info=True)
+            log.warning("could not sync sessionFile after fork", exc_info=True)
 
     async def _live_sync_file(self, session_id: str, driver):
         """Fetch-time sessionFile sync: the fork's new file appears on the
-        first write after the fork; pick it up on any live fetch."""
+        first write after the fork; pick it up on any live fetch (and
+        after any accepted write, via retire_after_write). The abandoned
+        file is retired only once a write confirms the fork."""
         try:
             st = await driver.get_state()
             new_file = st.get("sessionFile")
@@ -1037,24 +1132,13 @@ class Lifecycle:
         row = self.cfg.registry.get(session_id)
         return row.session_file if row else None
 
-    async def fetch_fork_messages(self, session_id: str) -> list[dict[str, Any]]:
-        """Fork points: user messages on the active branch
-        ({entryId, text}) — the \"edit that message\" list."""
-        row = self.cfg.registry.get(session_id)
-        if row is None:
-            raise KeyError(session_id)
-        driver = self._live_driver(session_id)
-        if driver is not None:
-            try:
-                return list(await driver.get_fork_messages())
-            except Exception:
-                pass  # disk fallback
-        return forkable_messages(active_branch(self._transcript_entries(session_id)))
-
     async def fork(self, session_id: str, entry_id: str) -> dict[str, Any]:
         """Fork from a previous user message ("edit that message").
         Dead process ⇒ respawn first (ensure_alive), then the RPC.
-        The active branch moves to the new fork; the UI re-fetches."""
+        The active branch moves to the new fork; the UI re-fetches.
+        An extension-canceled fork passes ``cancelled`` through: the
+        process never left the original file, so nothing is synced
+        (and nothing can be orphaned)."""
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
@@ -1063,23 +1147,9 @@ class Lifecycle:
         if driver is None:
             raise RuntimeError("session has no transcript to fork from")
         out = await driver.fork(entry_id)
-        await self._sync_session_file(session_id, driver)
-        return out
-
-    async def switch_session(self, session_id: str, session_path: str) -> bool:
-        """Navigate the live process to another session file (advanced
-        branch navigation; the fork slice's escape hatch)."""
-        row = self.cfg.registry.get(session_id)
-        if row is None:
-            raise KeyError(session_id)
-        await self.ensure_alive(session_id)
-        driver = self._live_driver(session_id)
-        if driver is None:
-            raise RuntimeError("no live process to switch")
-        ok = await driver.switch_session(session_path)
-        if ok:
+        if not out.get("cancelled"):
             await self._sync_session_file(session_id, driver)
-        return ok
+        return out
 
     def _disk_near_full(self) -> bool:
         try:
@@ -1215,11 +1285,9 @@ def _lower_for_version(config_root: str, version: str) -> str | None:
 
 
 async def _probe_command(driver: PiSession, which: str) -> Any:
-    """get_messages / get_session_stats / get_tree — no model call."""
+    """get_messages / get_session_stats — no model call."""
     if which == "messages":
         return await driver.get_messages()
     if which == "stats":
         return await driver.get_session_stats()
-    if which == "tree":
-        return await driver.get_tree()
     raise ValueError(f"unknown probe {which}")

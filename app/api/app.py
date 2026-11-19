@@ -18,10 +18,7 @@ Contract surface (versioned in test/.scratch/api-contract.json):
     POST   /api/v1/sessions/{id}/abort
     GET    /api/v1/sessions/{id}/probe
     GET    /api/v1/sessions/{id}/messages        (fetch, never replay)
-    GET    /api/v1/sessions/{id}/tree            (fork/branch view)
-    GET    /api/v1/sessions/{id}/fork-messages   (fork points)
     POST   /api/v1/sessions/{id}/fork
-    POST   /api/v1/sessions/{id}/switch
     POST   /api/v1/sessions/{id}/stable
     POST   /api/v1/sessions/{id}/release
     GET    /api/v1/sessions/{id}/events            (SSE; Last-Event-ID resume)
@@ -66,7 +63,7 @@ from app.api.sse import SseHub
 from app.delivery.service import Delivery
 from app.delivery.store import DeliveryError, FileNotDelivered, sniff_mime
 from app.iso.spawn import slot_identity
-from app.lifecycle import Lifecycle
+from app.lifecycle import PROBES, Lifecycle
 from app.registry import Registry, SessionRow
 from app.rpc.session import PromptRejected, SpawnFailure
 
@@ -99,10 +96,6 @@ class ReleaseBody(BaseModel):
 
 class ForkBody(BaseModel):
     entry_id: str
-
-
-class SwitchBody(BaseModel):
-    session_path: str
 
 
 class AckBody(BaseModel):
@@ -263,18 +256,24 @@ def build_app(app_state, cfg) -> FastAPI:
         _get_row(app_state, sid)
         driver = _live_driver(app_state, sid)
         try:
-            return {"disposition": await driver.steer(body.text)}
+            disposition = await driver.steer(body.text)
         except PromptRejected as e:
             raise HTTPException(status_code=502, detail=e.reason)
+        if disposition != "handled":
+            await app_state.lc.retire_after_write(sid, driver)
+        return {"disposition": disposition}
 
     @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/follow-up")
     async def follow_up(sid: str, body: SteerBody):
         _get_row(app_state, sid)
         driver = _live_driver(app_state, sid)
         try:
-            return {"disposition": await driver.follow_up(body.text)}
+            disposition = await driver.follow_up(body.text)
         except PromptRejected as e:
             raise HTTPException(status_code=502, detail=e.reason)
+        if disposition != "handled":
+            await app_state.lc.retire_after_write(sid, driver)
+        return {"disposition": disposition}
 
     @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/abort")
     async def abort(sid: str):
@@ -289,6 +288,8 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/probe")
     async def probe(sid: str, which: str = "messages"):
         _get_row(app_state, sid)
+        if which not in PROBES:
+            raise HTTPException(status_code=400, detail=f"unknown probe: {which!r}")
         live = app_state.lc.live.get(sid)
         busy = (
             live is not None
@@ -321,29 +322,14 @@ def build_app(app_state, cfg) -> FastAPI:
         except KeyError:
             raise HTTPException(status_code=404, detail="no such session")
 
-    @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/tree")
-    async def tree(sid: str):
-        """The full entry tree (all branches, read-only): the fork/branch
-        view. Live: pi get_tree; dead: built from the session file."""
-        try:
-            return await app_state.lc.fetch_tree(sid)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="no such session")
-
-    @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/fork-messages")
-    async def fork_messages(sid: str):
-        """Fork points: user messages on the active branch
-        ({entryId, text}) — the 'edit that message' list."""
-        try:
-            return {"messages": await app_state.lc.fetch_fork_messages(sid)}
-        except KeyError:
-            raise HTTPException(status_code=404, detail="no such session")
-
     @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/fork")
     async def fork(sid: str, body: ForkBody):
         """Fork from a previous user message ('edit that message').
         Dead process ⇒ respawn first. The active branch moves to the new
-        fork — the client re-fetches messages/tree afterwards."""
+        fork — the client re-fetches messages afterwards. An extension
+        can cancel the fork: then `forked` is false, `cancelled` is
+        true, and nothing changed (the process stays on the original
+        file)."""
         _get_row(app_state, sid)
         try:
             out = await app_state.lc.fork(sid, body.entry_id)
@@ -353,22 +339,7 @@ def build_app(app_state, cfg) -> FastAPI:
             raise HTTPException(status_code=503, detail=str(e))
         except Exception as e:
             raise HTTPException(status_code=502, detail=f"fork: {e}")
-        return {"forked": True, **out}
-
-    @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/switch")
-    async def switch(sid: str, body: SwitchBody):
-        """Navigate the live process to another session file (advanced
-        branch navigation)."""
-        _get_row(app_state, sid)
-        try:
-            ok = await app_state.lc.switch_session(sid, body.session_path)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="no such session")
-        except RuntimeError as e:
-            raise HTTPException(status_code=503, detail=str(e))
-        except Exception as e:
-            raise HTTPException(status_code=502, detail=f"switch: {e}")
-        return {"switched": ok}
+        return {"forked": not out.get("cancelled", False), **out}
 
     @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/stable")
     async def set_stable(sid: str, body: StableBody):
@@ -551,9 +522,12 @@ def build_app(app_state, cfg) -> FastAPI:
                 raise HTTPException(status_code=400, detail="steer needs text")
             driver = _live_driver(app_state, sid)
             try:
-                return {"disposition": await driver.steer(body.text)}
+                disposition = await driver.steer(body.text)
             except PromptRejected as e:
                 raise HTTPException(status_code=502, detail=e.reason)
+            if disposition != "handled":
+                await lc.retire_after_write(sid, driver)
+            return {"disposition": disposition}
         if body.action == "prompt":
             if not body.text:
                 raise HTTPException(status_code=400, detail="prompt needs text")

@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { MouseEvent as RMouseEvent } from "react";
 import type { Msg, ToolCall } from "../types";
 
 interface Props {
@@ -6,13 +7,47 @@ interface Props {
   showThinking: boolean;
   tools: { toolCallId: string; name: string; args: Record<string, unknown>; status: string; result?: string; durationMs?: number }[];
   streaming: boolean;
+  // "edit + go from here" — set only for older user messages (the last
+  // one is the current position; forking from it is a no-op)
+  onEdit?: (m: Msg) => void;
 }
 
 // one message bubble. thinking: client mode (hidden unless enabled,
 // collapsed by default); tool status lines collapsed, tool results lazy
-// (expanded on tap, first 4KB preview).
-export default function Message({ m, showThinking, tools, streaming }: Props) {
+// (expanded on tap, first 4KB preview). User bubbles carry a context
+// menu (right-click / long-press): copy, and fork from here.
+export default function Message({ m, showThinking, tools, streaming, onEdit }: Props) {
   const [thinkingOpen, setThinkingOpen] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+
+  // Escape closes the context menu
+  useEffect(() => {
+    if (!menu) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenu(null);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menu]);
+
+  function openMenu(e: RMouseEvent<HTMLDivElement>) {
+    e.preventDefault(); // suppress the browser's own (text-select) menu
+    setMenu({
+      x: Math.max(4, Math.min(e.clientX, window.innerWidth - 200)),
+      y: Math.max(4, Math.min(e.clientY, window.innerHeight - 110)),
+    });
+  }
+
+  async function copyText() {
+    setMenu(null);
+    try {
+      await navigator.clipboard.writeText(m.text);
+    } catch {
+      /* clipboard unavailable or permission denied */
+    }
+  }
+
+  const isUser = m.role === "user";
   return (
     <div className={`msg ${m.role}`}>
       {m.role === "assistant" && m.tool_calls.length > 0 && (
@@ -44,10 +79,38 @@ export default function Message({ m, showThinking, tools, streaming }: Props) {
         </div>
       )}
       {(m.role === "user" || (m.role === "assistant" && m.text)) && (
-        <div className={`bubble ${m.role}`}>
+        <div
+          className={`bubble ${m.role}`}
+          onContextMenu={isUser ? openMenu : undefined}
+        >
           <pre className="text">{m.text}</pre>
           {streaming && <span className="caret" />}
         </div>
+      )}
+      {menu && (
+        <>
+          <div className="ctx-overlay" onClick={() => setMenu(null)} />
+          <div
+            className="ctxmenu"
+            style={{ left: menu.x, top: menu.y }}
+            role="menu"
+          >
+            <button role="menuitem" onClick={() => void copyText()}>
+              copy
+            </button>
+            {onEdit && (
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setMenu(null);
+                  onEdit(m);
+                }}
+              >
+                edit + go from here
+              </button>
+            )}
+          </div>
+        </>
       )}
       {m.role === "assistant" && m.model && (
         <div className="meta">

@@ -1,18 +1,18 @@
-"""Transcript fetch (reattach on load) + fork/branch gates.
+"""Transcript fetch (reattach on load) + fork gate.
 
 - /messages is the reattach base: authoritative active-branch messages,
   fetch (never replay). Works with a LIVE process (pi RPC get_entries)
   AND with a DEAD process (app restarted over the same state — disk
   path).
-- /tree shows all branches (read-only); /fork-messages lists the fork
-  points; /fork moves the active branch ("edit that message") and a new
-  prompt continues from the fork — the abandoned branch is still in the
-  tree.
-- /switch navigates the live process to another session file.
+- /fork moves the active branch ("edit that message"): a new prompt
+  continues from the fork, the registry tracks the forked session file,
+  and the abandoned branch file is kept until the fork is CONFIRMED by
+  a write (the resend), then deleted — no dead prefix copies accumulate
+  in the session dir, and an abandoned/mis-clicked fork is still
+  recoverable until the user sends (or the grace-bounded GC sweep —
+  ORPHAN_IDLE_GRACE_SEC, 24 h — reclaims it).
 """
 from __future__ import annotations
-
-import json
 
 from conftest import relaunch_app  # noqa: F401  (importable in tests)
 
@@ -60,10 +60,6 @@ def test_messages_fetch_live_and_dead(api, api_env):
         d2 = r.json()
         assert _user_texts(d2["messages"]) == ["hello one", "hello two"]
         assert d2["leaf_id"] == d["leaf_id"]
-        # and the tree agrees
-        r = api2.get(f"/api/v1/sessions/{sid}/tree", timeout=30)
-        assert r.status_code == 200
-        assert r.json()["leaf_id"] == d["leaf_id"]
     finally:
         proc.kill()
         proc.wait()
@@ -71,7 +67,7 @@ def test_messages_fetch_live_and_dead(api, api_env):
     # fixture teardown sweeps the state
 
 
-def test_fork_edit_message_branches(api):
+def test_fork_edit_message_branches(api, api_env):
     res = api.create_session("fork")
     sid = res["session_id"]
     try:
@@ -80,13 +76,12 @@ def test_fork_edit_message_branches(api):
         api.prompt(sid, "second question")
         api.settle(sid)
 
-        # fork points: both user messages, oldest first
-        r = api.get(f"/api/v1/sessions/{sid}/fork-messages")
+        # fork point: the first user message (its id is the entry id)
+        r = api.get(f"/api/v1/sessions/{sid}/messages")
         assert r.status_code == 200, r.text
-        pts = r.json()["messages"]
-        texts = [p["text"] for p in pts]
-        assert texts == ["first question", "second question"]
-        first_id = pts[0]["entryId"]
+        first = next(m for m in r.json()["messages"] if m["role"] == "user")
+        assert first["text"] == "first question"
+        first_id = first["id"]
 
         row0 = api.get(f"/api/v1/sessions/{sid}").json()
         file0 = row0["session_file"]
@@ -101,6 +96,16 @@ def test_fork_edit_message_branches(api):
         assert r.status_code == 200, r.text
         assert r.json()["forked"] is True
         assert r.json()["text"] == "first question"
+
+        # deferred retirement: the abandoned file SURVIVES between the
+        # fork and the resend — retirement waits for the fork to be
+        # confirmed by a write, so an abandoned/mis-clicked fork is
+        # still recoverable until the user sends
+        sdir = api_env["state_root"] / "sessions" / sid
+        pre = sorted(f.name for f in sdir.glob("*.jsonl"))
+        assert file0.rsplit("/", 1)[-1] in pre, (
+            f"abandoned file must survive until the fork is confirmed: {pre}"
+        )
 
         # the new prompt continues the FORK (a fresh session at the fork
         # point) — the old branch ("second question") is not on it
@@ -117,38 +122,13 @@ def test_fork_edit_message_branches(api):
         row1 = api.get(f"/api/v1/sessions/{sid}").json()
         assert row1["session_file"] != file0, "registry must track the forked file"
 
-        # the forest keeps EVERYTHING: both files, both branches
-        r = api.get(f"/api/v1/sessions/{sid}/tree")
-        assert r.status_code == 200
-        t = r.json()
-        assert len(t["files"]) == 2, f"expected original + fork file: {t['files']}"
-        blob = json.dumps(t)
-        assert "second question" in blob, "abandoned branch must survive in the tree"
-        assert "revised continuation" in blob
-
-        # fork points on the NEW active session
-        r = api.get(f"/api/v1/sessions/{sid}/fork-messages")
-        pts2 = [p["text"] for p in r.json()["messages"]]
-        assert pts2 == ["revised continuation"]
-        assert r.status_code == 200
-    finally:
-        api.release(sid)
-
-
-def test_switch_same_file_is_noop(api):
-    res = api.create_session("switch")
-    sid = res["session_id"]
-    try:
-        row = api.get(f"/api/v1/sessions/{sid}").json()
-        path = row["session_file"]
-        assert path
-        r = api.post(f"/api/v1/sessions/{sid}/switch",
-                     json_body={"session_path": path})
-        assert r.status_code == 200, r.text
-        assert r.json()["switched"] is True
-        # still the same session, still usable
-        d = api.prompt(sid, "after switch")
-        assert d["disposition"] == "started"
-        api.settle(sid)
+        # the abandoned branch file is gone: the resend confirmed the
+        # fork, and the prompt's post-write sweep retired the orphan
+        # (no dead prefix copies accumulate in the session dir)
+        sdir = api_env["state_root"] / "sessions" / sid
+        files = sorted(f.name for f in sdir.glob("*.jsonl"))
+        assert files == [row1["session_file"].rsplit("/", 1)[-1]], (
+            f"session dir must hold only the active file: {files}"
+        )
     finally:
         api.release(sid)

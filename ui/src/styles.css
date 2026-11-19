@@ -303,15 +303,6 @@ a {
   padding-top: 8px;
 }
 
-.subhead {
-  font-size: 14px;
-  color: var(--muted);
-  margin: 14px 2px 6px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 /* ---- messages ---- */
 .messages {
   flex: 1;
@@ -576,45 +567,50 @@ a {
   font-size: 12px;
 }
 
-/* ---- tree ---- */
-.tree {
-  padding: 8px 0;
+/* ---- message context menu (right-click / long-press, user bubbles) ----
+   Chrome Android (target): long-press fires contextmenu and
+   preventDefault suppresses the native menu. user-select: none keeps
+   the text-selection handles from grabbing the gesture first — copy
+   lives in our menu. -webkit-touch-callout is iOS-only (long-press is
+   not a supported path there). */
+.msg.user .bubble {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
-.tnode {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 0;
+.ctx-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
 }
 
-.tdot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--line);
-  flex: none;
+.ctxmenu {
+  position: fixed;
+  z-index: 41;
+  min-width: 180px;
+  max-width: calc(100vw - 16px);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  padding: 4px;
 }
 
-.tdot.leaf {
-  background: var(--ok);
-}
-
-.tlabel {
-  font-size: 13px;
-  color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fp {
-  align-items: stretch;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.fp-text {
+.ctxmenu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text);
+  font-family: inherit;
   font-size: 14px;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+
+.ctxmenu button:active {
+  background: var(--line);
 }
