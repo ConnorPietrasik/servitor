@@ -72,7 +72,7 @@ export default function Outbox({ sid }: { sid: string }) {
               )}
               <a
                 className="btn primary sm"
-                href={api.downloadUrl(sid, f.path)}
+                href={api.downloadUrl(sid, `outbox/${f.path}`)}
                 download={f.path.split("/").pop()}
               >
                 ↓ download
