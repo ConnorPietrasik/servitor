@@ -32,7 +32,7 @@ services:
       - SERVITOR_DRAIN_GRACE_SECS=${SERVITOR_DRAIN_GRACE_SECS}
       - SERVITOR_COALESCE_MS=${SERVITOR_COALESCE_MS}
       - SERVITOR_HEARTBEAT_SECS=${SERVITOR_HEARTBEAT_SECS}
-      # version selections (npm semver specs, exact by default)
+      # version selections (exact X.Y.Z floors — deploy/update.sh floats them in-major)
       - SERVITOR_PI_VERSION=${SERVITOR_PI_VERSION}
       - SERVITOR_PI_WEB_ACCESS_VERSION=${SERVITOR_PI_WEB_ACCESS_VERSION}
     ports:

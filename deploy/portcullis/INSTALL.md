@@ -119,8 +119,8 @@ The bake reads `SERVITOR_VM_IP` / `SERVITOR_EDGE_SUBNET` / `SERVITOR_OPS_SUBNET`
 / `SERVITOR_DNS_UPSTREAM` from this `.env`, so the built image is correct for
 THIS server's network by construction. Output (in `deploy/guest/images/`):
 `servitor-pi1.5.2-<date>.qcow2` + `.vmlinuz` + `.initramfs.img` +
-`manifest.json` (sha256 recorded; the previous image is retained for the
-update rollback).
+`manifest.json` (sha256 recorded; the previous image — the update rollback
+target — is retained, older images are pruned).
 
 **Fast path — reuse the laptop image (off-contract, ~10 min, see Appendix A).**
 
@@ -271,11 +271,11 @@ actions in the registry) — a stopped VM shows as WARN there by design.
 
 ---
 
-## 10. Host prerequisites for the first version bump (the update gate)
+## 10. Host prerequisites for the first update (the update gate)
 
-`deploy/update.sh` gates pi/extension bumps with the conformance suite, and
-that suite runs **host-side** (root) — so the server's checkout needs what
-the suite spawns into, none of which §1–§9 created:
+`deploy/update.sh` gates every versioned deploy with the conformance suite,
+and that suite runs **host-side** (root) — so the server's checkout needs
+what the suite spawns into, none of which §1–§9 created:
 
 ```bash
 cd /opt/servitor-repo
@@ -291,7 +291,7 @@ under `/home/slot1`. `slot2` is only wanted if you also run the wider suites
 on the server: `make test`'s unit half is in-process (no spawn) but
 `test/unit/test_slots.py` still resolves BOTH `slot1` and `slot2` from passwd,
 and `make sandbox-smoke` spawns as `slot2`. Without `slot1` the gate is RED
-on the first pi/extension bump: nothing deploys. That is the gate working as
+on the first versioned update: nothing deploys. That is the gate working as
 intended, but the fix is two commands, not a debug session.
 
 ---

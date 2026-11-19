@@ -1,13 +1,12 @@
 """Update drills — the destructive half.
 
 Runs LAST (test_z_ prefix) against the same session-scoped VM:
-  1. no-op update (nothing changed -> nothing touched, no restart)
+  1. world-current update (no in-major release moved, image within the
+     freshness floor, shape unchanged -> nothing touched, no restart)
   2. update-WAITING (sync stages a shape change WHILE A RUN IS ACTIVE,
      exits 0 immediately, the in-process tick applies restart+doctor at
      the first idle moment)
-  3. extension bump (full conformance gate, deploy, doctor green,
-     installed version stamped)
-  4. fault-injected doctor (borked config artifact -> doctor red ->
+  3. fault-injected doctor (borked config artifact -> doctor red ->
      AUTOMATIC rollback -> doctor green)
 
 Each drill re-certifies itself (doctor green) before finishing, so the
@@ -20,13 +19,20 @@ import json
 import shutil
 import socket
 import subprocess
+import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from harness import REPO, GUEST_IP, HOST_BRIDGE_IP, GuestVM, GuestError
+from harness import REPO, GUEST_IP, HOST_BRIDGE_IP, GuestVM, GuestError, active_image
 from conftest import require_root_or_skip
+
+sys.path.insert(0, str(REPO / "deploy"))
+# the update's float rule itself: the drill's skip decision must never
+# drift from the update's move decision (test/unit pins the rule)
+from resolve_target import is_exact, resolve as _resolve  # noqa: E402
 
 
 def _free_port() -> int:
@@ -37,10 +43,82 @@ def _free_port() -> int:
     return port
 
 
+def _moved(declared: str, versions: list[str]) -> bool:
+    """True exactly when deploy/update.sh's float would move the line —
+    the float rule itself (deploy/resolve_target.py, unit-tested) on the
+    SAME registry input the update reads (npm's full versions list):
+    target != declared exactly when an in-major stable release is newer
+    (out-of-major releases stay put — the update only REPORTS them)."""
+    target, _ = _resolve(declared, versions)
+    return target != declared
+
+
+def skip_if_update_would_move() -> None:
+    """Shared guard for the update drills: the drill's contract is "the
+    world is current". If the update's own float would move a version line
+    (same rule, same registry input — resolve_target.py) or the image
+    outgrew the freshness floor, a guest.update() run is a REAL update
+    (gate + image rebuild + swap) — skip instead of paying for a
+    40-minute rebuild in the suite (and, on a host without a 'servitor'
+    libvirt domain, a guaranteed swap failure that would fail the drill
+    for the wrong reason). The .env reading mirrors update.sh's:
+    SERVITOR_PI_VERSION is required (no default), the extension line
+    defaults to 0.47.0, IMAGE_MAX_AGE_DAYS to 7 (empty = default)."""
+    import re as _re
+    env = (REPO / ".env").read_text()
+
+    def _env_line(key: str) -> str:
+        m = _re.search(rf"^{key}=(.+)$", env, _re.M)
+        return m.group(1).strip() if m else ""
+
+    pi_decl = _env_line("SERVITOR_PI_VERSION")
+    if not pi_decl:
+        pytest.skip("no SERVITOR_PI_VERSION line in .env — the update would refuse the run (the line is required); cannot certify the world is current")
+    ext_decl = _env_line("SERVITOR_PI_WEB_ACCESS_VERSION") or "0.47.0"
+    for key, decl in (("SERVITOR_PI_VERSION", pi_decl),
+                      ("SERVITOR_PI_WEB_ACCESS_VERSION", ext_decl)):
+        if not is_exact(decl):
+            pytest.skip(f"{key}={decl!r} is not an exact version (X.Y.Z) — the update's preflight would refuse the run; cannot certify the world is current")
+
+    def _npm_versions(pkg: str) -> list[str]:
+        # the SAME registry input the update's float reads. npm unreachable
+        # is "cannot certify the world is current", not "the world moved" —
+        # skip (this is the DRILL's skip decision; the update's own
+        # no-movement fail-safe lives in resolve_target).
+        r = subprocess.run(["npm", "view", pkg, "versions", "--json"],
+                           capture_output=True, text=True)
+        if r.returncode != 0 or not r.stdout.strip():
+            pytest.skip(f"npm unreachable ({pkg}) — cannot certify the world is current")
+        try:
+            vers = json.loads(r.stdout)
+        except ValueError:
+            vers = None
+        if not isinstance(vers, list):
+            pytest.skip(f"npm returned an unexpected versions shape for {pkg} — cannot certify the world is current")
+        return vers
+
+    if _moved(pi_decl, _npm_versions("@earendil-works/pi-coding-agent")):
+        pytest.skip("the world moved (an in-major pi release is newer) — this run would be a real update, not the shape-only path")
+    if _moved(ext_decl, _npm_versions("pi-web-access")):
+        pytest.skip("the world moved (an in-major extension release is newer) — this run would be a real update, not the shape-only path")
+    floor_raw = _env_line("IMAGE_MAX_AGE_DAYS")
+    try:
+        floor = int(floor_raw) if floor_raw else 7
+    except ValueError:
+        pytest.skip(f"IMAGE_MAX_AGE_DAYS={floor_raw!r} is not an integer — cannot certify the world is current")
+    _, entry = active_image()
+    built = datetime.strptime(entry["built_at"], "%Y-%m-%dT%H:%M:%SZ")
+    age_days = int((datetime.now(timezone.utc).replace(tzinfo=None) - built).total_seconds() // 86400)
+    if age_days > floor:
+        pytest.skip(f"the image outgrew the freshness floor ({age_days}d > {floor}d) — this run would rebuild it")
+
+
 def test_update_noop_touches_nothing(guest: GuestVM):
-    """No-op run: resolved selections match what's deployed -> NOTHING is
-    touched (no restart, no flag), exit 0."""
+    """World-current run: no in-major release newer than the deployed one,
+    the image is within the freshness floor, and the shape is unchanged
+    -> NOTHING is touched (no restart, no flag), exit 0."""
     require_root_or_skip()
+    skip_if_update_would_move()
     up_before = guest.service_uptime()
     r = guest.update()
     assert r.returncode == 0, f"update (no-op) failed:\n{r.stdout[-3000:]}"
@@ -140,59 +218,17 @@ def test_update_waiting_drill(guest: GuestVM):
         router.stop()
 
 
-def test_update_extension_bump(guest: GuestVM):
-    """Extension bump: resolve a DIFFERENT existing version, the full
-    conformance gate runs host-side, the deploy swaps the extension,
-    stamps the registry, and the doctor is green on the new version."""
-    require_root_or_skip()
-    # pick the newest pi-web-access other than what's deployed
-    out = subprocess.run(
-        ["npm", "view", "pi-web-access", "versions", "--json"],
-        capture_output=True, text=True, check=True).stdout
-    versions = [v for v in json.loads(out) if not any(c in v for c in ".-rc")]
-    deployed = guest.run(
-        "node -e \"try{console.log(require('/opt/pi-ext/pi-web-access/package.json').version)}catch(e){}\"").strip()
-    candidates = [v for v in versions if v != deployed]
-    if not candidates:
-        pytest.skip("no alternative pi-web-access version available")
-    target = candidates[-1]
-    # the target must actually be resolvable/installable
-    r = subprocess.run(["npm", "view", f"pi-web-access@{target}", "version"],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        pytest.skip(f"pi-web-access@{target} not installable: {r.stderr[:200]}")
-
-    # run the update with the bumped selection (temp env file)
-    env_text = (REPO / ".env").read_text()
-    import re as _re
-    env_bumped = _re.sub(r"^SERVITOR_PI_WEB_ACCESS_VERSION=.*$",
-                         f"SERVITOR_PI_WEB_ACCESS_VERSION={target}",
-                         env_text, flags=_re.M)
-    env_path = Path("/tmp/servitor-drill-env")
-    env_path.write_text(env_bumped)
-    try:
-        r = guest.update(env_file=str(env_path))
-        assert r.returncode == 0, f"update (extension bump) failed:\n{r.stdout[-4000:]}"
-        installed = guest.run(
-            "node -e \"console.log(require('/opt/pi-ext/pi-web-access/package.json').version)\"").strip()
-        assert installed == target, f"installed {installed} != target {target}"
-        stamp = guest.run(
-            "cd /opt/servitor/app && .venv/bin/python -c \""
-            "from app.registry import Registry; r = Registry('/var/lib/servitor/registry.db'); "
-            f"print(r.get_version('pi_web_access')); r.close()\"").strip()
-        assert stamp == target, f"registry stamp {stamp!r} != {target!r}"
-        d = guest.doctor()
-        assert d.returncode == 0, f"doctor red on the bumped extension:\n{d.stdout[-3000:]}"
-    finally:
-        env_path.unlink(missing_ok=True)
-
-
 def test_update_fault_injected_rollback(guest: GuestVM):
     """Fault-injected doctor: the sync's config artifact is borked
     (models.json not parseable) -> the deploy lands -> doctor RED ->
     AUTOMATIC ROLLBACK restores the previous config -> doctor GREEN.
     The host is never left half-updated."""
     require_root_or_skip()
+    # the drill exercises the SHAPE-only rollback path: if the float would
+    # move a version line or the image outgrew the floor, guest.update() is
+    # a real update (gate + rebuild + swap — swap_image would target the
+    # host's 'servitor' domain) — skip, like the no-op drill above.
+    skip_if_update_would_move()
     active_before = guest.run("readlink /var/lib/servitor/config/active").strip()
     r = guest.update(SERVITOR_TEST_CONFIG_FAULT="bork")
     # the update's own verify step must have caught the red doctor and

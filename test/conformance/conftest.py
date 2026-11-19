@@ -4,7 +4,7 @@ The suite is VERSION-PARAMETERIZED: it runs against the pi version +
 extension selection resolved from the env (defaults: the .env
 selections), installed into the shared prefix (test.conftest.pi_install).
 This is the permanent conformance suite — it also serves as the
-host-side preflight of `servitorctl update`.
+host-side preflight of `deploy/update.sh` (the update gate).
 
 Slot: slot1 (see test/conftest.py for the suite-slot allocation).
 Root: required — loud-skip otherwise, never silently green.

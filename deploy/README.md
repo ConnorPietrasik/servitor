@@ -110,20 +110,65 @@ host packages, `.env` template, image, state disk, the libvirt domain from
 
 ## Updates
 
-`make update` / `servitorctl update` is the single versioned path: resolve
-the `.env` specs → conformance suite against the *resolved* versions
-host-side (the guest is untouched until the gate passes) → provision only
-what changed (image / extension / config) → swap-based deploy with previous
-artifacts retained → doctor → automatic rollback on doctor failure.
-`sync` remains the fast config-only push for daily edits (it also carries
-the built chat-UI dist, so `ui/` changes deploy without an image rebuild).
-The conformance gate runs host-side (root), so the host checkout needs its
-own `make venv` and the slot users the suite spawns into (`slot1` for the
-gate, `slot2` for `make test`'s unit half) — the guest image's slots are a
-different namespace (INSTALL.md §10 for the server). A run active at
-the restart step sets the update-waiting flag instead of restarting;
-image-level swaps are always explicit operator downtime. Not bumping is a
-supported steady state — the guest runs the last-verified pi indefinitely.
+`make update` / `deploy/update.sh` is the single day-2 command (portcullis
+parity): it FLOATS — it does not ask. Each `.env` version line is an exact
+version (X.Y.Z) and a floor — a range or tag fails the preflight (it
+could never round-trip a deploy: installed == env is doctor-asserted);
+the update resolves the newest npm release in the same major for
+everything (the 0.x extension floats across minors — stable across them in
+practice; a real 1.0.0 is a major) and deploys it. A newer out-of-major
+release is REPORTED (`MAJOR AVAILABLE`) and never applied — accepting one
+is editing the `.env` line to that major's release.
+The guest userland is part of the update: when the image's manifest age
+outgrows the freshness floor (default 7 days, `IMAGE_MAX_AGE_DAYS`), the
+image is rebuilt — which re-resolves the Arch packages, so the guest kernel
+floats with it — and swapped in across a clean ACPI shutdown (explicit
+downtime, loudly reported). Retention keeps exactly the new image + the
+previous one (the automatic rollback target) — the build prunes every
+older image (qcow2 + kernel + initramfs, files and manifest entries), so
+`deploy/guest/images/` stays at two image triples no matter how long the
+VM runs. The swap
+rotates the guest's ssh host key (each image bakes fresh keys —
+`ssh-keygen -A` in the build chroot) and `accept-new` never accepts a
+CHANGED key, so the swap drops the recorded known_hosts entry for the VM
+IP and re-accepts the new key on first contact (the same covers the
+rollback swap-back to the old image's keys).
+
+Order, after the resolve: precondition doctor (deployed state must be
+green — a pre-existing failure would auto-revert the whole update) →
+conformance suite against the *resolved* versions, host-side (the guest is
+untouched until it passes) → the `.env` lines are floated to the targets
+(bump before apply: the build and the sync's key slice both read the
+`.env`) → provision only what moved → the sync's swap-based deploy →
+doctor → AUTOMATIC ROLLBACK (the image, the manifest's `active` and the
+`.env` back to what is actually running — always; the shape back to the
+retained previous too, but only when THIS run's sync deployed it — a sync
+that failed before deploying left the shape untouched, and reverting it
+would roll an earlier deploy back a generation) on failure. No failure
+path leaves the world ahead of what is running: a BUILD failure restores
+the floated `.env` lines
+(a floated `.env` over an unchanged guest would leak into the guest's env
+file on the next `servitor-sync` — installed != env, doctor red), and a
+SWAP failure additionally restores the manifest's `active` to the
+still-running image (the freshness floor measures the running image's
+age); re-run `make update` either way — a built-but-not-swapped image is
+reused (the swap retried — a rebuild would just re-convert the same
+deterministic name over the finished image),
+never rebuilt in place. The conformance gate runs host-side (root),
+so the host checkout needs its own `make venv` and the slot users the
+suite spawns into (`slot1` for the gate, `slot2` for `make test`'s unit
+half) — the guest image's slots are a different namespace (INSTALL.md §10
+for the server). A run active at the restart step sets the update-waiting
+flag instead of restarting (never blocks).
+
+A world-current run (no in-major release newer than the deployed one, the
+image within the floor, the shape unchanged) touches nothing, restarts
+nothing, and reports NO-OP: the update ran and had nothing to change.
+
+Run as the portcullis tail (`08-update.sh`'s best-effort tail after the
+host gates), a shut-off VM is SKIPPED — the tick never starts a VM the
+operator stopped on purpose (the swap would); the float then lands on the
+next tick after the VM is back, or via a manual run above.
 
 ## Runbook
 

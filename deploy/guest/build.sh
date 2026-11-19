@@ -3,9 +3,14 @@
 #
 # The image is the versioned artifact:
 #   images/servitor-pi<pi-version>-<YYYYMMDD>.qcow2  (+ images/manifest.json)
-# The previous image is retained (manifest entry "retained_previous") for
-# the update rollback path. Not bumping is a supported steady state —
-# the guest runs the last-verified version indefinitely.
+# deploy/update.sh rebuilds it when a pi bump lands or the userland outgrows
+# the freshness floor (IMAGE_MAX_AGE_DAYS): the rebuild re-resolves the Arch
+# packages, so kernel/node/python float with it (recorded in the manifest).
+# Retention: the NEW active image + exactly the previous one (the update's
+# automatic rollback target, manifest entry "retained_previous") — every
+# older image is pruned here (qcow2 + extracted kernel/initramfs + manifest
+# entry): the freshness floor makes rebuilds routine, and an image triple is
+# multi-GB, so unbounded retention would grow the checkout forever.
 #
 # Determinism: pinned base (pins.json: url + sha256); the package set
 # comes from the Arch repos at build time and is recorded in the
@@ -416,11 +421,11 @@ qemu-img convert -c -f raw -O qcow2 "$WORK/root.raw" "$IMAGES_DIR/$IMAGE_NAME"
 IMAGE_SHA="$(sha256sum "$IMAGES_DIR/$IMAGE_NAME" | cut -d' ' -f1)"
 IMAGE_SIZE="$(stat -c %s "$IMAGES_DIR/$IMAGE_NAME")"
 
-echo "==> [7/7] manifest (previous image retained)"
+echo "==> [7/7] manifest (active + previous retained, older images pruned)"
 python3 - "$IMAGES_DIR/manifest.json" "$IMAGE_NAME" "$IMAGE_SHA" "$IMAGE_SIZE" \
   "$BASE_URL" "$BASE_SHA" "$PI_VERSION" "$NODE_VERSION" "$WORK/pkglist.txt" \
   "$SERVITOR_PI_WEB_ACCESS_VERSION" <<'EOF'
-import json, os, sys, time
+import json, os, sys, tempfile, time
 (manifest_path, name, sha, size, base_url, base_sha, pi, node,
  pkglist, ext_spec) = sys.argv[1:11]
 manifest = {"images": {}}
@@ -444,11 +449,46 @@ if prev and prev != name:
     entry["retained_previous"] = manifest["images"].get(prev, {"name": prev})
 manifest["images"][name] = entry
 manifest["active"] = name
-json.dump(manifest, open(manifest_path, "w"), indent=2, sort_keys=True)
+# retention: the new active + exactly the previous (the rollback target)
+# only. Everything older is trash — files AND manifest entries (see the
+# header). The previous is NEVER pruned here: it is the update's rollback
+# target, and the NEXT build supersedes it, one generation at a time.
+# Files go first, the manifest after: a crash in between leaves orphan
+# files (visible trash), not a manifest pointing at pruned rollback
+# targets. A file that cannot be deleted keeps its manifest entry — the
+# next build retries the prune.
+dir = os.path.dirname(manifest_path) or "."
+pruned = []
+for n in sorted(n for n in manifest["images"] if n not in ({name} | ({prev} if prev and prev != name else set()))):
+    stem = n[: -len(".qcow2")] if n.endswith(".qcow2") else n
+    ok = True
+    for f in (os.path.join(dir, n),
+              os.path.join(dir, stem + ".vmlinuz"),
+              os.path.join(dir, stem + ".initramfs.img")):
+        try:
+            os.unlink(f)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"WARNING: could not prune {f}: {e} — it stays listed (the next build retries the prune)", file=sys.stderr)
+            ok = False
+    if ok:
+        pruned.append(n)
+for n in pruned:
+    del manifest["images"][n]
+# atomic write (temp + rename): a crash here must not corrupt the manifest
+# — it is the source of "which image runs" (update.sh's OLD_IMAGE/age,
+# the guest suite's boot image, this step's retention)
+fd, tmp = tempfile.mkstemp(dir=dir)
+with os.fdopen(fd, "w") as fh:
+    json.dump(manifest, fh, indent=2, sort_keys=True)
+os.replace(tmp, manifest_path)
 print(f"image: {name}")
 print(f"sha256: {sha}")
 print(f"size: {int(size) // (1024*1024)} MB")
 print(f"pi: {pi} (node {node})")
+for n in pruned:
+    print(f"pruned: {n} (older than active + previous — trash)")
 print(f"manifest: {manifest_path}")
 EOF
 

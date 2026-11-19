@@ -702,8 +702,7 @@ class Lifecycle:
     def start_update_tick(self) -> None:
         """The in-process tick: applies the pending restart + doctor at
         the first idle moment; defers (and flags the sessions) while a
-        run is active. image_swap is never applied here — explicit
-        operator downtime."""
+        run is active."""
         if self._update_task is None:
             self._update_task = asyncio.get_running_loop().create_task(
                 self._update_loop()
@@ -722,7 +721,7 @@ class Lifecycle:
         flag is absent — the normal steady state)."""
         if self.shutting_down:
             return None
-        from app.update_pending import UpdatePending, consume_restart, load, save
+        from app.update_pending import consume_restart, load
 
         path = self.cfg.update_pending_path
         if not path:
@@ -743,14 +742,9 @@ class Lifecycle:
                 # FILE (its existence means "staged target pending":
                 # sync's APPLIED gate and the doctor's update.waiting check
                 # both key on it; a lingering all-false flag would wedge
-                # both). The image_swap bit is NEVER consumed by the tick
-                # (explicit operator downtime) — preserve it.
-                if flag.image_swap:
-                    save(path, UpdatePending(
-                        reason=flag.reason, image_swap=True, ts=flag.ts))
-                else:
-                    from app.update_pending import clear as _clear_flag
-                    _clear_flag(path)
+                # both).
+                from app.update_pending import clear as _clear_flag
+                _clear_flag(path)
             if result.get("ok") is False:
                 # A pre-restart doctor FAIL must NOT hold the staged
                 # restart. The canonical case is provisioning: the image

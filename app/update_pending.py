@@ -14,10 +14,6 @@ Crash safety: the restart bit is cleared BEFORE the restart is issued
 (consume_restart), so a crash between clear and restart can never
 double-restart; a crash mid-restart just leaves a doctor-only flag,
 which the new instance's tick applies.
-
-``image_swap`` is NEVER consumed by the tick: an image-level swap is an
-explicit operator downtime action (the flag survives until the operator
-applies it).
 """
 from __future__ import annotations
 
@@ -38,7 +34,6 @@ class UpdatePending:
     reason: str
     restart: bool = False
     doctor: bool = False
-    image_swap: bool = False
     ts: float = 0.0
 
     def to_json(self) -> str:
@@ -71,7 +66,6 @@ def _read(path: Path) -> UpdatePending | None:
             reason=str(d.get("reason", "")),
             restart=bool(d.get("restart", False)),
             doctor=bool(d.get("doctor", False)),
-            image_swap=bool(d.get("image_swap", False)),
             ts=float(d.get("ts", 0.0)),
         )
     except (OSError, ValueError):
@@ -121,8 +115,8 @@ def clear(path: str | Path) -> None:
 def consume_restart(path: str | Path) -> UpdatePending | None:
     """Clear the restart bit (crash-safe: before the restart is issued).
 
-    Returns the flag with restart=False (doctor/image_swap bits kept),
-    or None if there was nothing to consume."""
+    Returns the flag with restart=False (the doctor bit kept), or None if
+    there was nothing to consume."""
     p = Path(path)
     with _locked(p):
         flag = _read(p)

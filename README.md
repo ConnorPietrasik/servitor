@@ -122,6 +122,9 @@ The guest suite additionally needs the laptop host prerequisites in
 - **Standalone** (laptop / bare VM): `deploy/README.md`, §Standalone.
 - **Production** (portcullis server): one-time install in
   `deploy/portcullis/INSTALL.md`; day-2 ops in `deploy/portcullis/RUNBOOK.md`.
-- **Updates**: `make update` — resolve versions → conformance gate →
-  swap-based deploy → doctor → automatic rollback on failure. Config-only
-  pushes: `make sync`.
+- **Updates**: `make update` — float pi/extension to the newest release in
+  the same major (out-of-major releases are reported, not applied), rebuild
+  the guest image when the userland outgrows the freshness floor (the guest
+  kernel updates with it), conformance-gate the resolved versions
+  host-side, deploy swap-based (image swap included) → doctor → automatic
+  rollback on failure. Config-only pushes: `make sync`.

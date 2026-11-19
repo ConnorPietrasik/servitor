@@ -37,7 +37,7 @@ ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_COALESCE_MS",
     "SERVITOR_HEARTBEAT_SECS",
     "SERVITOR_SSE_RING_BYTES",  # per-session SSE delivery cap (memory bound; default 50 MB)
-    # --- version selections (npm semver specs, exact by default) ---
+    # --- version selections (version FLOORS — deploy/update.sh floats them in-major) ---
     "SERVITOR_PI_VERSION",
     "SERVITOR_PI_WEB_ACCESS_VERSION",
     # --- deployment layout (absolute paths; the guest unit passes them via
@@ -52,12 +52,17 @@ ENV_NAMES: tuple[str, ...] = (
 # Host-side deploy names — read ONLY by the host deploy scripts
 # (deploy/sync|doctor|update.sh) and the guest image build
 # (deploy/guest/build.sh): never by the app, and never synced into the guest
-# (the build bakes them into the image). They live in .env.example so that
+# (the build bakes the address/DNS pair into the image; the update knobs
+# are read by deploy/update.sh only). They live in .env.example so that
 # file is the complete record of the host .env, but they are outside the app
 # contract on purpose — the gate asserts they stay disjoint from ENV_NAMES.
 HOST_DEPLOY_ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_VM_IP",  # the VM's edge address (ssh target; baked into the image)
     "SERVITOR_DNS_UPSTREAM",  # guest public DNS upstreams (baked into the image)
+    # update-run knobs (deploy/update.sh only; empty in .env = its header default):
+    "UPDATE_DOCTOR",
+    "IMAGE_MAX_AGE_DAYS",
+    "SHUTDOWN_TIMEOUT",
 )
 
 
@@ -82,7 +87,7 @@ class Config:
     coalesce_ms: int = 1000
     heartbeat_secs: int = 15
     sse_ring_bytes: int | None = None  # per-session SSE cap; None = 50 MB default
-    # version selections (semver specs, exact by default)
+    # version selections (floors — deploy/update.sh floats them in-major)
     pi_version: str = "1.5.2"
     pi_web_access_version: str = "0.47.0"
     # machine credentials (may be absent at app boot; spawn fails closed
@@ -179,7 +184,7 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
     no defaults, env-only) and the state root (from the --state arg when
     the env file does not set it). The ops parameters and version picks
     fall back to their documented defaults: the pi install itself is
-    resolved by the caller (CLI), so the semver specs are not needed to
+    resolved by the caller (CLI), so the version floors are not needed to
     serve HTTP.
     """
     if env is None:

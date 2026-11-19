@@ -5,10 +5,13 @@ lives in `deploy/portcullis/INSTALL.md`; the portcullis-side canon (route,
 actions, doctor checks, host firewall) is the portcullis RUNBOOK section
 "Servitor (agent VM)". The short version: the VM is provisioned once; day-2
 control is the four panel actions (`servitor-status`, `servitor-vm-restart`,
-`servitor-sync`, `servitor-doctor`); version bumps are `deploy/update.sh`
-from the host checkout (SSH, gated, auto-rollback); config edits are
-`deploy/sync.sh` or the panel's `servitor-sync` (fast path, never blocks on
-a run). Naming: `servitorctl` is the GUEST-side command (the app's modules,
+`servitor-sync`, `servitor-doctor`); updates (pi / extension / guest
+userland) are `sudo make update` in the host checkout (SSH — floats each
+selection to the newest release in the same major, reports out-of-major
+releases instead of applying them, rebuilds + swaps the image when the
+userland outgrows the freshness floor, conformance-gated with auto-rollback); config
+edits are `deploy/sync.sh` or the panel's `servitor-sync` (fast path, never
+blocks on a run). Naming: `servitorctl` is the GUEST-side command (the app's modules,
 run inside the VM as `python -m app.<module>`); host-side, the entry points
 are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 
@@ -17,7 +20,8 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 1. Host: install libvirt/KVM + the deploy key + the one egress ufw rule —
    INSTALL.md §1–§2 and §6 (none of it exists on a fresh box).
 2. Host: `sudo make guest` in a servitor checkout — builds the qcow2 (name =
-   pi version + date; the previous image is retained for rollback). The VM's
+   pi version + date; the previous image — the rollback target — is
+   retained, older images are pruned). The VM's
    edge IP (`SERVITOR_VM_IP` in the host `.env`) is CHOSEN BEFORE the build
    — it is baked into the image.
 3. Host: `virsh define` + `virsh start` with the domain definition from
@@ -42,7 +46,7 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 | task | how |
 |---|---|
 | change prompts/skills/lib | edit `agent-config/` / `lib/` in the host checkout, panel `servitor-sync` (or `sudo deploy/sync.sh`) |
-| bump pi / pi-web-access | edit `.env` specs, `sudo deploy/update.sh` (SSH — long, network-bound; the conformance suite gates the resolved versions host-side before anything touches the guest; first run on a fresh server: host checkout needs `sudo make venv` + the `slot1` user — INSTALL.md §10) |
+| update pi / extension / guest userland | `sudo make update` in the host checkout (SSH — long, network-bound; floats each selection to the newest release in the same major — out-of-major releases are REPORTED, accept one by editing the `.env` line; rebuilds + swaps the image when the userland outgrows the 7-day freshness floor, so the guest kernel updates with it; the conformance suite gates the resolved versions host-side before anything touches the guest; auto-rollback, image included; first run on a fresh server: the host checkout needs `sudo make venv` + the `slot1` user — INSTALL.md §10) |
 | rotate keys | host `.env` → `sudo deploy/sync.sh` (re-injects the key slice into the guest's 0600 env file, sets the restart flag) — the portcullis stack's copy of the key floats with its own `make update` as usual |
 | ssh into the VM | from the server: `sudo ssh -i /root/.srv/deploy_key root@$SERVITOR_VM_IP`. From a LAN workstation additionally needs a host forward rule (`sudo ufw route allow from <LAN subnet> to $SERVITOR_VM_IP port 22`) — not added by default; the designed flows (panel + server) don't need it |
 | release a session | UI close, GC timer (idle >14 d, non-stable), slot/disk pressure — all through the single `release()` (sweep by owner before the slot is reused; sweep-fail ⇒ quarantined, visible, retryable) |

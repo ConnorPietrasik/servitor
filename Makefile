@@ -85,7 +85,8 @@ test-guest: venv
 sync:
 	deploy/sync.sh
 
-## single versioned update path (resolve -> gate -> swap -> doctor)
+## single day-2 update path (float in-major + freshness-floor image
+## rebuild + swap + host-side gate + automatic rollback, image included)
 update:
 	deploy/update.sh
 

@@ -780,7 +780,7 @@ def check_update_waiting(rep: Report, args: argparse.Namespace) -> None:
     if flag is None:
         return
     detail = f"staged target pending: restart={flag.restart} doctor={flag.doctor} " \
-        f"image_swap={flag.image_swap} reason={flag.reason}"
+        f"reason={flag.reason}"
     rep.add("update.waiting", WARN, detail + " (certifies the RUNNING state; full green after the deferred restart)")
 
 

@@ -6,10 +6,10 @@
 - no run active    -> the tick applies: per-session flags cleared, the
   restart bit consumed BEFORE the restart is issued (crash-safe), the
   restart command runs once.
-- doctor-only flag -> applied inline (the doctor command runs); the
-  image_swap bit is NEVER consumed by the tick (explicit operator
-  downtime) — the flag survives with it.
-- no flag          -> no-op (the steady state).
+- doctor-only flag -> applied inline (the doctor command runs) and the
+  flag is CLEARED (a lingering all-false flag would wedge sync's APPLIED
+  gate and the doctor's update.waiting check).
+- no flag          -> no-op (the normal state).
 """
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def test_update_waiting_full_cycle(stage2_env):
         row = client.send("start_session", {"display_name": "uw"})
         sid = row["session_id"]
 
-        # 1. no flag: no-op (the steady state)
+        # 1. no flag: no-op (the normal state)
         assert client.send("update_tick") == {"no_flag": True}
 
         # 2. run ACTIVE: the tick defers — the flag survives, the
@@ -110,16 +110,16 @@ def test_update_waiting_full_cycle(stage2_env):
         row = next(x for x in rows if x["id"] == sid)
         assert row.get("update_waiting") is False, "per-session flag must clear"
 
-        # 4. doctor-only flag: applied inline; image_swap SURVIVES
-        save(flag_path, UpdatePending(reason="sync", doctor=True, image_swap=True))
+        # 4. doctor-only flag: applied inline and the flag is CLEARED
+        # (a lingering all-false flag would wedge sync's APPLIED gate and
+        # the doctor's update.waiting check)
+        save(flag_path, UpdatePending(reason="sync", doctor=True))
         r = client.send("update_tick")
         assert r.get("restarted") is not True, r
         assert doctor_marker.read_text().count("fake_doctor") >= 1
         f = load(flag_path)
-        assert f is not None and f.image_swap is True and not f.restart, (
-            f"image_swap must survive the tick (explicit operator downtime): {f}"
-        )
-        # 5. and the surviving image-swap flag no-ops further ticks
+        assert f is None, f"the doctor-only flag must be fully applied (cleared): {f}"
+        # 5. and with no flag, further ticks are no-ops
         r = client.send("update_tick")
         assert r.get("no_op") is True, r
     finally:
