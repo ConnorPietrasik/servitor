@@ -307,6 +307,37 @@ def check_firewall_rules(rep: Report) -> None:
             rep.add("firewall.port", FAIL, f"ruleset lacks port {port}/{edge}/policy-drop")
 
 
+def check_ui(rep: Report) -> None:
+    """The chat UI is served by the app itself (static, same port): a GET /
+    on the app's bind address must answer 200. If ui/dist is missing from
+    the deployed tree, the SPA fallback never registers and / is a bare
+    FastAPI 404 — the API stays healthy, so only this check sees it (the
+    portcullis edge probe only ever sees Authelia's 302)."""
+    bind = optional_env("SERVITOR_BIND") or "127.0.0.1"
+    port = optional_env("SERVITOR_PORT") or ""
+    if not port:
+        rep.add("ui.index", FAIL, "SERVITOR_PORT unset — cannot probe the UI")
+        return
+    import urllib.request
+
+    url = f"http://{bind}:{port}/"
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            status, ctype = r.status, r.headers.get("Content-Type", "")
+    except Exception as e:  # transport failure — report, don't crash the doctor
+        rep.add("ui.index", FAIL, f"GET {url} failed ({type(e).__name__}: {e})")
+        return
+    if status == 200 and "text/html" in ctype:
+        rep.add("ui.index", PASS, "GET / -> 200 text/html (SPA served by the app)")
+    else:
+        rep.add(
+            "ui.index",
+            FAIL,
+            f"GET / -> {status} {ctype or '(no content-type)'} — want 200 text/html "
+            "(ui/dist missing from the deployed tree?)",
+        )
+
+
 def check_disk(rep: Report, root: str) -> None:
     sizes = {}
     for sub in ("scratch", "inbox", "sessions"):
@@ -842,6 +873,7 @@ async def main(argv: list[str]) -> int:
     registry = Registry(args.registry or f"{args.state}/registry.db")
     check_versions(rep, args, registry)
     check_firewall_rules(rep)
+    check_ui(rep)
     check_disk(rep, args.state)
     check_keys_absent(rep, args, args.state)
     check_update_waiting(rep, args)

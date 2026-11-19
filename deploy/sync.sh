@@ -204,14 +204,16 @@ SCp "$WORK/app.tar" "$SSH_TARGET:/tmp/servitor-app.tar"
 run_guest "tar -xf /tmp/servitor-app.tar -C /opt/servitor/app && rm -f /tmp/servitor-app.tar"
 
 # ui (the static dist; the app serves it on the same port — rm+extract
-# like the app: a tar -x over the old tree keeps deleted asset files)
+# like the app: a tar -x over the old tree keeps deleted asset files).
+# The app resolves <app root>/ui/dist (app/api/app.py) — the tar holds the
+# dist's CONTENTS, so the target is the dist dir itself, one level below ui/.
 tar -C "$REPO/ui/dist" -cf "$WORK/ui.tar" .
 SCp "$WORK/ui.tar" "$SSH_TARGET:/tmp/servitor-ui.tar"
 run_guest "
   set -e
   rm -rf /opt/servitor/app/ui
-  mkdir -p /opt/servitor/app/ui
-  tar -xf /tmp/servitor-ui.tar -C /opt/servitor/app/ui
+  mkdir -p /opt/servitor/app/ui/dist
+  tar -xf /tmp/servitor-ui.tar -C /opt/servitor/app/ui/dist
   rm -f /tmp/servitor-ui.tar
 "
 
