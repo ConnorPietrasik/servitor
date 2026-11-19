@@ -208,7 +208,9 @@ it serves, but has no keys/extension yet — that is the design, not a defect.)
 when ufw is enabled):**
 
 ```bash
-sudo ufw route allow from <SERVITOR_EDGE_SUBNET>   # guest public egress
+sudo ufw route allow from <SERVITOR_VM_IP>/32 comment 'servitor VM egress'
+# (the VM's exact address; portcullis `make doctor` checks it against the
+# route file's upstream IP)
 # then, from INSIDE the guest:
 ssh -i ~/.srv/deploy_key root@$SERVITOR_VM_IP \
     'curl -sS -m 10 https://1.1.1.1/cdn-cgi/trace | head -3'
@@ -359,4 +361,4 @@ disk provide those.
 | panel `servitor-sync`/`-doctor` → "deploy key not found" | the key is not at `/root/.srv/deploy_key` — panel-do's scrubbed env has no `$HOME`, so it passes the path explicitly via `--deploy-key` (the scripts' `${HOME:-/root}` default resolves the same path as a backstop) | keypair at `/root/.srv/deploy_key` (0600, root), per §2; the public half must also be the one baked into the image |
 | server can't ssh the VM (first sync dies/times out at ssh, doctor can't reach the guest) | the host's ssh to the VM sources the host's EDGE BRIDGE IP; the guest admits 22 from `SERVITOR_HOST_BRIDGE_IP`/32 + the ops subnet — a wrong or stale bridge IP in the guest's 0600 env locks the host out of its own VM | nbd-patch `/etc/servitor/servitor.env` — `SERVITOR_HOST_BRIDGE_IP` — and `systemctl restart servitor-firewall`, or rebuild the image (§4) |
 | panel `servitor-sync`/`-doctor` → "group/other-writable" / "owned by the panel user" | `/opt/servitor-repo` (or a directory above it) lost its modes/owner — the `checkManagedScript` anti-swap gate refuses to exec | `chmod go-w` the offending path (the gate names it); never `chown panel` the checkout |
-| VM up, no public egress (search/model calls die) | missing host egress rule — the VM is not a docker container, so docker's FORWARD rules never see its traffic | `sudo ufw route allow from <edge subnet>` (INSTALL.md §6; portcullis `make doctor` checks it) |
+| VM up, no public egress (search/model calls die) | missing host egress rule — the VM is not a docker container, so docker's FORWARD rules never see its traffic | `sudo ufw route allow from <SERVITOR_VM_IP>/32` (INSTALL.md §6; portcullis `make doctor` checks it against the route's upstream IP) |
