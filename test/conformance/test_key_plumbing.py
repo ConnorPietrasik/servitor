@@ -1,7 +1,7 @@
 """Conformance: pi-web-access key plumbing (verified against the
-pinned 0.47.0 dist, recorded here as a standing conformance fact).
+pinned 0.48.0 dist, recorded here as a standing conformance fact).
 
-The 0.47.0 dist: config lookup is agent-dir-based
+The 0.48.0 dist: config lookup is agent-dir-based
 (`getWebSearchConfigDir()` returns PI_CODING_AGENT_DIR when set — which
 servitor always sets — before the XDG/homedir fallbacks), and the Exa
 credential resolves ENV-FIRST (`EXA_API_KEY` beats any web-search.json

@@ -25,7 +25,7 @@ test/.state/
 # ui build stamp (the ui/ source sha the dist was built from)
 ui/.ui-src-sha
 
-# guest image artifacts (large; reproducible via deploy/guest/build.sh —
-# only the manifest's identity record is versioned)
+# guest image artifacts (large; reproducible via deploy/guest/build.sh).
+# manifest.json included: it is local to the build host, not versioned —
+# a fresh checkout gets its manifest from the first `make guest`
 deploy/guest/images/*
-!deploy/guest/images/manifest.json

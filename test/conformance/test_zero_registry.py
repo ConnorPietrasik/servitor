@@ -29,7 +29,7 @@ def test_zero_registry_contact_in_netns(pi_install):
     env = {
         "SERVITOR_TEST_ROOT": "/srv/servitor-test",
         "SERVITOR_PI_VERSION": "1.5.2",
-        "SERVITOR_PI_WEB_ACCESS_VERSION": "0.47.0",
+        "SERVITOR_PI_WEB_ACCESS_VERSION": "0.48.0",
         "SERVITOR_NODE_BIN": pi_install.node_bin,
         "PI_PREFIX": str(pi_install.prefix),
         "EXT_PREFIX": str(pi_install.ext_prefix),

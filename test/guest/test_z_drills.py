@@ -63,7 +63,7 @@ def skip_if_update_would_move() -> None:
     libvirt domain, a guaranteed swap failure that would fail the drill
     for the wrong reason). The .env reading mirrors update.sh's:
     SERVITOR_PI_VERSION is required (no default), the extension line
-    defaults to 0.47.0, IMAGE_MAX_AGE_DAYS to 7 (empty = default)."""
+    defaults to 0.48.0, IMAGE_MAX_AGE_DAYS to 7 (empty = default)."""
     import re as _re
     env = (REPO / ".env").read_text()
 
@@ -74,7 +74,7 @@ def skip_if_update_would_move() -> None:
     pi_decl = _env_line("SERVITOR_PI_VERSION")
     if not pi_decl:
         pytest.skip("no SERVITOR_PI_VERSION line in .env — the update would refuse the run (the line is required); cannot certify the world is current")
-    ext_decl = _env_line("SERVITOR_PI_WEB_ACCESS_VERSION") or "0.47.0"
+    ext_decl = _env_line("SERVITOR_PI_WEB_ACCESS_VERSION") or "0.48.0"
     for key, decl in (("SERVITOR_PI_VERSION", pi_decl),
                       ("SERVITOR_PI_WEB_ACCESS_VERSION", ext_decl)):
         if not is_exact(decl):

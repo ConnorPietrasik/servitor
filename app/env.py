@@ -22,7 +22,7 @@ from typing import Mapping
 ENV_NAMES: tuple[str, ...] = (
     # --- machine credentials (the only secrets; invariant 5: env-only) ---
     "OMNISSIAH_API_KEY",  # router bearer (host's LLM_API_KEY)
-    "EXA_API_KEY",  # search extension key; env-first in pi-web-access 0.47.0
+    "EXA_API_KEY",  # search extension key; env-first in pi-web-access 0.48.0
     # --- network contract (the edge is the only auth gate) ---
     "SERVITOR_BIND",
     "SERVITOR_PORT",
@@ -90,7 +90,7 @@ class Config:
     sse_ring_bytes: int | None = None  # per-session SSE cap; None = 50 MB default
     # version selections (floors — deploy/update.sh floats them in-major)
     pi_version: str = "1.5.2"
-    pi_web_access_version: str = "0.47.0"
+    pi_web_access_version: str = "0.48.0"
     # machine credentials (may be absent at app boot; spawn fails closed
     # without OMNISSIAH_API_KEY — model.id == "unknown")
     omnissiah_api_key: str | None = None
@@ -210,7 +210,7 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
         heartbeat_secs=_int(env, "SERVITOR_HEARTBEAT_SECS", 15),
         sse_ring_bytes=_optional_int(env, "SERVITOR_SSE_RING_BYTES"),
         pi_version=_optional(env, "SERVITOR_PI_VERSION") or "1.5.2",
-        pi_web_access_version=_optional(env, "SERVITOR_PI_WEB_ACCESS_VERSION") or "0.47.0",
+        pi_web_access_version=_optional(env, "SERVITOR_PI_WEB_ACCESS_VERSION") or "0.48.0",
         omnissiah_api_key=_optional(env, "OMNISSIAH_API_KEY"),
         exa_api_key=_optional(env, "EXA_API_KEY"),
     )

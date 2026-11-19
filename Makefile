@@ -96,7 +96,7 @@ doctor:
 
 ## server deploy: NO SCRIPT BY DESIGN — prints where the one-time
 ## documented install lives. There is no deploy/deploy.sh on purpose:
-## the operator decisions (VM IP, image build vs fast path, first-boot
+## the operator decisions (VM IP, image build, first-boot
 ## console watch) are load-bearing, and a scripted one-shot would hide them.
 deploy:
 	@echo "no deploy script on purpose (one-time documented install — the"

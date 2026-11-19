@@ -169,7 +169,7 @@ def _transcript_lines(session_file: str) -> list[dict]:
 def stage2_env(run_root):
     """Per-test state (slot-traversable ext4) + toolkit + pi install."""
     require_root_or_skip("stage2 lifecycle (setuid spawn, mounts)")
-    pi = resolve_pi(run_root / "pi-install", "1.5.2", "0.47.0", node_bin="/usr/bin/node")
+    pi = resolve_pi(run_root / "pi-install", "1.5.2", "0.48.0", node_bin="/usr/bin/node")
     state_root = Path(f"/home/{SLOT}/servitor-test/run-{uuid.uuid4().hex[:8]}")
     (state_root / "state").mkdir(parents=True, exist_ok=True)
     toolkit = run_root / "toolkit"

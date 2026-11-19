@@ -128,7 +128,7 @@ UPDATE_DOCTOR="${UPDATE_DOCTOR:-${IN_UPDATE_DOCTOR:-1}}"
 IMAGE_MAX_AGE_DAYS="${IMAGE_MAX_AGE_DAYS:-${IN_IMAGE_MAX_AGE_DAYS:-7}}"
 SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-${IN_SHUTDOWN_TIMEOUT:-240}}"
 : "${SERVITOR_PI_VERSION:?SERVITOR_PI_VERSION missing}"
-: "${SERVITOR_PI_WEB_ACCESS_VERSION:=0.47.0}"
+: "${SERVITOR_PI_WEB_ACCESS_VERSION:=0.48.0}"
 # the .env version lines are FLOORS: exact versions (X.Y.Z), never ranges —
 # a range ("^1.5.0", "1.5.x", "latest") would hit the float rule's
 # unparseable fail-safe (NO MOVEMENT), but its literal string still differs
@@ -153,7 +153,7 @@ EXT_FLOOR_ORIG="$SERVITOR_PI_WEB_ACCESS_VERSION"
 SSH_TARGET="${SSH_TARGET:-root@${SERVITOR_VM_IP}}"
 [[ -f "$DEPLOY_KEY" ]] || { echo "deploy key not found: $DEPLOY_KEY" >&2; exit 1; }
 [[ -x "$REPO/.venv/bin/python" ]] || { echo "host checkout venv missing — sudo make venv (+ the slot1 user) per INSTALL.md §10: the update gate runs in it" >&2; exit 1; }
-[[ -f "$MANIFEST" ]] || { echo "no image manifest at $MANIFEST — the first deploy is INSTALL.md (image + domain + first sync), not this command. (INSTALL.md Appendix A's fast path leaves the manifest in /opt/servitor-disk: sudo make guest builds on the server and supersedes it, after which this command works)" >&2; exit 1; }
+[[ -f "$MANIFEST" ]] || { echo "no image manifest at $MANIFEST — the first deploy is INSTALL.md (image + domain + first sync), not this command (sudo make guest builds the image and writes the manifest)" >&2; exit 1; }
 
 # one update at a time (a manual run and a future timer would race the swap)
 exec 9>/var/lock/servitor-update.lock
@@ -217,7 +217,7 @@ EOF
 
 # newest npm stable release in the declared version's MAJOR (the declaration
 # is a floor, never a ceiling) — same major for everything: 1.5.2 -> 1.9.7
-# (2.0.0 out); 0.47.0 -> 0.49.0 in (the 0.x extension floats across minors —
+# (2.0.0 out); 0.48.0 -> 0.49.0 in (the 0.x extension floats across minors —
 # stable across them in practice; a 1.0.0 would be reported, not applied).
 # prints "<target> <latest-overall>"; target == latest-overall exactly when
 # the newest release is in slot (or nothing exists). The rule itself is the

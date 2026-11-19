@@ -48,7 +48,7 @@ done
 [[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
 set -a; source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE"); set +a
 : "${OMNISSIAH_API_KEY:?OMNISSIAH_API_KEY missing in $ENV_FILE}"
-: "${SERVITOR_PI_WEB_ACCESS_VERSION:=0.47.0}"
+: "${SERVITOR_PI_WEB_ACCESS_VERSION:=0.48.0}"
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
 # doctor.sh defaults the same way: the .env may omit settled-default lines
 # ("the file may omit any non-REQUIRED line"), and a bare $SERVITOR_PORT

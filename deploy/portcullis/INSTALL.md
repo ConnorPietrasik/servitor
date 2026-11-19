@@ -109,13 +109,12 @@ SERVITOR_DNS_UPSTREAM="1.1.1.1 9.9.9.9"
 
 # version selections (must match the image you install)
 SERVITOR_PI_VERSION=1.5.2
-SERVITOR_PI_WEB_ACCESS_VERSION=0.47.0
+SERVITOR_PI_WEB_ACCESS_VERSION=0.48.0
 ```
 
 ## 4. The guest image
 
-**Primary path — build on the server (designed path, ~20–40 min, needs
-network):**
+Build on the server (~20–40 min, needs network):
 
 ```bash
 cd /opt/servitor-repo
@@ -133,8 +132,6 @@ THIS server's network by construction. Output (in `deploy/guest/images/`):
 `servitor-pi1.5.2-<date>.qcow2` + `.vmlinuz` + `.initramfs.img` +
 `manifest.json` (sha256 recorded; the previous image — the update rollback
 target — is retained, older images are pruned).
-
-**Fast path — reuse the laptop image (off-contract, ~10 min, see Appendix A).**
 
 ## 5. The state disk (the contract: ext4, LABEL=servitor-state)
 
@@ -224,7 +221,7 @@ to the `.env`, which it does not have.
 The first sync is NOT a no-op by design. It pushes the app tree (when the sha
 differs), the chat UI's built dist (built host-side when the `ui/` source
 moved since the last build), stages the content-addressed config, pushes
-`lib/`, installs pi-web-access 0.47.0 (host npm stage → self-contained dir
+`lib/`, installs pi-web-access 0.48.0 (host npm stage → self-contained dir
 on the guest), re-injects the key slice into the guest's 0600 env file,
 mirrors any host `/etc/hosts` pins (hairpin NAT — none on a clean server),
 self-heals the edge gateway, writes the update-pending flag, waits for the
@@ -323,54 +320,7 @@ intended, but the fix is two commands, not a debug session.
 
 ---
 
-## Appendix A — fast path: reuse the laptop image (off-contract)
-
-The laptop's `servitor-pi1.5.2-20261116.qcow2` is the proven artifact (guest
-suite green), but it bakes **10.42.0.15/24 + the laptop's deploy key** and
-predates the in-image chat UI (the first sync pushes the built UI dist,
-so the UI arrives via sync, not the image — the phone works either way). If the
-server's edge subnet differs (it will, unless the server edge is literally
-10.42.0.0/24), patch three things before first boot. Takes ~10 min; the cost
-is that the manifest sha no longer matches the file (the manifest is
-harness-only — `virsh` never reads it; a later `sudo make guest` on the server
-supersedes it cleanly).
-
-```bash
-# 1. from the laptop (1.5 G + 35 M):
-scp deploy/guest/images/servitor-pi1.5.2-20261116.{qcow2,vmlinuz,initramfs.img} \
-    server:/opt/servitor-disk/
-scp deploy/guest/images/manifest.json server:/opt/servitor-disk/
-
-# 2. on the server — nbd-patch (same mechanism the image was patched with):
-sudo modprobe nbd
-sudo qemu-nbd -c /dev/nbd0 /opt/servitor-disk/servitor-pi1.5.2-20261116.qcow2
-sudo vi /dev/nbd0/etc/systemd/network/10-servitor.network
-#    [Network]
-#    Address=<SERVITOR_VM_IP>/<edge prefix>
-#    Gateway=<edge subnet .1>
-sudo vi /dev/servitor...   # the 0600 env file:
-sudo vi /dev/nbd0/etc/servitor/servitor.env
-#    SERVITOR_BIND=<SERVITOR_VM_IP>
-#    SERVITOR_EDGE_SUBNET=<edge subnet>
-#    SERVITOR_OPS_SUBNET=<host bridge IP>/32   # NOTE: the laptop image bakes
-#    the PRE-FIX firewall (22 from the ops subnet only). The server's own
-#    ssh sources its edge-bridge IP, so on a fast-path image the ops subnet
-#    must cover that source — the bridge IP as a /32 is the minimal patch
-#    (the pre-fix script accepts any CIDR) — or skip the fast path and
-#    build the designed way (§4): the current firewall script admits 22
-#    from the host bridge IP /32 + the ops subnet.
-# 3. ssh access: EITHER copy the laptop's keypair to the server
-#    (scp ~/.srv/deploy_key{,.pub} server:/root/.srv/ as root on both ends —
-#    then skip this step),
-#    OR add the server's public key:
-sudo bash -c 'cat /root/.srv/deploy_key.pub >> /dev/nbd0/root/.ssh/authorized_keys'
-sudo sync && sudo qemu-nbd -d /dev/nbd0
-```
-
-Then continue at §5 (state disk) and §6 (point `{{ROOT_QCOW2}}` at
-`/opt/servitor-disk/servitor-pi1.5.2-20261116.qcow2`, kernel/initrd likewise).
-
-## Appendix B — what the image already contains (do NOT re-provision)
+## Appendix A — what the image already contains (do NOT re-provision)
 
 slots slot0–16 (uid 9000–9016, 0700 homes; slot0 = the doctor probe slot,
 outside the app pool), the app tree + venv at `/opt/servitor/app`, the chat
@@ -384,7 +334,7 @@ with the non-key deploy defaults, and the deploy key in root's
 pi-web-access extension, and any state volume — the first sync + the state
 disk provide those.
 
-## Appendix C — failure modes seen on the laptop (and their cures)
+## Appendix B — failure modes seen on the laptop (and their cures)
 
 | symptom | cause | cure |
 |---|---|---|
@@ -394,6 +344,6 @@ disk provide those.
 | sync env file grows unbounded | (fixed) old rewriter doubled blank lines | the current sync.sh normalizes + self-heals a bloated file |
 | service crash-loop `ModuleNotFoundError: app` | unit pointed at `app.api.main` (no such module) | the template is fixed (`-m app.main`); rebuild or sed the unit |
 | panel `servitor-sync`/`-doctor` → "deploy key not found" | the key is not at `/root/.srv/deploy_key` — panel-do's scrubbed env has no `$HOME`, so it passes the path explicitly via `--deploy-key` (the scripts' `${HOME:-/root}` default resolves the same path as a backstop) | keypair at `/root/.srv/deploy_key` (0600, root), per §2; the public half must also be the one baked into the image |
-| server can't ssh the VM (first sync dies/times out at ssh, doctor can't reach the guest) | the host's ssh to the VM sources the host's EDGE BRIDGE IP; the guest admits 22 from `SERVITOR_HOST_BRIDGE_IP`/32 + the ops subnet — a wrong or stale bridge IP in the guest's 0600 env (or a pre-fix image whose firewall admits the ops subnet only) locks the host out of its own VM | nbd-patch `/etc/servitor/servitor.env` — `SERVITOR_HOST_BRIDGE_IP`, or on a fast-path image `SERVITOR_OPS_SUBNET` = bridge IP /32 (Appendix A) — and `systemctl restart servitor-firewall`, or rebuild the image (§4) |
+| server can't ssh the VM (first sync dies/times out at ssh, doctor can't reach the guest) | the host's ssh to the VM sources the host's EDGE BRIDGE IP; the guest admits 22 from `SERVITOR_HOST_BRIDGE_IP`/32 + the ops subnet — a wrong or stale bridge IP in the guest's 0600 env locks the host out of its own VM | nbd-patch `/etc/servitor/servitor.env` — `SERVITOR_HOST_BRIDGE_IP` — and `systemctl restart servitor-firewall`, or rebuild the image (§4) |
 | panel `servitor-sync`/`-doctor` → "group/other-writable" / "owned by the panel user" | `/opt/servitor-repo` (or a directory above it) lost its modes/owner — the `checkManagedScript` anti-swap gate refuses to exec | `chmod go-w` the offending path (the gate names it); never `chown panel` the checkout |
 | VM up, no public egress (search/model calls die) | missing host egress rule — the VM is not a docker container, so docker's FORWARD rules never see its traffic | `sudo ufw route allow from <edge subnet>` (INSTALL.md §6; portcullis `make doctor` checks it) |

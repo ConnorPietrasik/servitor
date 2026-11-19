@@ -79,7 +79,7 @@ def api_env(sse_cap, tmp_path_factory):
     # per-test home dir state (the slot's home is shared; keep test dirs
     # namespaced so sweep boundaries stay clean)
 
-    pi = resolve_pi(run_root / "pi-install", "1.5.2", "0.47.0", node_bin="/usr/bin/node")
+    pi = resolve_pi(run_root / "pi-install", "1.5.2", "0.48.0", node_bin="/usr/bin/node")
     toolkit = run_root / "toolkit"
     toolkit.mkdir(exist_ok=True)
     (toolkit / "f.txt").write_text("toolkit\n")

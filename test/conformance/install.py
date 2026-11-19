@@ -86,7 +86,7 @@ def resolve_pi(
     ``scratch``. Idempotent: a matching resolved version is reused."""
     pi_version = pi_version or os.environ.get("SERVITOR_PI_VERSION", "1.5.2")
     ext_version = ext_version if ext_version is not None else os.environ.get(
-        "SERVITOR_PI_WEB_ACCESS_VERSION", "0.47.0"
+        "SERVITOR_PI_WEB_ACCESS_VERSION", "0.48.0"
     )
     node_bin = node_bin or os.environ.get("SERVITOR_NODE_BIN") or "node"
 
