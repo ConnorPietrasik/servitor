@@ -2,10 +2,12 @@
 #
 # vCPU: as many as physical cores (24), NO quota — a long run should own the
 # idle machine. CPUWeight kept low so other host processes are not starved.
-# RAM: ceiling 30 GB, not a reservation — MemoryHigh throttles at 25 G so the
-# guest degrades before it OOMs; virtio-balloon + free-page-reporting on the
-# host side return idle memory; zram absorbs the rest.
+# RAM: ceiling 64 GB, not a reservation — MemoryHigh throttles at 56 G so the
+# guest degrades before it OOMs (a slow SSE consumer's ring buffer is RAM:
+# the per-subscriber cap is ~10 GB, so the slice must clear several of them);
+# virtio-balloon + free-page-reporting on the host side return idle memory,
+# zram absorbs the rest. Keep the ~8 G gap between the two lines.
 [Slice]
 CPUWeight=50
-MemoryHigh=25G
-MemoryMax=30G
+MemoryHigh=56G
+MemoryMax=64G
