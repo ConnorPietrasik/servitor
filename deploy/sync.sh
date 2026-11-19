@@ -91,9 +91,7 @@ GUEST_ENV_SHA="$(run_guest "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_PI
 # ---- artifacts (host) ----------------------------------------------------
 # config version: CONTENT-addressed (the directory's file set + bytes), so a
 # second sync of an unchanged tree is a deterministic NO-OP regardless of
-# time. The git sha is an annotation for humans, not the identity.
-# (-c safe.directory: this script also runs as root, where git's ownership
-#  check on a user-owned checkout would otherwise fail)
+# time.
 mkdir -p "$WORK/config"
 cp -a "$CONFIG_SRC/." "$WORK/config/"
 if [[ -n "${SERVITOR_TEST_CONFIG_FAULT:-}" ]]; then
@@ -106,7 +104,11 @@ fi
 # would be indistinguishable from the clean baseline, and the shape check
 # would NO-OP the faulted deploy (the fault drill could never land).
 CONFIG_CONTENT_SHA="$(cd "$WORK/config" && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1)"
-CONFIG_VERSION="$(git -c safe.directory="$REPO" -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo nogit)-c${CONFIG_CONTENT_SHA:0:12}"
+# purely content-addressed: the identity is the content alone. A commit
+# prefix in the name would make EVERY commit (even one that never touches
+# agent-config) "change" the config — re-stage + a service restart on every
+# sync for nothing.
+CONFIG_VERSION="c${CONFIG_CONTENT_SHA:0:12}"
 # the test-only router URL must never ride to the guest: the live router
 # comes from models.json (baseUrl) + the env key
 if [[ -f "$WORK/config/models.json" ]] && grep -oE '"baseUrl": *"[^"]*"' "$WORK/config/models.json" | grep -vq '"baseUrl": *"https://' ; then
@@ -386,13 +388,28 @@ for ((i = 0; i < STAGING_WAIT_SECS; i += 5)); do
 done
 
 if [[ "$APPLIED" == "1" ]]; then
-  echo "sync: restart applied by the tick; waiting for the service…"
-  for ((i = 0; i < 60; i += 2)); do
-    if run_guest "python3 -c 'import urllib.request;urllib.request.urlopen(\"http://localhost:${SERVITOR_PORT:-8787}/healthz\",timeout=2)" >/dev/null 2>&1; then
+  echo "sync: restart accepted by the tick (flag is consumed pre-restart); waiting for the service to rebind…"
+  # APPLIED means the flag file is gone — but the tick consumes the flag
+  # BEFORE issuing systemctl restart (crash-safe ordering in the tick), so
+  # the service is down or mid-restart: the old process drains (≤ 90 s
+  # grace, < the unit's TimeoutStopSec) and only then does the new one
+  # rebind. Probe the real bind address over the edge (the app binds
+  # SERVITOR_BIND — a localhost probe can never see it), and never run the
+  # doctor against a dead port: a refused-port doctor yields a mixed
+  # report (spawn checks pass, everything HTTP fails) that misreads
+  # "still starting" as a broken deploy.
+  READY=0
+  for ((i = 0; i < 90; i += 2)); do
+    if curl -sf -m 3 "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" >/dev/null 2>&1; then
+      READY=1
       break
     fi
     sleep 2
   done
+  if [[ "$READY" != "1" ]]; then
+    echo "sync: FAIL — service not answering on ${SERVITOR_VM_IP}:${SERVITOR_PORT} after the edge-probe window (~90 s when refused fast; ≤ ~225 s when each probe holds for its 3 s timeout) — exit 3: deploy landed; the update path must roll back" >&2
+    exit 3
+  fi
   if bash "$(dirname "${BASH_SOURCE[0]}")/doctor.sh" --env "$ENV_FILE" --ssh "$SSH_TARGET" --deploy-key "$DEPLOY_KEY"; then
     echo "sync: OK — shape deployed, doctor GREEN"
     exit 0
