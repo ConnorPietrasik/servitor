@@ -1,20 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import type { OutboxFile } from "../types";
+import { fmtBytes } from "../format";
 
 const SOFT_SIZE_BYTES = 100 * 1024 * 1024; // soft warning threshold (no cap)
-
-function fmtBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024;
-  let i = 0;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
-}
 
 function fmtTime(t: number): string {
   return new Date(t * 1000).toLocaleString();

@@ -5,6 +5,7 @@ import type { ForkPoint, Msg, SessionRow, ToolCall } from "../types";
 import Message from "../components/Message";
 import Outbox from "../components/Outbox";
 import Tree from "../components/Tree";
+import { fmtBytes } from "../format";
 
 // ---- client settings (persisted locally; rendering-only) -------------
 interface Settings {
@@ -490,7 +491,7 @@ export default function Chat() {
                 {uploads.map((u, i) => (
                   <span key={i} className={`up ${u.status}`}>
                     {u.status === "uploading" ? "⬆" : u.status === "done" ? "✓" : "✗"}{" "}
-                    {u.name} ({(u.size / 1024 / 1024).toFixed(1)} MB)
+                    {u.name} ({fmtBytes(u.size)})
                   </span>
                 ))}
               </div>
