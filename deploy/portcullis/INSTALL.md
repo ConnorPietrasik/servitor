@@ -25,7 +25,10 @@ only gate is the portcullis auth chain (Authelia 2FA) on the traefik route.
 ```bash
 # the portcullis edge subnet + its bridge device (the VM joins this segment)
 sudo docker network inspect edge -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
-sudo docker network inspect edge -f '{{(index .Options "com.docker.network.bridge.name")}}'
+# bridge device = br-<first 12 hex of the network ID> (the Options map does
+# not always carry com.docker.network.bridge.name — empty output means you
+# would define a domain with an empty bridge; cross-check with `ip -br link`)
+br-$(sudo docker network inspect edge -f '{{.Id}}' | cut -c1-12)
 # the edge network's gateway = the host's bridge IP (the host's OWN ssh to
 # the VM sources it — the guest admits 22 from exactly this /32)
 sudo docker network inspect edge -f '{{(index .IPAM.Config 0).Gateway}}'
@@ -152,10 +155,16 @@ for the app to work).
 
 ```bash
 IMG=/opt/servitor-repo/deploy/guest/images
-NAME=$(python3 -c "import json;print(json.load(open('$IMG/manifest.json'))['active'])")
+# the manifest's `active` INCLUDES the .qcow2 extension — the boot files are
+# named <stem>.vmlinuz / <stem>.initramfs.img, so strip it for the sed below
+NAME=$(python3 -c "import json;print(json.load(open('$IMG/manifest.json'))['active'])" | sed 's/\.qcow2$//')
 # -> e.g. servitor-pi1.5.2-20261116
 
-BRIDGE=$(sudo docker network inspect edge -f '{{(index .Options "com.docker.network.bridge.name")}}')
+# the bridge device is br-<first 12 hex of the network ID> — the Options map
+# does not always carry com.docker.network.bridge.name (empty output = the
+# sed below would define a domain with bridge=''): derive from .Id and
+# cross-check against `ip -br link`
+BRIDGE="br-$(sudo docker network inspect edge -f '{{.Id}}' | cut -c1-12)"
 
 sed -e "s|{{KERNEL}}|$IMG/$NAME.vmlinuz|" \
     -e "s|{{INITRD}}|$IMG/$NAME.initramfs.img|" \
@@ -167,7 +176,11 @@ sed -e "s|{{KERNEL}}|$IMG/$NAME.vmlinuz|" \
     -e "s|{{VCPU}}|24|" \
     -e "s|{{RAM_MAX}}|30|" \
     -e "s|{{RAM_CURRENT}}|16|" \
-    /opt/servitor-repo/deploy/guest/servitor-domain.xml | sudo virsh define -
+    /opt/servitor-repo/deploy/guest/servitor-domain.xml > /tmp/servitor-domain.xml
+# define from the file (not stdin — some libvirt builds reject `virsh define -`);
+# the file is yours to grep before defining
+grep -E '<kernel|<initrd|<vcpu|<memory|bridge=|source file' /tmp/servitor-domain.xml
+sudo virsh define /tmp/servitor-domain.xml
 
 sudo virsh start servitor
 sudo virsh console servitor   # watch the first boot (serial); Ctrl-] to leave

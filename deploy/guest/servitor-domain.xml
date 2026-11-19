@@ -13,8 +13,11 @@
                      (ext4, LABEL=servitor-state — the contract in the image's
                       fstab; see INSTALL.md §5 for the loop-free creation)
     {{BRIDGE}}       the portcullis edge bridge (the docker "edge" network's
-                     bridge device: docker network inspect edge -f
-                     '{{(index .Options "com.docker.network.bridge.name")}}')
+                     bridge device: br-<first 12 hex of the network ID>,
+                     `br-$(docker network inspect edge -f '{{.Id}}' | cut -c1-12)`;
+                     the Options map does not always carry
+                     com.docker.network.bridge.name — cross-check with
+                     `ip -br link`)
                      The guest's static IP is BAKED into the image at build
                      time (SERVITOR_VM_IP, gateway = subnet .1), so it only
                      needs to be on this L2 segment.
