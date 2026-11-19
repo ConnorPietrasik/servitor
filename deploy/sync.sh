@@ -60,7 +60,35 @@ SSH_TARGET="${SSH_TARGET:-root@${SERVITOR_VM_IP}}"
 SSH=(ssh -i "$DEPLOY_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
      -o ConnectTimeout=10 "$SSH_TARGET")
 run_guest() { "${SSH[@]}" "$@"; }
-guest_python() { run_guest "cd /opt/servitor/app && .venv/bin/python -c \"$*\""; }
+# Guest state read with transport-failure detection. ssh exits with the
+# REMOTE command's rc — except 255, which is ssh's own failure (connection
+# dropped / host down). rc 255 means the guest is UNREADABLE, not
+# "nothing deployed": the empty readings a dead ssh fakes look exactly like
+# a fresh image and manufacture a shape diff — a needless deploy + restart
+# of a healthy VM — so 255 aborts BEFORE anything is pushed (exit 1 =
+# pre-deploy failure in update.sh's rc contract: nothing to roll back).
+# Every other rc is a legitimate observation and is kept as-is:
+#   readlink 1 = no active version yet (fresh image)
+#   node 127/1 = extension not installed
+#   find|…|cut pipelines always end 0 (even a missing tree — the
+#     empty-input hash, which correctly forces a push)
+#   cd X && find 1 = no such dir (fresh image)
+# fail-fast ($4): the venv + app tree ship with the image and Registry
+# creates its db when absent, so a non-zero registry read is an anomaly,
+# not a fresh-image state — abort, as the old set -e crash did, but with a
+# reason on the line.
+state_read() { # $1 = label, $2 = variable, $3 = remote command, $4 = fail-fast
+  local -n _sr="$2"  # nameref: a quoted "$2"="…" would parse as a COMMAND, not an assignment
+  local rc=0
+  _sr="$(run_guest "$3")" || rc=$?
+  if [[ $rc -eq 255 ]]; then
+    echo "sync: FAIL — reading $1: ssh to $SSH_TARGET failed (the guest is unreadable — an empty reading would fake a fresh image and manufacture a shape diff); aborting before any change" >&2
+    exit 1
+  elif [[ -n "${4:-}" && $rc -ne 0 ]]; then
+    echo "sync: FAIL — reading $1: remote command exited $rc (guest venv/registry unreadable — not a fresh-image state); aborting before any change" >&2
+    exit 1
+  fi
+}
 
 mkdir -p /srv/servitor-sync
 WORK="$(mktemp -d /srv/servitor-sync/XXXXXX)"
@@ -77,16 +105,16 @@ CONFIG_SRC="$REPO/agent-config"
 [[ -n "${SERVITOR_TEST_CONFIG_DIR:-}" ]] && CONFIG_SRC="$SERVITOR_TEST_CONFIG_DIR"
 
 # ---- what's deployed right now (guest) ----------------------------------
-GUEST_ACTIVE="$(run_guest "readlink /var/lib/servitor/config/active 2>/dev/null" || true)"
-GUEST_EXT_STAMP="$(guest_python "
+state_read "config active pointer" GUEST_ACTIVE "readlink /var/lib/servitor/config/active 2>/dev/null"
+state_read "extension stamp (registry)" GUEST_EXT_STAMP "cd /opt/servitor/app && .venv/bin/python -c \"
 from app.registry import Registry
 r = Registry('/var/lib/servitor/registry.db')
 print(r.get_version('pi_web_access') or '')
-r.close()")"
-GUEST_EXT_INSTALLED="$(run_guest "node -e \"try{console.log(require('/opt/pi-ext/pi-web-access/package.json').version)}catch(e){console.log('')}\"" || true)"
-GUEST_APP_SHA="$(run_guest "cd /opt/servitor/app && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1" || true)"
-GUEST_UI_SHA="$(run_guest "cd /opt/servitor/app/ui/dist 2>/dev/null && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1" || true)"
-GUEST_ENV_SHA="$(run_guest "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1" || true)"
+r.close()\"" 1
+state_read "extension installed" GUEST_EXT_INSTALLED "node -e \"try{console.log(require('/opt/pi-ext/pi-web-access/package.json').version)}catch(e){console.log('')}\""
+state_read "app tree hash" GUEST_APP_SHA "cd /opt/servitor/app && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1"
+state_read "ui dist hash" GUEST_UI_SHA "cd /opt/servitor/app/ui/dist 2>/dev/null && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1"
+state_read "env key slice" GUEST_ENV_SHA "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1"
 
 # ---- artifacts (host) ----------------------------------------------------
 # config version: CONTENT-addressed (the directory's file set + bytes), so a
@@ -381,23 +409,37 @@ fi
 echo "sync: flag written; waiting up to ${STAGING_WAIT_SECS}s for the app's tick to apply it (never blocks a run)…"
 APPLIED=0
 for ((i = 0; i < STAGING_WAIT_SECS; i += 5)); do
-  if ! run_guest "test -f /var/lib/servitor/update-pending.json" 2>/dev/null; then
+  rc=0
+  run_guest "test -f /var/lib/servitor/update-pending.json" 2>/dev/null || rc=$?
+  # rc is the REMOTE test's exit status only when the ssh itself succeeded:
+  # 0 = the flag is still staged, 1 = it has been cleared. Any other rc
+  # (255 = an ssh hiccup) is NOT "applied" — a transient ssh failure once
+  # flipped APPLIED while the tick was mid-apply, and the edge probe raced
+  # a healthy restart into a false exit 3 (a rollback of a sound deploy).
+  if [[ $rc -eq 1 ]]; then
     APPLIED=1; break
   fi
   sleep 5
 done
 
 if [[ "$APPLIED" == "1" ]]; then
-  echo "sync: restart accepted by the tick (flag is consumed pre-restart); waiting for the service to rebind…"
-  # APPLIED means the flag file is gone — but the tick consumes the flag
-  # BEFORE issuing systemctl restart (crash-safe ordering in the tick), so
-  # the service is down or mid-restart: the old process drains (≤ 90 s
-  # grace, < the unit's TimeoutStopSec) and only then does the new one
-  # rebind. Probe the real bind address over the edge (the app binds
-  # SERVITOR_BIND — a localhost probe can never see it), and never run the
-  # doctor against a dead port: a refused-port doctor yields a mixed
-  # report (spawn checks pass, everything HTTP fails) that misreads
-  # "still starting" as a broken deploy.
+  echo "sync: flag cleared by the new instance; confirming the edge port before the doctor…"
+  # APPLIED means the flag FILE is gone — and the file outlives the restart:
+  # the tick's consume_restart() only drops the restart bit (crash-safe,
+  # pre-restart; the doctor-only remainder stays) and the NEW instance's
+  # tick unlinks it only AFTER its post-restart doctor runs. So here the
+  # service has already been up long enough to survive a full in-guest
+  # doctor: the drain (≤ 90 s grace, < the unit's TimeoutStopSec) + boot
+  # happen while the file still EXISTS (that is the update-WAITING path
+  # below, where the tick certifies in-guest). The one way the port can be
+  # down here is a post-doctor crash that systemd is cycling
+  # (Restart=on-failure, RestartSec=2) — the probe budget is therefore a
+  # BOOT budget (≤ TimeoutStartSec + imports), not drain+boot. Probe the
+  # real bind address over the edge (the app binds SERVITOR_BIND — a
+  # localhost probe can never see it), and never run the doctor against a
+  # dead port: a refused-port doctor yields a mixed report (spawn checks
+  # pass, everything HTTP fails) that misreads "still starting" as a broken
+  # deploy.
   READY=0
   for ((i = 0; i < 90; i += 2)); do
     if curl -sf -m 3 "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" >/dev/null 2>&1; then

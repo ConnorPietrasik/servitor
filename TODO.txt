@@ -1,2 +1,5 @@
+Fix the attachment size lie
+What is the tree/fork thing?
+Add more inbox / outbox management
 Add model switching
 Add image / video gen calls
