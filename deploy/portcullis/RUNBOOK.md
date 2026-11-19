@@ -29,8 +29,9 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
    state disk, NIC on the portcullis EDGE bridge, no GPU) + the state disk
    (ext4, LABEL=servitor-state). Watch the serial console on first boot.
 4. Guest: the image ships with slots 1-16, the toolkit, the app, the chat UI
-   dist, nftables applied (8787 from the edge subnet only, 22 from the LAN
-   subnet, default deny), systemd-resolved with a public upstream.
+   dist, nftables applied (8787 from the edge subnet only, 22 from the host
+   edge-bridge IP /32 + the ops subnet, default deny), systemd-resolved with a
+   public upstream, and 4 G zram swap (zram-generator).
 5. Host: `sudo deploy/sync.sh` — provisioning (config + keys + extension +
    doctor). Success marker: "sync: OK — shape deployed, doctor GREEN".
 6. Portcullis: commit the route (this repo's
@@ -48,7 +49,7 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 | change prompts/skills/lib | edit `agent-config/` / `lib/` in the host checkout, panel `servitor-sync` (or `sudo deploy/sync.sh`) |
 | update pi / extension / guest userland | `sudo make update` in the host checkout (SSH — long, network-bound; floats each selection to the newest release in the same major — out-of-major releases are REPORTED, accept one by editing the `.env` line; rebuilds + swaps the image when the userland outgrows the 7-day freshness floor, so the guest kernel updates with it; the conformance suite gates the resolved versions host-side before anything touches the guest; auto-rollback, image included; first run on a fresh server: the host checkout needs `sudo make venv` + the `slot1` user — INSTALL.md §10) |
 | rotate keys | host `.env` → `sudo deploy/sync.sh` (re-injects the key slice into the guest's 0600 env file, sets the restart flag) — the portcullis stack's copy of the key floats with its own `make update` as usual |
-| ssh into the VM | from the server: `sudo ssh -i /root/.srv/deploy_key root@$SERVITOR_VM_IP`. From a LAN workstation additionally needs a host forward rule (`sudo ufw route allow from <LAN subnet> to $SERVITOR_VM_IP port 22`) — not added by default; the designed flows (panel + server) don't need it |
+| ssh into the VM | from the server: `sudo ssh -i /root/.srv/deploy_key root@$SERVITOR_VM_IP` (the source is the host's edge-bridge IP — the guest firewall admits 22 from exactly that /32 for this reason). From a LAN workstation additionally needs a host forward rule (`sudo ufw route allow from <LAN subnet> to $SERVITOR_VM_IP port 22`) — not added by default; the designed flows (panel + server) don't need it |
 | release a session | UI close, GC timer (idle >14 d, non-stable), slot/disk pressure — all through the single `release()` (sweep by owner before the slot is reused; sweep-fail ⇒ quarantined, visible, retryable) |
 | back up `lib/` | host-side git pull (no git credentials in the VM, invariant 12) |
 

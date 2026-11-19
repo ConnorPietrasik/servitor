@@ -14,9 +14,12 @@
 # No new UFW rule: the route rides the existing 443; the VM's own firewall
 # admits the port from the edge subnet only.
 #
-# The *.pietrasik.top two_factor wildcard already makes this private by
-# default (any authenticated user). Admins-only later = one Authelia rule
-# above the wildcard.
+# Admins-only: portcullis's authelia/configuration.yml carries the
+# servitor.pietrasik.top two_factor + group:admins rule pair ABOVE the
+# wildcard (the same pattern as panel.pietrasik.top). Without it, the
+# *.pietrasik.top two_factor wildcard would admit ANY authenticated user
+# to the agent VM. Both live in the portcullis repo, so this route and the
+# rule ship together in one `make update` — keep them in sync.
 http:
   routers:
     servitor:

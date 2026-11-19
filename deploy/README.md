@@ -85,8 +85,10 @@ host packages, `.env` template, image, state disk, the libvirt domain from
    host `.env` before the build (it is baked into the image).
 2. Merge `deploy/portcullis/traefik-dynamic/servitor.yml` (substituting the
    VM ingress IP + port) into the portcullis repo and `make update` there
-   (gated, with snapshot + auto-rollback). Authelia's
-   `*.pietrasik.top` two_factor wildcard makes it private by default.
+   (gated, with snapshot + auto-rollback). Access is admins-only: the
+   portcullis repo's Authelia config carries the `servitor.pietrasik.top`
+   two_factor + `group:admins` rule pair above the `*.pietrasik.top`
+   wildcard (same pattern as the panel) — ships in the same `make update`.
 3. `deploy/sync.sh` from a host checkout: versioned config swap, `lib/` push,
    key slice into the 0600 env file, pi-web-access install at the `.env`
    selection, service restart (or the update-waiting flag when a run is

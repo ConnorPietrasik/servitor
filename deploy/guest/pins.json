@@ -19,6 +19,7 @@
     "python-pip",
     "ripgrep",
     "uv",
-    "yt-dlp"
+    "yt-dlp",
+    "zram-generator"
   ]
 }

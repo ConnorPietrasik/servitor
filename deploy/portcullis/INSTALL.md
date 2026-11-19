@@ -26,7 +26,10 @@ only gate is the portcullis auth chain (Authelia 2FA) on the traefik route.
 # the portcullis edge subnet + its bridge device (the VM joins this segment)
 sudo docker network inspect edge -f '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
 sudo docker network inspect edge -f '{{(index .Options "com.docker.network.bridge.name")}}'
-# the server LAN subnet (ops SSH is admitted from it only)
+# the edge network's gateway = the host's bridge IP (the host's OWN ssh to
+# the VM sources it — the guest admits 22 from exactly this /32)
+sudo docker network inspect edge -f '{{(index .IPAM.Config 0).Gateway}}'
+# the server LAN subnet (the ops/workstation SSH path)
 ip -4 addr show
 ```
 
@@ -86,6 +89,14 @@ EXA_API_KEY=<exa key>
 
 # network (from §0)
 SERVITOR_EDGE_SUBNET=<edge subnet, e.g. 172.28.0.0/20>
+# the edge network's gateway (from §0): the host's OWN ssh to the VM
+# sources this address (the kernel picks the output-interface address for
+# the connected route) — the guest admits 22 from exactly this /32
+SERVITOR_HOST_BRIDGE_IP=<edge gateway, e.g. 172.28.0.1>
+# ops subnet for the workstation SSH path. The host's OWN ssh to the VM
+# does NOT use this: it sources the edge-bridge IP above. This one is the
+# LAN subnet for LAN-workstation access (host forward rule, no SNAT — the
+# workstation keeps its LAN source address; RUNBOOK §Daily ops).
 SERVITOR_OPS_SUBNET=<server LAN subnet>
 SERVITOR_VM_IP=<chosen VM IP inside the edge subnet>
 SERVITOR_PORT=8787
@@ -115,8 +126,9 @@ sudo make guest   # = unshare -m deploy/guest/build.sh --env .env
                   # where the deploy key's pub half lives by §2)
 ```
 
-The bake reads `SERVITOR_VM_IP` / `SERVITOR_EDGE_SUBNET` / `SERVITOR_OPS_SUBNET`
-/ `SERVITOR_DNS_UPSTREAM` from this `.env`, so the built image is correct for
+The bake reads `SERVITOR_VM_IP` / `SERVITOR_EDGE_SUBNET` /
+`SERVITOR_HOST_BRIDGE_IP` / `SERVITOR_OPS_SUBNET` / `SERVITOR_DNS_UPSTREAM`
+from this `.env`, so the built image is correct for
 THIS server's network by construction. Output (in `deploy/guest/images/`):
 `servitor-pi1.5.2-<date>.qcow2` + `.vmlinuz` + `.initramfs.img` +
 `manifest.json` (sha256 recorded; the previous image — the update rollback
@@ -162,6 +174,10 @@ sed -e "s|{{KERNEL}}|$IMG/$NAME.vmlinuz|" \
 
 sudo virsh start servitor
 sudo virsh console servitor   # watch the first boot (serial); Ctrl-] to leave
+sudo virsh autostart servitor  # survive a host reboot — the domain template
+                               # ships WITHOUT autostart (a stopped VM is
+                               # otherwise just a WARN), and the update's
+                               # image swap preserves the flag once set
 ```
 
 While waiting for sshd, verify from the host (as root — the key is in root's
@@ -218,6 +234,13 @@ VM → router → model and public-egress proof; that is why the panel's
 `servitor-doctor`/`servitor-sync` budget is 10 min).
 
 **Success marker:** `sync: OK — shape deployed, doctor GREEN` (exit 0).
+On the first sync — and any shape change that triggers the live doctor —
+the realistic outcome is instead `sync: OK — update-WAITING` (exit 0): the
+staged update takes TWO in-guest doctor runs (pre-restart cert +
+post-restart cert, each with a 300 s live-run cap) plus the restart itself
+— longer than the sync's 150 s staging wait, so the sync exits and the
+app's tick finishes the job. Certify with `deploy/doctor.sh` (§9) once it
+settles.
 Exit 3 = deploy landed but doctor red (the `update.sh` path owns automatic
 rollback); exit 1 = pre-deploy failure, nothing landed.
 
@@ -238,6 +261,10 @@ entries. If the server's portcullis clone pre-dates that merge, pull it first.
    route file is the second place that value lives; keep them in sync). The
    portcullis deploy prunes deployed route files absent from its repo, so
    the file must be committed in the clone, not hand-placed in /opt/panel.
+   **Ordering trap:** do not commit the route BEFORE the domain exists —
+   the portcullis doctor's servitor section then reads `bad` (route defined,
+   no domain) and the very `make update` that ships the route fails its
+   gate and auto-rolls-back. §6 (define + start) comes first on purpose.
 2. **Panel-do binary:** `make panel-do` in the portcullis clone (rebuilds,
    reinstalls, runs the negative-test suite). Only needed if the installed
    binary pre-dates the servitor actions — `make doctor` fails explicitly
@@ -325,7 +352,13 @@ sudo vi /dev/servitor...   # the 0600 env file:
 sudo vi /dev/nbd0/etc/servitor/servitor.env
 #    SERVITOR_BIND=<SERVITOR_VM_IP>
 #    SERVITOR_EDGE_SUBNET=<edge subnet>
-#    SERVITOR_OPS_SUBNET=<LAN subnet>
+#    SERVITOR_OPS_SUBNET=<host bridge IP>/32   # NOTE: the laptop image bakes
+#    the PRE-FIX firewall (22 from the ops subnet only). The server's own
+#    ssh sources its edge-bridge IP, so on a fast-path image the ops subnet
+#    must cover that source — the bridge IP as a /32 is the minimal patch
+#    (the pre-fix script accepts any CIDR) — or skip the fast path and
+#    build the designed way (§4): the current firewall script admits 22
+#    from the host bridge IP /32 + the ops subnet.
 # 3. ssh access: EITHER copy the laptop's keypair to the server
 #    (scp ~/.srv/deploy_key{,.pub} server:/root/.srv/ as root on both ends —
 #    then skip this step),
@@ -361,5 +394,6 @@ disk provide those.
 | sync env file grows unbounded | (fixed) old rewriter doubled blank lines | the current sync.sh normalizes + self-heals a bloated file |
 | service crash-loop `ModuleNotFoundError: app` | unit pointed at `app.api.main` (no such module) | the template is fixed (`-m app.main`); rebuild or sed the unit |
 | panel `servitor-sync`/`-doctor` → "deploy key not found" | the key is not at `/root/.srv/deploy_key` — panel-do's scrubbed env has no `$HOME`, so it passes the path explicitly via `--deploy-key` (the scripts' `${HOME:-/root}` default resolves the same path as a backstop) | keypair at `/root/.srv/deploy_key` (0600, root), per §2; the public half must also be the one baked into the image |
+| server can't ssh the VM (first sync dies/times out at ssh, doctor can't reach the guest) | the host's ssh to the VM sources the host's EDGE BRIDGE IP; the guest admits 22 from `SERVITOR_HOST_BRIDGE_IP`/32 + the ops subnet — a wrong or stale bridge IP in the guest's 0600 env (or a pre-fix image whose firewall admits the ops subnet only) locks the host out of its own VM | nbd-patch `/etc/servitor/servitor.env` — `SERVITOR_HOST_BRIDGE_IP`, or on a fast-path image `SERVITOR_OPS_SUBNET` = bridge IP /32 (Appendix A) — and `systemctl restart servitor-firewall`, or rebuild the image (§4) |
 | panel `servitor-sync`/`-doctor` → "group/other-writable" / "owned by the panel user" | `/opt/servitor-repo` (or a directory above it) lost its modes/owner — the `checkManagedScript` anti-swap gate refuses to exec | `chmod go-w` the offending path (the gate names it); never `chown panel` the checkout |
 | VM up, no public egress (search/model calls die) | missing host egress rule — the VM is not a docker container, so docker's FORWARD rules never see its traffic | `sudo ufw route allow from <edge subnet>` (INSTALL.md §6; portcullis `make doctor` checks it) |

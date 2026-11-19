@@ -58,6 +58,7 @@ ENV_NAMES: tuple[str, ...] = (
 # contract on purpose — the gate asserts they stay disjoint from ENV_NAMES.
 HOST_DEPLOY_ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_VM_IP",  # the VM's edge address (ssh target; baked into the image)
+    "SERVITOR_HOST_BRIDGE_IP",  # host edge-bridge IP; the guest firewall admits 22 from its /32 (baked in)
     "SERVITOR_DNS_UPSTREAM",  # guest public DNS upstreams (baked into the image)
     # update-run knobs (deploy/update.sh only; empty in .env = its header default):
     "UPDATE_DOCTOR",

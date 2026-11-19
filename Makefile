@@ -15,7 +15,7 @@
 PY := .venv/bin/python
 PY_BOOT := python3
 
-.PHONY: venv check test test-stage2 test-api test-all test-standalone test-guest sandbox-smoke vm-smoke guest finish-guest sync update doctor deploy
+.PHONY: venv check test test-stage2 test-api test-all test-standalone test-guest sandbox-smoke vm-smoke guest sync update doctor deploy
 
 venv:
 	$(PY_BOOT) -m venv .venv
@@ -69,9 +69,9 @@ vm-smoke: venv
 guest:
 	unshare -m deploy/guest/build.sh --env $(abspath .env) --deploy-key $(if $(DEPLOY_KEY),$(DEPLOY_KEY),$(HOME)/.srv/deploy_key.pub)
 
-## one-shot recovery for an interrupted guest build
-finish-guest:
-	deploy/guest/finish-build.sh
+## (no finish-guest target: the one-shot recovery script for the
+## 2026-11-16 interrupted laptop build was removed 2026-11-19 — a clean
+## `make guest` on any host is the recovery path for interrupted builds)
 
 ## standalone/loopback mode behind the local reverse proxy (no root)
 test-standalone: venv

@@ -402,6 +402,13 @@ if [[ "$APPLIED" == "1" ]]; then
     exit 3
   fi
 else
-  echo "sync: OK — update-WAITING (a run is active; the flag survives and the tick applies restart+doctor at the first idle moment). Nothing was interrupted."
+  # Not applied within the wait. (A run being active can't be the reason:
+  # that exits earlier, before the staging wait begins.) So the tick is
+  # still applying the flag: pre-restart doctor + restart + post-restart
+  # doctor, and EACH doctor carries a 300 s live-run cap — a full apply can
+  # take ~4–12 min, well past the 150 s staging wait. Fine: the flag
+  # survives, the tick finishes the job, and the post-restart doctor
+  # certifies in-guest. Never blocks, always exit 0.
+  echo "sync: OK — update-WAITING (no run active; the tick is still applying the staged restart + doctor — that can take up to ~10 min: two doctor runs, each with a 300 s live-run cap). The post-restart doctor certifies in-guest; verify with deploy/doctor.sh once it settles."
   exit 0
 fi

@@ -71,6 +71,7 @@ fi
 : "${SERVITOR_PORT:=8787}"
 : "${SERVITOR_EDGE_SUBNET:?SERVITOR_EDGE_SUBNET missing in $ENV_FILE}"
 : "${SERVITOR_OPS_SUBNET:?SERVITOR_OPS_SUBNET missing in $ENV_FILE}"
+: "${SERVITOR_HOST_BRIDGE_IP:?SERVITOR_HOST_BRIDGE_IP missing in $ENV_FILE (the host edge-bridge IP: source address of the host ssh to the VM)}"
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
 # NOTE: no apostrophes in the :? message below — a single quote inside the
 # word of ${var:?...} (even within double quotes) is a bash syntax error that
@@ -292,6 +293,7 @@ SERVITOR_BIND=$SERVITOR_VM_IP
 # state-volume root (the state disk mounts here; matches the unit's --state)
 SERVITOR_ROOT=/var/lib/servitor
 SERVITOR_EDGE_SUBNET=$SERVITOR_EDGE_SUBNET
+SERVITOR_HOST_BRIDGE_IP=$SERVITOR_HOST_BRIDGE_IP
 SERVITOR_OPS_SUBNET=$SERVITOR_OPS_SUBNET
 SERVITOR_PI_VERSION=$SERVITOR_PI_VERSION
 SERVITOR_PI_WEB_ACCESS_VERSION=$SERVITOR_PI_WEB_ACCESS_VERSION
