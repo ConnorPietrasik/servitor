@@ -172,10 +172,10 @@ sed -e "s|{{KERNEL}}|$IMG/$NAME.vmlinuz|" \
     -e "s|{{ROOT_QCOW2}}|$IMG/$NAME.qcow2|" \
     -e "s|{{STATE_QCOW2}}|/opt/servitor-disk/servitor-state.raw|" \
     -e "s|{{BRIDGE}}|$BRIDGE|" \
-    # sizing defaults (24 vCPU / 30 GB ceiling / 16 GB initial) — change
+    # sizing defaults (24 vCPU / 64 GB ceiling / 16 GB initial) — change
     # these three if scaling down for a weaker box (template header, Sizing)
     -e "s|{{VCPU}}|24|" \
-    -e "s|{{RAM_MAX}}|30|" \
+    -e "s|{{RAM_MAX}}|64|" \
     -e "s|{{RAM_CURRENT}}|16|" \
     /opt/servitor-repo/deploy/guest/servitor-domain.xml > /tmp/servitor-domain.xml
 # define from the file (not stdin — some libvirt builds reject `virsh define -`);

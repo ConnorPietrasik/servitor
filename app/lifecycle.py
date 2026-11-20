@@ -71,7 +71,6 @@ class Live:
     last_settled: Optional[float] = None
     subscribers: int = 0
     config_lower: Optional[str] = None  # the version this session booted from
-    api_key: Optional[str] = None  # per-session key (browser-held; never persisted)
 
 
 @dataclass
@@ -289,8 +288,8 @@ class Lifecycle:
             home=f"/home/{self._slot_name_for(session_id)}",
             user=self._slot_name_for(session_id),
             agent_dir=sp.agent_dir,
-            # per-session key (browser-held, in-memory only) beats the env key
-            omnissiah_api_key=(live.api_key if live and live.api_key else self.cfg.api_key),
+            # the LLM key (env-only, invariant 5) — child env, never argv
+            omnissiah_api_key=self.cfg.api_key,
             exa_api_key=self.cfg.exa_key,
             web_cache_root=sp.web_cache,
         )
@@ -299,15 +298,11 @@ class Lifecycle:
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise ValueError(f"no registry row for {session_id}")
-        if row.slot == "waiting":
-            raise RuntimeError(f"{session_id}: no slot allocated")
         return row.slot
 
     def _make_driver(self, session_id: str, session_file: str | None, live: Live) -> PiSession:
         launch = self._launch(session_id, session_file, live.sp)
         slot_name = self.cfg.registry.get(session_id).slot
-        if slot_name == "waiting":
-            raise RuntimeError(f"{session_id}: no slot allocated")
         ident = slot_identity(slot_name)
         driver = PiSession(launch, ident, cwd=live.sp.workdir)
         driver.on_settled = lambda *a, **k: self._on_settled(session_id)
@@ -328,11 +323,13 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     async def start_session(
-        self, display_name: str | None = None, api_key: str | None = None
+        self, display_name: str | None = None
     ) -> dict:
         """Allocate slot + mounts + first spawn. Under slot pressure,
-        release the oldest non-stable non-running; if none, the session
-        WAITS — a disposition, not an error."""
+        release the oldest non-stable non-running; if none is releasable
+        the start is REFUSED (NoFreeSlot → 503) — there is no queue: a
+        parked row has no end state (nothing could wake it, and with no
+        slot it could not be released either)."""
         if self.shutting_down:
             raise RuntimeError("app is shutting down")
         session_id = _new_session_id()
@@ -341,17 +338,16 @@ class Lifecycle:
         try:
             slot = self.cfg.pool.allocate(session_id)
         except NoFreeSlot:
-            freed = await self._release_oldest_for_pressure()
-            if freed:
+            if await self._release_oldest_for_pressure():
                 slot = self.cfg.pool.allocate(session_id)
             else:
-                row = self.cfg.registry.upsert_session(
-                    session_id, display_name=display_name, slot="waiting",
-                    state=ALLOCATED,
+                # nothing releasable: refuse cleanly (the caller retries
+                # later) — never park a row that can neither be woken
+                # nor released
+                raise NoFreeSlot(
+                    "all slots are live sessions (running or awaiting "
+                    "release) and none is releasable — try again later"
                 )
-                self.cfg.registry.set_waiting(session_id, True)
-                self.events.add(session_id, "waiting", "all slots live; queued")
-                return {"session_id": session_id, "waiting": True}
         assert slot is not None
         row = self.cfg.registry.upsert_session(
             session_id,
@@ -370,7 +366,7 @@ class Lifecycle:
         )
         live = Live(
             session_id=session_id, sp=sp, mount_ops=ops, driver=None,
-            config_version=version, config_lower=lower, api_key=api_key,
+            config_version=version, config_lower=lower,
         )
         self.live[session_id] = live
         try:
@@ -384,7 +380,7 @@ class Lifecycle:
             self.cfg.registry.set_state(session_id, LIVE, cause="spawn ok")
             self.cfg.registry.touch(session_id)
             self.events.add(session_id, "started", f"slot={slot.name} config={version}")
-            return {"session_id": session_id, "waiting": False, "slot": slot.name,
+            return {"session_id": session_id, "slot": slot.name,
                     "session_file": session_file, "config_version": version}
         except Exception:
             await self._abort_start(session_id, live, slot)
@@ -1151,8 +1147,9 @@ class Lifecycle:
 
     async def _release_oldest_for_pressure(self) -> bool:
         """Slot pressure: release the oldest non-stable non-running
-        session. All running ⇒ False (the new session waits). Rows on
-        slots outside this app's pool are never releaseable here."""
+        session. All running ⇒ False (the new session's start is
+        refused). Rows on slots outside this app's pool are never
+        releaseable here."""
         owned = set(self.cfg.pool.slots)
         candidates = sorted(
             (

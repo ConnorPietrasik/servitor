@@ -49,9 +49,8 @@ SLOT = "slot1"
 class AppClient:
     """JSON-lines client for `python -m app.main` (the stdio app)."""
 
-    def __init__(self, proc: subprocess.Popen, *, api_key: str = "test-key"):
+    def __init__(self, proc: subprocess.Popen):
         self.proc = proc
-        self.api_key = api_key
         self._next_id = 0
         self.buf = b""
         self._lock = __import__("threading").Lock()
@@ -277,13 +276,14 @@ def test_crash_restart_drill(stage2_env):
             assert transcript_unsettled(rows[sid]["session_file"]), "crash signature missing"
 
             # NO DOUBLE SLOT ALLOCATION: slot1 is still pinned by the
-            # crashed stable session; a new session WAITS
-            wait_res = app2.send("start_session", {"display_name": "second"})
-            assert wait_res["waiting"] is True
-            wait_sid = wait_res["session_id"]
+            # crashed stable session; a new session is REFUSED (no slot
+            # and nothing releasable) — and leaves no row behind (there
+            # is no queue: a parked row could neither be woken nor
+            # released)
+            with pytest.raises(RuntimeError, match="NoFreeSlot"):
+                app2.send("start_session", {"display_name": "second"})
             rows2 = {r["id"]: r for r in app2.send("list_sessions")["sessions"]}
-            assert rows2[wait_sid]["waiting"] is True
-            assert rows2[wait_sid]["slot"] == "waiting"  # it got no slot
+            assert len(rows2) == 1, "the refused start must not leave a row"
             assert rows2[sid]["slot"] == SLOT, "the crashed session lost its slot"
 
             # PICKUP: respawn from the transcript as the sole process

@@ -3,14 +3,12 @@
 export interface SessionRow {
   id: string;
   display_name: string | null;
-  slot: string | null; // "waiting" while queued for a slot
+  slot: string; // the static slot this session pins
   state: string; // allocated | live | draining | cleaning | free
   stable: boolean;
   interrupted: boolean;
   session_file: string | null;
   config_version: string | null;
-  junk_bytes: number | null;
-  waiting: boolean;
   update_waiting: boolean;
   new_extensions: string[];
   last_activity: number | null;

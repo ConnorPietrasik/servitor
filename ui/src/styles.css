@@ -163,11 +163,6 @@ a {
   border-color: var(--ok);
 }
 
-.chip.wait {
-  color: var(--warn);
-  border-color: var(--warn);
-}
-
 .chip.warn {
   color: var(--warn);
   border-color: var(--warn);

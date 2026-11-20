@@ -67,8 +67,6 @@ class SessionRow:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
-    junk_bytes: int = 0
-    waiting: bool = False          # slot pressure: queued for a free slot
     update_waiting: bool = False   # deferred restart requested while it ran
     loaded_extensions: tuple[str, ...] = ()
     new_extensions: tuple[str, ...] = ()  # new-extension warnings: loaded, not in baseline
@@ -105,8 +103,6 @@ class Registry:
                 created_at REAL NOT NULL,
                 updated_at REAL NOT NULL,
                 last_activity REAL NOT NULL,
-                junk_bytes INTEGER NOT NULL DEFAULT 0,
-                waiting INTEGER NOT NULL DEFAULT 0,
                 update_waiting INTEGER NOT NULL DEFAULT 0,
                 loaded_extensions TEXT NOT NULL DEFAULT '[]',
                 new_extensions TEXT NOT NULL DEFAULT '[]'
@@ -157,8 +153,6 @@ class Registry:
             created_at=r["created_at"],
             updated_at=r["updated_at"],
             last_activity=r["last_activity"],
-            junk_bytes=r["junk_bytes"],
-            waiting=bool(r["waiting"]),
             update_waiting=bool(r["update_waiting"]),
             loaded_extensions=tuple(json.loads(r["loaded_extensions"])),
             new_extensions=tuple(json.loads(r["new_extensions"])),
@@ -278,24 +272,10 @@ class Registry:
         )
         self.db.commit()
 
-    def set_waiting(self, session_id: str, waiting: bool) -> None:
-        self.db.execute(
-            "UPDATE sessions SET waiting=?, updated_at=? WHERE id=?",
-            (int(waiting), time.time(), session_id),
-        )
-        self.db.commit()
-
     def set_update_waiting(self, session_id: str, flag: bool) -> None:
         self.db.execute(
             "UPDATE sessions SET update_waiting=?, updated_at=? WHERE id=?",
             (int(flag), time.time(), session_id),
-        )
-        self.db.commit()
-
-    def set_junk_bytes(self, session_id: str, n: int) -> None:
-        self.db.execute(
-            "UPDATE sessions SET junk_bytes=?, updated_at=? WHERE id=?",
-            (n, time.time(), session_id),
         )
         self.db.commit()
 

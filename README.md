@@ -56,8 +56,8 @@ root). Code and deploy comments cite these by number (`invariant N`).
    point.
 2. **No caps:** no path allow-lists, no iteration/wall-clock/vision
    limits. Reach is bounded only by the slot uid and read-only areas.
-   Controls are meters (run active, elapsed, current tool, subprocess
-   count, scratch usage, outbox size) + human `steer()`/`abort()`.
+   Controls are meters (run state, current tool, outbox) + human
+   `steer()`/`abort()`.
 3. **The API authenticates nobody.** Anything that can reach the socket
    can drive the agent; reachability is the control. Bind the ingress
    interface, admit the port from the edge subnet only; dev binds
@@ -87,9 +87,12 @@ root). Code and deploy comments cite these by number (`invariant N`).
     There is no agent-reachable write to any durable artifact.
 12. **No git credentials in the VM.** The host does all git
     reconciliation.
-13. **pi's session JSONL is opaque payload.** The app never
-    reconstructs the active branch or compaction state by parsing it —
-    that is pi's contract.
+13. **The live process is the transcript's authority.** While a session's
+    process is alive the app reads the transcript only through pi RPC;
+    it parses the JSONL itself only when the process is dead — the boot
+    crash signature (a run that never settled) and the dead-process
+    reattach (the active branch from the file's tail). Compaction state
+    is never reconstructed from the file — that is pi's contract.
 
 ## Repo layout
 

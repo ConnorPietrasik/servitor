@@ -27,8 +27,8 @@ Routes:
     POST   /panel/sessions/{id}/action             (whitelist)
 
 Rules: authz is per session (released/unknown ⇒ 404, other sessions
-never leaked; file paths cannot escape the session dirs). The API key is
-never in any response (browser-held, env-only). SSE: monotonic integer
+never leaked; file paths cannot escape the session dirs). The LLM key is
+env-only (invariant 5) — never in any request or response. SSE: monotonic integer
 ids per session; replay from the bounded ring via Last-Event-ID/?after=;
 a position past the ring edge is a ``gap`` event (client re-syncs via
 the API — never partial data); a slow consumer that lets the ring pass
@@ -78,7 +78,6 @@ class StableBody(BaseModel):
 
 class StartBody(BaseModel):
     display_name: str | None = None
-    api_key: str | None = None  # browser-held; env-only, never stored/returned
 
 
 class ReleaseBody(BaseModel):
@@ -122,8 +121,6 @@ def _row_dict(r: SessionRow, lc: Lifecycle) -> dict:
         "interrupted": r.interrupted,
         "session_file": r.session_file,
         "config_version": r.config_version,
-        "junk_bytes": r.junk_bytes,
-        "waiting": r.waiting,
         "update_waiting": r.update_waiting,
         "new_extensions": list(r.new_extensions),
         "last_activity": r.last_activity,
@@ -250,7 +247,7 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.post(f"/api/{API_VERSION}/sessions")
     async def create_session(body: StartBody):
         try:
-            res = await app_state.lc.start_session(body.display_name, api_key=body.api_key)
+            res = await app_state.lc.start_session(body.display_name)
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
         return res
@@ -482,12 +479,10 @@ def build_app(app_state, cfg) -> FastAPI:
 
     def _session_files(sid: str):
         row = _get_row(app_state, sid)
-        slot = None
-        if row.slot != "waiting":
-            try:
-                slot = slot_identity(row.slot)
-            except Exception:
-                slot = None
+        try:
+            slot = slot_identity(row.slot)
+        except Exception:
+            slot = None
         return row, app_state.delivery.files(app_state.state, sid, slot)
 
     @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/files")

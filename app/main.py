@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 
 from app.delivery.service import Delivery
-from app.env import deployment_env
+from app.env import deployment_env, drain_grace_secs
 from app.iso.configswap import active_version, next_version, stage_and_swap
 from app.iso.layout import state_paths
 from app.iso.slots import SlotPool
@@ -81,7 +81,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--api-key-env", default="OMNISSIAH_API_KEY")
     p.add_argument("--exa-key-env", default="EXA_API_KEY")
     p.add_argument("--idle-kill-sec", type=float, default=3600.0)
-    p.add_argument("--shutdown-grace-sec", type=float, default=90.0)
+    p.add_argument("--shutdown-grace-sec", type=float, default=None,
+                   help="abort-then-drain grace, seconds (default: "
+                        "SERVITOR_DRAIN_GRACE_SECS, else 90; strictly < "
+                        "the unit's TimeoutStopSec)")
     p.add_argument("--gc-idle-days", type=float, default=14.0)
     p.add_argument("--gc-interval-sec", type=float, default=300.0)
     p.add_argument("--baseline-ext", action="append", default=[])
@@ -96,6 +99,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = p.parse_args(argv)
     if not args.pi_node or not args.pi_cli:
         p.error("--pi-node and --pi-cli required (CLI or SERVITOR_PI_NODE_BIN/SERVITOR_PI_CLI_JS)")
+    if args.shutdown_grace_sec is None:
+        args.shutdown_grace_sec = float(drain_grace_secs())
     if args.update_pending_path is None:
         args.update_pending_path = f"{args.state}/update-pending.json"
     return args
@@ -184,8 +189,6 @@ class App:
                         "interrupted": r.interrupted,
                         "session_file": r.session_file,
                         "config_version": r.config_version,
-                        "junk_bytes": r.junk_bytes,
-                        "waiting": r.waiting,
                         "update_waiting": r.update_waiting,
                         "new_extensions": list(r.new_extensions),
                         "last_activity": r.last_activity,

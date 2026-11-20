@@ -32,7 +32,6 @@ ENV_NAMES: tuple[str, ...] = (
     # --- lifecycle / delivery (ops parameters, never capability caps) ---
     "SERVITOR_GC_IDLE_DAYS",
     "SERVITOR_DRAIN_GRACE_SECS",
-    "SERVITOR_COALESCE_MS",
     "SERVITOR_HEARTBEAT_SECS",
     "SERVITOR_SSE_RING_BYTES",  # per-session SSE delivery cap (memory bound; default 50 MB)
     # --- version selections (version FLOORS — deploy/update.sh floats them in-major) ---
@@ -80,8 +79,6 @@ class Config:
     root: str  # state volume root (local, non-overlay fs); no default — env-only
     # lifecycle / delivery (settled defaults — ops, not caps)
     gc_idle_days: int = 14
-    drain_grace_secs: int = 90
-    coalesce_ms: int = 1000
     heartbeat_secs: int = 15
     sse_ring_bytes: int | None = None  # per-session SSE cap; None = 50 MB default
     # version selections (floors — deploy/update.sh floats them in-major)
@@ -162,8 +159,6 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         browser_origin=_optional(env, "SERVITOR_BROWSER_ORIGIN"),
         root=_require(env, "SERVITOR_ROOT"),
         gc_idle_days=_int(env, "SERVITOR_GC_IDLE_DAYS", 14),
-        drain_grace_secs=_int(env, "SERVITOR_DRAIN_GRACE_SECS", 90),
-        coalesce_ms=_int(env, "SERVITOR_COALESCE_MS", 1000),
         heartbeat_secs=_int(env, "SERVITOR_HEARTBEAT_SECS", 15),
         sse_ring_bytes=_optional_int(env, "SERVITOR_SSE_RING_BYTES"),
         pi_version=_require(env, "SERVITOR_PI_VERSION"),
@@ -196,8 +191,6 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
         browser_origin=_optional(env, "SERVITOR_BROWSER_ORIGIN"),
         root=root,
         gc_idle_days=_int(env, "SERVITOR_GC_IDLE_DAYS", 14),
-        drain_grace_secs=_int(env, "SERVITOR_DRAIN_GRACE_SECS", 90),
-        coalesce_ms=_int(env, "SERVITOR_COALESCE_MS", 1000),
         heartbeat_secs=_int(env, "SERVITOR_HEARTBEAT_SECS", 15),
         sse_ring_bytes=_optional_int(env, "SERVITOR_SSE_RING_BYTES"),
         pi_version=_optional(env, "SERVITOR_PI_VERSION") or "1.5.2",
@@ -236,3 +229,12 @@ def optional_env(name: str, env: Mapping[str, str] | None = None) -> str | None:
         raise ConfigError(f"{name} is not a contracted env name")
     env = env if env is not None else os.environ
     return _optional(env, name)
+
+
+def drain_grace_secs(env: Mapping[str, str] | None = None) -> int:
+    """The app's abort-then-drain grace (SERVITOR_DRAIN_GRACE_SECS,
+    default 90). It must stay STRICTLY below the unit's TimeoutStopSec
+    (120) or systemd escalates to SIGKILL mid-drain and the recorded
+    cause lies. The CLI's --shutdown-grace-sec overrides it."""
+    env = env if env is not None else os.environ
+    return _int(env, "SERVITOR_DRAIN_GRACE_SECS", 90)

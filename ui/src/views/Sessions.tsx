@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import * as api from "../api";
 import type { SessionRow } from "../types";
-import { fmtBytes } from "../format";
 
 function fmtAgo(ts: number | null | undefined): string {
   if (!ts) return "—";
@@ -14,7 +13,6 @@ function fmtAgo(ts: number | null | undefined): string {
 }
 
 function stateChip(s: SessionRow): { label: string; cls: string } {
-  if (s.waiting) return { label: "waiting", cls: "chip wait" };
   if (s.live_process) return { label: "live", cls: "chip live" };
   if (s.interrupted) return { label: "interrupted", cls: "chip warn" };
   if (s.state === "draining") return { label: "draining", cls: "chip warn" };
@@ -52,13 +50,8 @@ export default function Sessions() {
   async function create() {
     setCreating(true);
     try {
-      const r = await api.createSession(undefined, sessionStorage.getItem("servitor.api_key") || undefined);
-      if (r.waiting) {
-        // queued for a slot: land on the list (it shows "waiting")
-        await load();
-      } else {
-        nav(`/s/${r.session_id}`);
-      }
+      const r = await api.createSession();
+      nav(`/s/${r.session_id}`);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -105,14 +98,12 @@ export default function Sessions() {
                   {s.stable && <span className="chip stable" title="stable pin">📌</span>}
                 </div>
                 <div className="card-meters">
-                  <span title="slot">slot {s.slot ?? "—"}</span>
-                  <span title="junk bytes">junk {fmtBytes(s.junk_bytes)}</span>
+                  <span title="slot">slot {s.slot}</span>
                   <span title="config version">cfg {s.config_version ?? "—"}</span>
                   <span title="last activity">{fmtAgo(s.last_activity)}</span>
                 </div>
-                {(s.waiting || s.update_waiting || s.new_extensions.length > 0) && (
+                {(s.update_waiting || s.new_extensions.length > 0) && (
                   <div className="card-notes">
-                    {s.waiting && <span>queued for a slot</span>}
                     {s.update_waiting && <span>update waiting for idle</span>}
                     {s.new_extensions.map((e) => (
                       <span key={e}>new ext: {e}</span>

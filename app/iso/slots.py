@@ -16,7 +16,7 @@ from app.iso.layout import SLOT_HOME, SLOT_NAMES
 
 class NoFreeSlot(RuntimeError):
     """No free slot: release the oldest non-stable non-running session
-    (the caller's policy), or wait — the panel says so."""
+    (the caller's policy); if none is releasable the start is refused."""
 
 
 class SlotQuarantined(RuntimeError):
@@ -90,7 +90,7 @@ class SlotPool:
                 return s
         raise NoFreeSlot(
             "all 16 slots are live sessions (running or awaiting release); "
-            "release the oldest non-stable non-running session, or wait"
+            "release the oldest non-stable non-running session, or refuse the start"
         )
 
     def mark_cleaning(self, session_id: str) -> Slot:

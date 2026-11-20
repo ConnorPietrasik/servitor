@@ -60,12 +60,14 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
   crash-orphans via the ladder, marks the session interrupted, no double
   slot allocation; pickup respawns from the transcript as the sole process.
 - **slot-sweep failure**: inject an unwritable file owned by a slot uid
-  (chattr +i) ⇒ release quarantines the slot; visible in the panel and
-  `GET /meters`; retryable; never reused before clean.
+  (chattr +i) ⇒ release quarantines the slot; visible in the session
+  list (the row stays `draining` on the quarantined slot); retryable;
+  never reused before clean.
 - **disk pressure**: fill `scratch/` ⇒ oldest non-stable non-running
   sessions released until headroom; `lib/` untouched.
 - **slot pressure**: 16 live sessions ⇒ oldest non-stable non-running
-  released; 16 running ⇒ new session waits, panel says so.
+  released; 16 running ⇒ new session is refused (503, no slot and
+  nothing releasable); retry later.
 - **GC timer**: idle >14 d non-stable released; stable never.
 - **soak**: long run with the phone disconnected/locked mid-run — nothing
   cancelled (the run does not need a client); reattach = fetch.

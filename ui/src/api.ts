@@ -33,10 +33,9 @@ async function jpost<T>(path: string, body?: unknown): Promise<T> {
 export const listSessions = () =>
   jget<{ sessions: SessionRow[] }>("/api/v1/sessions");
 export const getSession = (sid: string) => jget<SessionRow>(`/api/v1/sessions/${sid}`);
-export const createSession = (display_name?: string, api_key?: string) =>
-  jpost<{ session_id: string; waiting: boolean }>("/api/v1/sessions", {
+export const createSession = (display_name?: string) =>
+  jpost<{ session_id: string; slot: string }>("/api/v1/sessions", {
     display_name,
-    ...(api_key ? { api_key } : {}),
   });
 export const releaseSession = (sid: string, reason = "user close") =>
   jpost<{ released: boolean }>(`/api/v1/sessions/${sid}/release`, { reason });
@@ -116,7 +115,6 @@ export function subscribeEvents(
     "respawned",
     "idle_killed",
     "interrupted",
-    "waiting",
     "released",
     "new_extension",
     "file_uploaded",

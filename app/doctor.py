@@ -565,9 +565,6 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
     sid: str | None = None
     try:
         out = await lc.start_session("doctor-probe")
-        if out.get("waiting"):
-            rep.add("spawn.no_prompt", FAIL, "session went to wait state (slot pressure)")
-            return
         sid = out["session_id"]
         spawn_sec = time.monotonic() - t0
         live = lc.live.get(sid)
