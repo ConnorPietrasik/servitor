@@ -1,13 +1,10 @@
 # servitor.slice — resource slice for servitor.service.
 #
-# vCPU: as many as physical cores (24), NO quota — a long run should own the
-# idle machine. CPUWeight kept low so other host processes are not starved.
 # RAM: ceiling 64 GB, not a reservation — MemoryHigh throttles at 56 G so the
 # guest degrades before it OOMs (the per-session SSE replay ring is RAM:
 # capped at 50 MB per session by default, so the slice clears many of them);
 # virtio-balloon + free-page-reporting on the host side return idle memory,
 # zram absorbs the rest. Keep the ~8 G gap between the two lines.
 [Slice]
-CPUWeight=50
 MemoryHigh=56G
 MemoryMax=64G
