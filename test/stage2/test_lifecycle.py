@@ -104,7 +104,7 @@ def start_app(state_root: Path, *, pi, slot: str, router: MockRouter, run_root: 
         "--router-url", router.base_url,
         "--pi-node", pi.node_bin,
         "--pi-cli", str(pi.cli_js),
-        "--pi-ext", str(pi.ext_path) if pi.ext_path else "",
+        "--pi-ext", str(pi.ext_path),
         "--toolkit", str(run_root / "toolkit"),
         "--slots", slot,
         "--idle-kill-sec", str(idle_kill_sec),
@@ -114,8 +114,6 @@ def start_app(state_root: Path, *, pi, slot: str, router: MockRouter, run_root: 
     ]
     if extra:
         argv += extra
-    # strip empty ext
-    argv = [a for a in argv if a != ""]
     env = dict(os.environ)
     env["OMNISSIAH_API_KEY"] = "test-key"
     env["PYTHONPATH"] = str(REPO)
@@ -166,7 +164,14 @@ def _transcript_lines(session_file: str) -> list[dict]:
 def stage2_env(run_root):
     """Per-test state (slot-traversable ext4) + toolkit + pi install."""
     require_root_or_skip("stage2 lifecycle (setuid spawn, mounts)")
-    pi = resolve_pi(run_root / "pi-install", "1.5.2", "0.48.0", node_bin="/usr/bin/node")
+    # env-driven selections (the same pattern as the conformance pi_install
+    # fixture) — never a stale pin: this install is what the test asserts against
+    pi = resolve_pi(
+        run_root / "pi-install",
+        os.environ.get("SERVITOR_PI_VERSION"),
+        os.environ.get("SERVITOR_PI_WEB_ACCESS_VERSION"),
+        node_bin=os.environ.get("SERVITOR_NODE_BIN", "/usr/bin/node"),
+    )
     state_root = Path(f"/home/{SLOT}/servitor-test/run-{uuid.uuid4().hex[:8]}")
     (state_root / "state").mkdir(parents=True, exist_ok=True)
     toolkit = run_root / "toolkit"

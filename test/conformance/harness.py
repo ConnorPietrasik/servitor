@@ -17,7 +17,6 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.env import load_config
 from app.iso import configswap, mounts as M
 from app.iso.handoff import chown_to
 from app.iso.layout import SessionMountPaths, state_paths
@@ -120,7 +119,7 @@ class Harness:
             session_dir=f"{self.state.sessions}/{session_id}",
             session_id=None if session_file else session_id,
             session_file=session_file,
-            extension_paths=(str(self.pi.ext_path),) if self.pi.ext_path else (),
+            extension_paths=(str(self.pi.ext_path),),
             home=f"/home/{self.slot_name}",
             user=self.slot_name,
             agent_dir=sp.agent_dir,

@@ -45,9 +45,10 @@ async def main() -> int:
             / "bundle"
             / "cli.js",
             node_bin=os.environ["SERVITOR_NODE_BIN"],
-            ext_requested=None,
+            ext_requested=f"pi-web-access@{os.environ['SERVITOR_PI_WEB_ACCESS_VERSION']}",
             ext_version=os.environ["SERVITOR_PI_WEB_ACCESS_VERSION"],
             ext_path=Path(os.environ["EXT_PREFIX"]) / "node_modules" / "pi-web-access",
+            ext_prefix=Path(os.environ["EXT_PREFIX"]),
         )
         assert pi.cli_js.exists(), f"pi prefix unusable: {pi.cli_js}"
         assert pi.ext_path.exists(), f"ext prefix unusable: {pi.ext_path}"

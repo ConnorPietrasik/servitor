@@ -1,8 +1,9 @@
 """Conformance suite fixtures.
 
 The suite is VERSION-PARAMETERIZED: it runs against the pi version +
-extension selection resolved from the env (defaults: the .env
-selections), installed into the shared prefix (test.conftest.pi_install).
+extension selection resolved from the env (env-only, no default — the
+.env selections), installed into the shared prefix
+(test.conftest.pi_install).
 It also serves as the host-side preflight of `deploy/update.sh` (the
 update gate).
 

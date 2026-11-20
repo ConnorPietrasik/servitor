@@ -157,10 +157,6 @@ class SseHub:
         if up_to_id > prev:
             self._consumers[sub_id] = up_to_id
 
-    def ack(self, sub_id: int, up_to_id: int) -> None:
-        """Explicit position ack (POST .../events/ack) — same as consume."""
-        self.consume(sub_id, up_to_id)
-
     def unsubscribe(self, sub_id: int) -> None:
         self._consumers.pop(sub_id, None)
 
@@ -223,12 +219,6 @@ class SseHub:
 
     def _min_consumed(self) -> int:
         return min(self._consumers.values()) if self._consumers else 0
-
-    def _unconsumed_bytes(self) -> int:
-        if not self._consumers:
-            return 0
-        mc = self._min_consumed()
-        return sum(e.nbytes for e in self._ring if e.id > mc)
 
     def ring_snapshot(self, limit: int = 200) -> list[dict]:
         """Diagnostic view (bounded)."""

@@ -118,7 +118,9 @@ cp .env.example .env   # fill in per deploy/README.md
 make venv
 make check             # contract lint
 make test              # unit + conformance vs the mock router
-                       # (conformance loud-skips without root)
+                       # (conformance loud-skips without root; pi +
+                       # extension versions come from .env — sourced by
+                       # the Makefile, no default pin)
 ```
 
 The root suites run on the server (the host the VM lives on):

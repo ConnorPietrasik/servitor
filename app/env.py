@@ -81,9 +81,6 @@ class Config:
     gc_idle_days: int = 14
     heartbeat_secs: int = 15
     sse_ring_bytes: int | None = None  # per-session SSE cap; None = 50 MB default
-    # version selections (floors — deploy/update.sh floats them in-major)
-    pi_version: str = "1.5.2"
-    pi_web_access_version: str = "0.48.0"
     # machine credentials (may be absent at app boot; spawn fails closed
     # without OMNISSIAH_API_KEY — model.id == "unknown")
     omnissiah_api_key: str | None = None
@@ -132,47 +129,13 @@ def _optional_int(env: Mapping[str, str], name: str) -> int | None:
     return parsed
 
 
-def load_config(env: Mapping[str, str] | None = None) -> Config:
-    """Load and validate config from an env mapping (defaults to os.environ)."""
-    if env is None:
-        env = os.environ
-
-    port_raw = _require(env, "SERVITOR_PORT")
-    try:
-        port = int(port_raw)
-    except ValueError as exc:
-        raise ConfigError(f"SERVITOR_PORT must be an integer, got {port_raw!r}") from exc
-    if not (1 <= port <= 65535):
-        raise ConfigError(f"SERVITOR_PORT out of range: {port}")
-
-    # INVARIANT: the app runs privileged (root on the guest); the agent
-    # never is. Dev may run unprivileged for pure-protocol work,
-    # but any iso/rpc spawn path re-asserts root before setuid/mount work
-    # (enforced in spawn_setuid, not here).
-
-    return Config(
-        bind=_require(env, "SERVITOR_BIND"),
-        port=port,
-        edge_subnet=_optional(env, "SERVITOR_EDGE_SUBNET"),
-        ops_subnet=_optional(env, "SERVITOR_OPS_SUBNET"),
-        browser_origin=_optional(env, "SERVITOR_BROWSER_ORIGIN"),
-        root=_require(env, "SERVITOR_ROOT"),
-        gc_idle_days=_int(env, "SERVITOR_GC_IDLE_DAYS", 14),
-        heartbeat_secs=_int(env, "SERVITOR_HEARTBEAT_SECS", 15),
-        sse_ring_bytes=_optional_int(env, "SERVITOR_SSE_RING_BYTES"),
-        pi_version=_require(env, "SERVITOR_PI_VERSION"),
-        pi_web_access_version=_require(env, "SERVITOR_PI_WEB_ACCESS_VERSION"),
-        omnissiah_api_key=_optional(env, "OMNISSIAH_API_KEY"),
-        exa_api_key=_optional(env, "EXA_API_KEY"),
-    )
-
-
 def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Config:
     """Config for the HTTP front door: only the network contract
     (SERVITOR_BIND / SERVITOR_PORT) and the state root are required; the
-    ops parameters and version picks fall back to their documented
-    defaults (the pi install is resolved by the caller, so the version
-    floors are not needed to serve HTTP)."""
+    ops parameters fall back to their documented defaults. The version
+    floors are not part of the front door at all — serving HTTP never
+    needs them (the pi install is resolved by the caller; the doctor
+    reads the env directly)."""
     if env is None:
         env = os.environ
     port_raw = _require(env, "SERVITOR_PORT")
@@ -192,8 +155,6 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
         gc_idle_days=_int(env, "SERVITOR_GC_IDLE_DAYS", 14),
         heartbeat_secs=_int(env, "SERVITOR_HEARTBEAT_SECS", 15),
         sse_ring_bytes=_optional_int(env, "SERVITOR_SSE_RING_BYTES"),
-        pi_version=_optional(env, "SERVITOR_PI_VERSION") or "1.5.2",
-        pi_web_access_version=_optional(env, "SERVITOR_PI_WEB_ACCESS_VERSION") or "0.48.0",
         omnissiah_api_key=_optional(env, "OMNISSIAH_API_KEY"),
         exa_api_key=_optional(env, "EXA_API_KEY"),
     )

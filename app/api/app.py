@@ -22,7 +22,6 @@ Routes:
     POST   /api/v1/sessions/{id}/stable
     POST   /api/v1/sessions/{id}/release
     GET    /api/v1/sessions/{id}/events            (SSE; Last-Event-ID resume)
-    POST   /api/v1/sessions/{id}/events/ack
     GET    /api/v1/sessions/{id}/files
     POST   /api/v1/sessions/{id}/files/upload      (raw body; no size cap)
     GET    /api/v1/sessions/{id}/files/{path}      (outbox/... | uploads/...)
@@ -101,11 +100,6 @@ class DialogAnswerBody(BaseModel):
 
 class ForkBody(BaseModel):
     entry_id: str
-
-
-class AckBody(BaseModel):
-    sub_id: int
-    last_id: int
 
 
 class PanelActionBody(BaseModel):
@@ -450,18 +444,6 @@ def build_app(app_state, cfg) -> FastAPI:
             "X-Sub-Id": str(sub),
         }
         return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
-
-    @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/events/ack")
-    async def events_ack(sid: str, body: AckBody):
-        _get_row(app_state, sid)
-        hub: SseHub = app_state.lc.hub(sid)
-        hub.ack(body.sub_id, body.last_id)
-        return {
-            "ok": True,
-            "latest_id": hub.latest_id,
-            "buffered_bytes": hub.buffered_bytes,
-            "unconsumed_bytes": hub._unconsumed_bytes(),
-        }
 
     # ------------------------------------------------------------------ #
     # files (delivery)

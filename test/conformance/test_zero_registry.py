@@ -27,8 +27,11 @@ def test_zero_registry_contact_in_netns(pi_install):
     inner = HERE / "netns_inner.py"
     env = {
         "SERVITOR_TEST_ROOT": "/srv/servitor-test",
-        "SERVITOR_PI_VERSION": "1.5.2",
-        "SERVITOR_PI_WEB_ACCESS_VERSION": "0.48.0",
+        # the RESOLVED selection (what the prefixes actually hold) — the
+        # inner run must record the version it really executes, never a
+        # stale pin
+        "SERVITOR_PI_VERSION": pi_install.version,
+        "SERVITOR_PI_WEB_ACCESS_VERSION": pi_install.ext_version,
         "SERVITOR_NODE_BIN": pi_install.node_bin,
         "PI_PREFIX": str(pi_install.prefix),
         "EXT_PREFIX": str(pi_install.ext_prefix),

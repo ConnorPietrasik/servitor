@@ -1,7 +1,7 @@
 """Version-parameterized pi/extension installer.
 
 The conformance suite takes a pi version + extension selection (npm
-semver specs, from the env — defaults to the .env selections) and
+semver specs, env-only — no default; supplied by the .env selections) and
 installs the resolved versions into a scratch prefix with ``npm install
 --ignore-scripts``. The resolved version is read back from the installed
 package.json (the registry records installed versions). This is also the
@@ -63,17 +63,17 @@ def make_readable_by_slot(path: Path) -> None:
 
 @dataclass(frozen=True)
 class PiInstall:
-    """The resolved, installed pi (and optional extension) in a scratch prefix."""
+    """The resolved, installed pi + pi-web-access in a scratch prefix."""
 
     prefix: Path
     requested: str
     version: str  # read back from the installed package.json
     cli_js: Path
     node_bin: str
-    ext_requested: str | None = None
-    ext_version: str | None = None
-    ext_path: Path | None = None  # the -e path (package dir)
-    ext_prefix: Path | None = None  # the npm prefix holding the extension
+    ext_requested: str  # the npm spec installed
+    ext_version: str  # read back from the installed package.json
+    ext_path: Path  # the -e path (package dir)
+    ext_prefix: Path  # the npm prefix holding the extension
 
 
 def resolve_pi(
@@ -82,12 +82,25 @@ def resolve_pi(
     ext_version: str | None = None,
     node_bin: str | None = None,
 ) -> PiInstall:
-    """Install pi (+ pi-web-access when ext_version is given) into
-    ``scratch``. Idempotent: a matching resolved version is reused."""
-    pi_version = pi_version or os.environ.get("SERVITOR_PI_VERSION", "1.5.2")
+    """Install pi + pi-web-access into ``scratch``. Idempotent: a
+    matching resolved version is reused. Both selections are required
+    (explicit arg or env — no default)."""
+    # env-only, fail loud: a silently stale default here would install a
+    # version the conformance suite never actually asserts against.
+    pi_version = pi_version or os.environ.get("SERVITOR_PI_VERSION")
+    if not pi_version:
+        raise InstallError(
+            "pi version selection missing: pass pi_version or set "
+            "SERVITOR_PI_VERSION (env-only — no default)"
+        )
     ext_version = ext_version if ext_version is not None else os.environ.get(
-        "SERVITOR_PI_WEB_ACCESS_VERSION", "0.48.0"
+        "SERVITOR_PI_WEB_ACCESS_VERSION"
     )
+    if not ext_version:
+        raise InstallError(
+            "extension version selection missing: pass ext_version or set "
+            "SERVITOR_PI_WEB_ACCESS_VERSION (env-only — no default)"
+        )
     node_bin = node_bin or os.environ.get("SERVITOR_NODE_BIN") or "node"
 
     pi_prefix = scratch / "pi"
@@ -121,24 +134,22 @@ def resolve_pi(
     if not cli_js.exists():
         raise InstallError(f"pi CLI entry missing after install: {cli_js}")
 
-    ext_requested, ext_version_resolved, ext_path = None, None, None
-    if ext_version:
-        ext_spec = f"pi-web-access@{ext_version}"
-        ext_pkg_dir = ext_prefix / "node_modules" / "pi-web-access"
-        reuse = False
-        if re.fullmatch(r"\d+\.\d+\.\d+", ext_version):
-            try:
-                reuse = _installed_version(ext_prefix, "pi-web-access") == ext_version
-            except InstallError:
-                reuse = False
-        if not reuse:
-            _npm_install(ext_prefix, ext_spec)
-        make_readable_by_slot(ext_prefix)
-        ext_version_resolved = _installed_version(ext_prefix, "pi-web-access")
-        ext_requested = ext_spec
-        ext_path = ext_pkg_dir
-        if not ext_path.exists():
-            raise InstallError(f"extension missing after install: {ext_path}")
+    ext_spec = f"pi-web-access@{ext_version}"
+    ext_pkg_dir = ext_prefix / "node_modules" / "pi-web-access"
+    reuse = False
+    if re.fullmatch(r"\d+\.\d+\.\d+", ext_version):
+        try:
+            reuse = _installed_version(ext_prefix, "pi-web-access") == ext_version
+        except InstallError:
+            reuse = False
+    if not reuse:
+        _npm_install(ext_prefix, ext_spec)
+    make_readable_by_slot(ext_prefix)
+    ext_version_resolved = _installed_version(ext_prefix, "pi-web-access")
+    ext_requested = ext_spec
+    ext_path = ext_pkg_dir
+    if not ext_path.exists():
+        raise InstallError(f"extension missing after install: {ext_path}")
 
     return PiInstall(
         prefix=pi_prefix,
@@ -149,5 +160,5 @@ def resolve_pi(
         ext_requested=ext_requested,
         ext_version=ext_version_resolved,
         ext_path=ext_path,
-        ext_prefix=ext_prefix if ext_version else None,
+        ext_prefix=ext_prefix,
     )

@@ -16,6 +16,13 @@
 PY := .venv/bin/python
 PY_BOOT := python3
 
+# The suites parameterize on the .env version selections (env-only, no
+# default — a missing selection fails loud inside the suite). Source the
+# repo .env the way the deploy scripts do — only strict KEY=value lines
+# (cf. deploy/update.sh) — so the targets need no exported env. The temp
+# file keeps this POSIX-sh safe (no process substitution).
+ENV_LOAD := if [ -f .env ]; then set -a; grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ./.env > .env.sh; . ./.env.sh; rm -f ./.env.sh; set +a; fi
+
 .PHONY: venv check test test-stage2 sandbox-smoke guest sync update doctor deploy
 
 venv:
@@ -31,18 +38,18 @@ check: venv
 ## unit + conformance vs mock router (needs pi install into a
 ## scratch prefix — the runner handles it; version-parameterized per .env)
 test: venv
-	$(PY) -m pytest test/unit test/conformance -v
+	$(ENV_LOAD); $(PY) -m pytest test/unit test/conformance -v
 
 ## lifecycle (spawn/settle/respawn/idle-kill/crash drills) over the
 ## JSON-over-stdio app (root, server).
 test-stage2: venv
-	$(PY) -m pytest test/stage2 -v
+	$(ENV_LOAD); $(PY) -m pytest test/stage2 -v
 
 ## isolation gates as root (server): overlay mounts, EROFS, whiteouts,
 ## upper paths, teardown order, sweep walk, config/credential/context-file
 ## gates, the whole protocol suite
 sandbox-smoke: venv
-	$(PY) -m pytest test/sandbox_smoke -v
+	$(ENV_LOAD); $(PY) -m pytest test/sandbox_smoke -v
 
 ## guest qcow2 build (host-side, root; unshare -m keeps the
 ## build's mount churn in a private mount namespace — see build.sh header)
