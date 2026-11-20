@@ -85,8 +85,12 @@ root). Code and deploy comments cite these by number (`invariant N`).
 11. **Artifacts leave through the outbox/download endpoint or `lib/`** —
     and only "save this script" into `lib/` is ever a human UI action.
     There is no agent-reachable write to any durable artifact.
-12. **No git credentials in the VM.** The host does all git
-    reconciliation.
+12. **No git credentials in the VM — the agent can never write to a
+    repo.** The guest ships git (clone/fetch for reading) but no keys,
+    tokens, or credential helpers; all git reconciliation is host-side.
+    The threat this closes is not exfiltration (an accepted residual,
+    invariant 1) — it is that a prompt-injected agent must never be
+    able to push to, or otherwise modify, your repositories.
 13. **The live process is the transcript's authority.** While a session's
     process is alive the app reads the transcript only through pi RPC;
     it parses the JSONL itself only when the process is dead — the boot

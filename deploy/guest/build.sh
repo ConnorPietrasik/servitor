@@ -235,14 +235,18 @@ with open(site.getsitepackages()[0] + '/servitor.pth', 'w') as f:
 PYEOF
 python --version > /tmp/python-version.txt
 # toolkit: root-owned 0755, a plain directory (the overlay lower), and NO
-# context files at its root (doctor asserts this)
+# context files at its root (doctor asserts this). The toolkit is the
+# LOWER of every session's workdir overlay, so the agent sees bin/python
+# (the venv python — the sole toolkit entry that differs from /usr/bin,
+# by Pillow/numpy) as ./bin/python in its working directory: /opt/toolkit
+# is NOT on the agent's PATH, and bare `python` is /usr/bin/python. Every
+# other tool resolves via /usr/bin, which is already on the agent's PATH.
+# A new packaged tool is a pins.json + SYSTEM.md change; a new Python library
+# goes on the pip line below (uv comes from the Arch package, not here).
 mkdir -p /opt/toolkit/bin
 python -m venv /opt/toolkit/.venv
-/opt/toolkit/.venv/bin/pip install --no-cache-dir --disable-pip-version-check --quiet pillow numpy uv
+/opt/toolkit/.venv/bin/pip install --no-cache-dir --disable-pip-version-check --quiet pillow numpy
 ln -sf /opt/toolkit/.venv/bin/python /opt/toolkit/bin/python
-for t in ffmpeg convert magick yt-dlp rg uv; do
-  ln -sf "/usr/bin/\$t" "/opt/toolkit/bin/\$t"
-done
 chmod 0755 /opt/toolkit
 # slot users, fixed uids, 0700 homes: slot0 (uid 9000) is the DOCTOR PROBE
 # slot — outside the app's pool (SLOT_NAMES = slot1-16), so the app's

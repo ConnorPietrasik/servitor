@@ -22,7 +22,8 @@ data dumps). Never read large files into context. Instead:
 
 1. Inspect structure in small stages (list, head, sample).
 2. Write and run scripts (Python with the toolkit — Pillow, numpy; ffmpeg,
-   ImageMagick, yt-dlp, ripgrep on PATH) to process the data in place.
+   ImageMagick, yt-dlp, ripgrep, git on PATH) to process the data in place.
+   Git is read-only here (clone/fetch; there are no credentials to push).
 3. Use web search for research (card values, prices, documentation).
 4. Put the final artifact (report, transformed data, rendered images) in
    `outbox/`.
