@@ -108,6 +108,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 class App:
     def __init__(self, args: argparse.Namespace):
         self.args = args
+        self.http_server = None  # the uvicorn Server (HTTP mode; the stop path needs it)
         self.state = state_paths(args.state)
         self.registry = Registry(args.registry or f"{args.state}/registry.db")
         staged = _stage_config(self.state.config, args.config_src, args.router_url)
@@ -290,8 +291,28 @@ class App:
                 log_level="info",
                 lifespan="on",
                 timeout_keep_alive=75,
+                # backstop for the 'waiting for connections' phase.
+                # Normal stop: the stop path (lifespan-installed SIGTERM
+                # handler) closes every SSE hub the instant SIGTERM
+                # lands, the connection wait ends at once (~0 s), and
+                # the budget is the drain that follows — three phases
+                # under ONE shared clock (lifecycle.shutdown): ≤ ~25 s
+                # (notify + stdin close) inside the ≤ 90 s EOF grace,
+                # + 10 s TERM + an instant KILL ≈ 100 s worst case,
+                # REGARDLESS of how many children are live (a
+                # sequential per-child wait would add up: N stuck
+                # children → N × ~101 s, riding the unit's
+                # TimeoutStopSec out to the SIGKILL). The backstop
+                # itself fires only for a connection that survives the
+                # hub close (a bug) — kept small so even that tail
+                # (≈ 20 + 100 s, at the window's edge) is no worse than
+                # the pre-fix 120 s SIGKILL.
+                timeout_graceful_shutdown=20.0,
             )
         )
+        # the stop path (app.py's lifespan) needs the server to set
+        # should_exit; stash it before serve() installs the signal handlers
+        self.http_server = server
         await server.serve()
 
 

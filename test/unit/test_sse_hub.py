@@ -98,3 +98,48 @@ def test_sse_event_framing_overhead_accounted():
     assert ev.id == e1
     # nbytes includes the data + framing overhead (id/event/blank lines)
     assert ev.nbytes >= len(ev.data)
+
+
+def test_close_wakes_blocked_waiters():
+    """close() ends the wait: the response generator's wait_new returns
+    on the next iteration, the stream ends, and uvicorn's 'waiting for
+    connections' phase can no longer be held open by an SSE stream
+    (the 2026-11-19 120 s stop: a browser-held SSE stream rode the stop
+    out to TimeoutStopSec)."""
+
+    async def go():
+        hub = SseHub("s1")
+        hub.publish("t", {"i": 0})
+        w = asyncio.ensure_future(hub.wait_new(1))  # nothing past id 1 yet
+        await asyncio.sleep(0)
+        assert not w.done()
+        hub.close()
+        await asyncio.wait_for(w, timeout=1)
+
+    asyncio.run(go())
+
+
+def test_wait_new_returns_at_once_after_close():
+    """A waiter arriving after the close must not block."""
+
+    async def go():
+        hub = SseHub("s1")
+        hub.close()
+        await asyncio.wait_for(hub.wait_new(0), timeout=1)
+        assert hub.closed is True
+
+    asyncio.run(go())
+
+
+def test_close_is_idempotent_and_final():
+    """Double close is a no-op; once closed, wait_new never blocks again
+    (even with a cursor far past the ring edge)."""
+
+    async def go():
+        hub = SseHub("s1")
+        hub.publish("t", {"i": 0})
+        hub.close()
+        hub.close()
+        await asyncio.wait_for(hub.wait_new(99), timeout=1)
+
+    asyncio.run(go())

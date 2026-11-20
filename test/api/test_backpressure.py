@@ -10,7 +10,7 @@ a live consumer); the hub's meter records the pause episodes.
 Cap scaling: this test overrides ``sse_cap`` (1 MB) for its app
 instance. The pause/resume/bounded mechanism is cap-independent — it
 is the same code path at 1 MB as at 50 MB. The production default is
-pinned by a unit test (test/unit/test_sse.py: the default cap is
+pinned by a unit test (test/unit/test_sse_hub.py: the default cap is
 50 MB), and 50 MB is the right default because pi's per-delta
 message_update events bound a single context window's SSE volume well
 below it.

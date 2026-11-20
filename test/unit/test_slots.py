@@ -6,15 +6,43 @@ The invariants the rest of the system stands on:
   slot it already pins (idempotent per session — the uid never re-rolls);
 - a slot is freed ONLY after the sweep verified clean;
 - a failed sweep quarantines: the slot is visible, retryable, and NEVER
-  allocated again until the retry re-sweep verifies clean.
+allocated again until the retry re-sweep verifies clean.
+
+The guest slot users (created at image build) don't exist in a dev
+container, so ``getpwnam`` is stood in with the guest layout
+(slot1-16 -> uid 9001-9016); the REAL passwd users are certified by the
+guest doctor's check_slots. Everything else in SlotPool is pure
+in-memory state.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+import app.iso.slots as slots_mod
+from app.iso.layout import SLOT_NAMES
 from app.iso.slots import NoFreeSlot, SlotPool, SlotQuarantined
 
 NAMES = ("slot1", "slot2")
+
+
+@pytest.fixture(autouse=True)
+def _slot_users(monkeypatch):
+    """Stand in for the guest's passwd entries (see module docstring)."""
+    users = {
+        name: SimpleNamespace(pw_uid=9001 + i, pw_gid=9001 + i,
+                              pw_dir=f"/home/{name}")
+        for i, name in enumerate(SLOT_NAMES)
+    }
+
+    def getpwnam(name):
+        try:
+            return users[name]
+        except KeyError:
+            raise KeyError(f"getpwnam(): name not found: {name!r}") from None
+
+    monkeypatch.setattr(slots_mod.pwd, "getpwnam", getpwnam)
 
 
 def test_allocate_takes_a_free_slot():

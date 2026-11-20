@@ -69,6 +69,8 @@ class SseHub:
         # publish -> waiters wake-up (lost-wakeup-free: a waiter registers
         # its future BEFORE re-checking the latest id)
         self._waiters: set[asyncio.Future] = set()
+        # the app's stop path (SIGTERM drain) — see close()
+        self._closed = False
         # the driver this hub pauses/resumes (wired at spawn)
         self._session: Any | None = None
         self.paused = False
@@ -167,13 +169,44 @@ class SseHub:
         self._consumers.pop(sub_id, None)
         self._maybe_resume()
 
+    def close(self) -> None:
+        """Terminal (the app's stop path): end every stream. Idempotent.
+
+        An SSE response never terminates on its own — the browser holds
+        it open for the life of the tab, and uvicorn's graceful shutdown
+        only disables keep-alive on an in-flight response — so without
+        this, live waiters hold uvicorn's 'waiting for connections'
+        phase open to the unit's TimeoutStopSec SIGKILL (observed
+        2026-11-19: a deploy restart with a connected browser took the
+        full 120 s stop). It wakes the waiters so the response
+        generators exit on their next iteration; a waiter registered
+        after the close returns at once (the wait loop checks
+        ``closed``)."""
+        self._closed = True
+        for fut in list(self._waiters):
+            if not fut.done():
+                fut.set_result(None)
+        self._waiters.clear()
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
     async def wait_new(self, cursor: int) -> None:
-        """Wait until an event with id > cursor exists (or forever)."""
+        """Wait until an event with id > cursor exists — or the hub is
+        closed (returns at once, whatever the cursor)."""
         loop = asyncio.get_running_loop()
-        while True:
+        while not self._closed:
             fut: asyncio.Future = loop.create_future()
             self._waiters.add(fut)
-            if self._latest_id > cursor:
+            # re-check BOTH after registering: a close() that lands in the
+            # window between the loop-top check and this point (close runs
+            # in the SIGTERM handler, on the loop thread, so it can
+            # interrupt here) has already woken+cleared the set — the
+            # _latest_id check alone would then await a future nobody will
+            # ever resolve. close-after-this-point is safe: the future is
+            # already in the set, so close() resolves it.
+            if self._latest_id > cursor or self._closed:
                 self._waiters.discard(fut)
                 return
             try:

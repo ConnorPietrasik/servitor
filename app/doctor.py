@@ -313,10 +313,11 @@ def check_ui(rep: Report) -> None:
     the deployed tree, the SPA fallback never registers and / is a bare
     FastAPI 404 — the API stays healthy, so only this check sees it (the
     portcullis edge probe only ever sees Authelia's 302)."""
-    bind = optional_env("SERVITOR_BIND") or "127.0.0.1"
+    bind = optional_env("SERVITOR_BIND") or ""
     port = optional_env("SERVITOR_PORT") or ""
-    if not port:
-        rep.add("ui.index", FAIL, "SERVITOR_PORT unset — cannot probe the UI")
+    if not bind or not port:
+        rep.add("ui.index", FAIL,
+                "SERVITOR_BIND/SERVITOR_PORT unset — cannot probe the UI")
         return
     import urllib.request
 

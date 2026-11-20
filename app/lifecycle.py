@@ -205,6 +205,21 @@ class Lifecycle:
             self._hubs[session_id] = h
         return h
 
+    def close_streams(self) -> None:
+        """Terminal: close every session hub — end every SSE stream.
+        Called by the HTTP stop path the instant SIGTERM lands (a
+        streaming response never ends on its own and uvicorn's graceful
+        shutdown does not cancel one — the stream would hold the unit
+        stop open to TimeoutStopSec), and again, idempotently, from
+        shutdown(). The clients' EventSources reconnect; against a
+        closed hub they get 503 until the restarted instance answers."""
+        for h in list(self._hubs.values()):
+            try:
+                h.close()
+            except Exception:
+                log.warning("hub close failed for %s", h.session_id,
+                            exc_info=True)
+
     # ------------------------------------------------------------------ #
     # boot reconciliation                                                 #
     # ------------------------------------------------------------------ #
@@ -654,45 +669,156 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     async def shutdown(self, cause: str = "app stop") -> None:
-        """Abort-then-drain. Order is load-bearing:
-        1. stop GC/pressure triggers, refuse new prompts;
-        2. send RPC `abort` with recorded cause to every run-active child
-           WHILE ITS STDIN IS STILL OPEN (commands travel only over stdin);
-        3. mark the session `interrupted`;
-        4. only then close stdin (orderly shutdown);
-        5. bounded grace (strictly < TimeoutStopSec); survivors finished by
-           the ladder (SIGTERM → SIGKILL; SIGKILL never first).
-        Session files and mounts survive; next pickup respawns."""
+        """Abort-then-drain, three phases. The per-session order stays
+        load-bearing — the abort travels over stdin BEFORE that child's
+        stdin closes (commands travel only over stdin), and a session
+        with a run in flight is marked `interrupted` — but the WAITS are
+        shared, not sequential: every child is notified (phase 1), every
+        stdin closes (phase 2), and all children are waited on under ONE
+        budget (phase 3); the ladder then escalates for the survivors
+        (SIGTERM → SIGKILL; SIGKILL never first).
+
+        The sequential design (one child's full abort + 90 s + 10 s
+        before the next child was even notified) bounded the stop by
+        N × ~101 s for N live sessions — two stuck children rode the
+        unit's TimeoutStopSec (120 s) out to the SIGKILL that aborts
+        this very drain. The shared budget keeps the worst case
+        ≈ 25 s (notify + close, inside the ≤ 90 s EOF clock) + 10 s
+        TERM + an instant KILL ≈ 100 s < TimeoutStopSec, independent of
+        N. Session files and mounts survive; next pickup respawns."""
         self.shutting_down = True
+        # end every SSE stream (idempotent if the stop path already did
+        # it at SIGTERM): see close_streams
+        self.close_streams()
         if self._gc_task is not None:
             self._gc_task.cancel()
             self._gc_task = None
         grace = self.cfg.shutdown_grace_sec
-        for session_id, live in list(self.live.items()):
-            d = live.driver
-            if d is None or d.exited:
-                continue
+        term_grace = min(10.0, grace)
+        probe_cap = min(10.0, grace)
+        t0 = time.monotonic()
+
+        # every live driver (a dead process is nothing to drain)
+        drivers = [
+            (session_id, live.driver)
+            for session_id, live in list(self.live.items())
+            if live.driver is not None and not live.driver.exited
+        ]
+
+        # un-pause every event stream first: a backpressure-paused child
+        # is blocked on a write into the un-drained pipe and would never
+        # see the stdin EOF below — resume so the graceful path stays
+        # open
+        for session_id, d in drivers:
             try:
-                st = await d.get_state()
-                run_active = bool(
+                d.resume_events()
+            except Exception:
+                log.warning("drain: resume_events failed for %s", session_id,
+                            exc_info=True)
+
+        # phase 1 — notify: a bounded run-active probe (the RPC, falling
+        # back to the driver's own event-driven flag) and an abort over
+        # stdin for every child with work — BEFORE that child's stdin
+        # closes. Gathered: the phase costs the slowest single child,
+        # never the sum.
+        async def _notify(session_id: str, d) -> None:
+            active = d.run_active
+            try:
+                st = await asyncio.wait_for(d.get_state(), timeout=probe_cap)
+                active = active or bool(
                     st.get("isStreaming") or st.get("isCompacting")
                     or st.get("pendingMessageCount", 0) > 0
                 )
             except Exception:
-                run_active = False
-            if run_active:
+                pass  # bounded probe failed: the local flag is all we have
+            if active and not d.exited:
                 try:
-                    await d.abort()
+                    await asyncio.wait_for(d.abort(), timeout=probe_cap)
                 except Exception as e:
-                    log.warning("abort to %s failed: %s", session_id, e)
+                    log.warning("drain: abort to %s did not settle in "
+                                "time: %s", session_id, e)
                 self.cfg.registry.mark_interrupted(session_id)
                 self.events.add(session_id, "interrupted", cause)
-            # only now: close stdin (the ladder with a bounded grace)
+
+        for r in await asyncio.gather(
+            *(_notify(session_id, d) for session_id, d in drivers),
+            return_exceptions=True,
+        ):
+            if isinstance(r, Exception):
+                log.warning("drain: notify step failed: %r", r)
+
+        # phase 2 — close: stdin EOF on every child (rung 1); the
+        # per-child close is bounded inside close_stdin (a child not
+        # reading its stdin can wedge the flush wait)
+        for r in await asyncio.gather(
+            *(d.close_stdin() for _session_id, d in drivers),
+            return_exceptions=True,
+        ):
+            if isinstance(r, Exception):
+                log.warning("drain: stdin close failed: %r", r)
+
+        # phase 3 — wait: ONE shared EOF budget for ALL children (the
+        # clock started at phase 1), then the ladder escalates for the
+        # survivors: SIGTERM (rung 2 — a single signal does not
+        # interrupt an in-progress orderly shutdown; give it its grace),
+        # SIGKILL (rung 3 — the rung that guarantees exit)
+        def _survivors() -> list[tuple[str, Any]]:
+            return [(sid, d) for sid, d in drivers if not d.exited]
+
+        ended_by: dict[str, str] = {}  # session_id -> the rung that ended it
+        alive = _survivors()
+        remaining = max(0.0, t0 + grace - time.monotonic())
+        if alive and remaining > 0:
             try:
-                code = await d.shutdown(eof_grace=grace, term_grace=min(10.0, grace))
-                self.events.add(session_id, "drained", f"exit={code}")
-            except Exception as e:
-                log.warning("drain of %s failed: %s", session_id, e)
+                await asyncio.wait_for(
+                    asyncio.gather(*(d.wait_exited() for _sid, d in alive)),
+                    timeout=remaining,
+                )
+            except asyncio.TimeoutError:
+                pass
+        alive = _survivors()
+        if alive:
+            for _sid, d in alive:
+                d.terminate()
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(d.wait_exited() for _sid, d in alive)),
+                    timeout=term_grace,
+                )
+            except asyncio.TimeoutError:
+                pass
+            for sid, d in alive:
+                if d.exited:
+                    ended_by[sid] = "SIGTERM"
+        alive = _survivors()
+        if alive:
+            for _sid, d in alive:
+                d.kill()
+            # SIGKILL exits at once; give the exit task a bounded moment
+            # to record the code — never more (bounding the app's own
+            # exit is the point of the shared budget)
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*(d.wait_exited() for _sid, d in alive)),
+                    timeout=5.0,
+                )
+            except asyncio.TimeoutError:
+                pass
+            for sid, d in alive:
+                if d.exited:
+                    ended_by[sid] = "SIGKILL"
+
+        # bookkeeping: the drained event (once per session, tagged with
+        # the rung that ended a stubborn child), reap the driver's
+        # tasks, hand the session back to the respawn-on-pickup path
+        # (mounts and files survive)
+        for session_id, live in list(self.live.items()):
+            d = live.driver
+            if d is None:
+                continue
+            rung = ended_by.get(session_id)
+            suffix = f" ({rung})" if rung else ""
+            self.events.add(session_id, "drained", f"exit={d.exit_code}{suffix}")
             try:
                 await d.close()
             except Exception:
@@ -755,20 +881,53 @@ class Lifecycle:
             return None
         active = self.any_run_active()
 
+        if not flag.doctor and not flag.restart:
+            # degenerate (all-false) flag: nothing to apply, and a
+            # lingering FILE would wedge sync's APPLIED gate and the
+            # doctor's update.waiting warn forever — clear it
+            from app.update_pending import clear as _clear_flag
+            _clear_flag(path)
+            return {"no_op": True, "reason": flag.reason}
+
         if flag.doctor and not active:
-            # doctor without restart (e.g. the boot-time flag after a
-            # deferred restart, or a config-only change that needs no
-            # restart): apply inline, then continue with the restart bit
+            # a doctor run (the in-guest cert): inline application for a
+            # doctor-only flag, pre-restart cert when the restart bit is
+            # also staged
             result = await self._run_doctor()
             if not flag.restart:
-                # doctor without restart (e.g. the boot-time flag after a
-                # deferred restart): the flag is fully applied — clear the
-                # FILE (its existence means "staged target pending":
-                # sync's APPLIED gate and the doctor's update.waiting check
-                # both key on it; a lingering all-false flag would wedge
-                # both).
-                from app.update_pending import clear as _clear_flag
-                _clear_flag(path)
+                # doctor-only flag: the cert IS its application. Clear
+                # the FILE only on a PASSED cert — its existence means
+                # "staged target pending" (sync's APPLIED gate and the
+                # doctor's update.waiting check both key on it), and
+                # "file gone" is the fact sync's post-clear edge probe
+                # trusts: it must imply an instance's doctor passed
+                # against a live port. Clearing on failure let the
+                # 2026-11-19 stop-draining instance consume the NEW
+                # instance's cert (it re-ran the doctor against its own
+                # just-closed port and cleared the flag, so the new
+                # state was never certified in-guest and sync's probe
+                # raced the still-stopped unit into a false exit 3).
+                # Kept on failure: it stays visible (the doctor's
+                # update.waiting warn reads the flag file, and this
+                # log.error) and this SAME instance retries on its next
+                # tick (~update_tick_sec later — a doctor-only flag
+                # stages no restart, so there is no post-restart
+                # instance to hand it to). Doctor runs are sequential:
+                # the tick loop sleeps only after the tick returns, and
+                # each run is bounded by the doctor's 600 s subprocess
+                # timeout — so a persistently failing doctor re-runs at
+                # most once per run, never in parallel: the state is
+                # genuinely actionable, so the noise is the price of the
+                # visibility.
+                if result.get("ok") is True:
+                    from app.update_pending import clear as _clear_flag
+                    _clear_flag(path)
+                    return {"doctor_applied": True, "rc": result.get("rc")}
+                log.error(
+                    "update doctor (cert) failed — flag kept for retry:\n%s",
+                    (result.get("output") or "")[-2000:],
+                )
+                return {"doctor_failed": True, "rc": result.get("rc")}
             if result.get("ok") is False:
                 # A pre-restart doctor FAIL must NOT hold the staged
                 # restart. The canonical case is provisioning: the image

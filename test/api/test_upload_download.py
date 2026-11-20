@@ -7,7 +7,7 @@
   scripted bash tool call writes outbox/report.txt); the artifact list
   reflects only what the agent produced; download matches.
 - No caps: a 100 MB upload is served (no 413); a 10 MB single SSE event
-  is not truncated (see test_sse.py).
+  is not truncated (see test/unit/test_sse_hub.py).
 """
 from __future__ import annotations
 

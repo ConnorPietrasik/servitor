@@ -687,47 +687,87 @@ class PiSession:
     # shutdown ladder: stdin EOF -> SIGTERM -> SIGKILL
     # ------------------------------------------------------------------ #
 
+    async def close_stdin(self, *, close_timeout: float = 5.0) -> None:
+        """Ladder rung 1, NO wait: close stdin — the orderly-shutdown
+        request (pi waits for pending work, then exits). Idempotent.
+        A stdin nobody reads can wedge the flush wait, so it is bounded
+        — the caller decides the next rung (the app's stop path moves on
+        to the shared wait; a single-child caller goes to terminate())."""
+        proc = self._proc
+        if proc is None or not self._stdin_open or proc.returncode is not None:
+            return
+        self._stdin_open = False
+        try:
+            proc.stdin.close()
+            await asyncio.wait_for(proc.stdin.wait_closed(), timeout=close_timeout)
+        except (ConnectionResetError, BrokenPipeError, asyncio.TimeoutError):
+            pass
+
+    def terminate(self) -> None:
+        """Ladder rung 2: SIGTERM. A single signal does not interrupt an
+        in-progress orderly shutdown — the caller's grace is what lets
+        one finish. Idempotent (no-op on a dead process)."""
+        proc = self._proc
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+
+    def kill(self) -> None:
+        """Ladder rung 3: SIGKILL — a second signal exits at once; the
+        rung that guarantees exit. Idempotent."""
+        proc = self._proc
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+
+    def wait_exited(self):
+        """Awaitable that completes when the child exits (at once if it
+        already has). The app's stop path waits on ALL children's
+        ``wait_exited()`` under ONE shared budget — a sequential
+        per-child wait would add up (N children → N × grace)."""
+        return self._exited.wait()
+
     async def shutdown(
         self, *, eof_grace: float = 10.0, term_grace: float = 10.0
     ) -> int | None:
-        """The kill ladder. Returns the exit code.
+        """The kill ladder, ONE child at a time. Returns the exit code.
 
         Rung 1: close stdin — orderly shutdown; pi waits for pending work.
         Rung 2: SIGTERM (a single signal does not interrupt an in-progress
         orderly shutdown — give it its grace).
         Rung 3: SIGKILL — a second signal exits at once; the rung that
         guarantees exit.
-        """
+
+        The app's stop path uses the steps directly (close_stdin /
+        terminate / kill + wait_exited) so that many children drain in
+        parallel under one shared budget — see Lifecycle.shutdown;
+        this facade is the single-child path (release, probe, respawn,
+        idle-kill, abort-on-start-failure)."""
         proc = self._proc
         if proc is None:
             return None
         if proc.returncode is None and self._stdin_open:
-            try:
-                proc.stdin.close()
-                await proc.stdin.wait_closed()
-            except (ConnectionResetError, BrokenPipeError):
-                pass
-            self._stdin_open = False
+            await self.close_stdin()
             try:
                 await asyncio.wait_for(self._exited.wait(), eof_grace)
                 return self._exit_code
             except asyncio.TimeoutError:
                 pass
         if proc.returncode is None:
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                pass
+            self.terminate()
             try:
                 await asyncio.wait_for(self._exited.wait(), term_grace)
                 return self._exit_code
             except asyncio.TimeoutError:
                 pass
         if proc.returncode is None:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
+            self.kill()
             await self._exited.wait()
         return self._exit_code
 

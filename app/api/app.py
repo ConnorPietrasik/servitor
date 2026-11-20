@@ -49,6 +49,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import signal
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -171,6 +172,42 @@ def _sse_frame(name: str, data: str, eid: int | None = None) -> str:
 # ---------------------------------------------------------------------- #
 
 
+def _install_http_stop_handler(app_state) -> None:
+    """Replace uvicorn's SIGTERM with the app's stop path.
+
+    Called from the ASGI lifespan startup — by then uvicorn's own
+    handler (installed via ``signal.signal`` when ``serve()`` began)
+    is in place, and ``signal.signal`` overrides it for the server's
+    life. (Installing before ``serve()`` would not work: uvicorn saves
+    the pre-existing handler as the "original" and masks it.)
+
+    uvicorn's handler only sets ``should_exit``: the in-flight SSE
+    streams keep the 'waiting for connections' phase open (a browser
+    holds an SSE connection for the life of the tab, and uvicorn does
+    not cancel an in-flight streaming response — it only disables
+    keep-alive), so the stop runs to the unit's TimeoutStopSec SIGKILL
+    with the abort-then-drain (lifespan shutdown, which starts only
+    AFTER the connection wait) never running, and ``shutting_down``
+    never set (the update tick kept acting on the dying instance — the
+    2026-11-19 false-negative sync: a 120 s deploy stop, a flag eaten
+    by the old instance's dying tick, a false exit 3). The app's
+    handler: ``shutting_down`` now, close every stream, only then let
+    uvicorn exit — the connection wait ends at once, the lifespan
+    shutdown runs the drain (bounded < TimeoutStopSec), and the process
+    exits clean. No-op outside the HTTP front door (no ``http_server``).
+    """
+    server = getattr(app_state, "http_server", None)
+    if server is None:
+        return
+
+    def _on_term(_sig, _frame):
+        app_state.lc.shutting_down = True
+        app_state.lc.close_streams()
+        server.should_exit = True
+
+    signal.signal(signal.SIGTERM, _on_term)
+
+
 def build_app(app_state, cfg) -> FastAPI:
     """Build the FastAPI app over the App core (registry +
     lifecycle + delivery). ``cfg`` is the validated env Config."""
@@ -178,6 +215,7 @@ def build_app(app_state, cfg) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         app_state.lc.start_gc()
+        _install_http_stop_handler(app_state)
         yield
         await app_state.lc.shutdown(cause="app stop")
 
@@ -368,7 +406,22 @@ def build_app(app_state, cfg) -> FastAPI:
         after: int | None = Query(default=None, ge=0),
     ):
         row = _get_row(app_state, sid)
+        if app_state.lc.shutting_down:
+            # the stop path is draining: gate BEFORE hub() — hub() is
+            # lazy, so a session with no hub yet would get a fresh OPEN
+            # hub handed out here, and that stream would never be closed
+            # by the stop path (close_streams already ran at SIGTERM) —
+            # it would ride the graceful backstop. Don't hand a fresh
+            # stream to a reconnector either (it would replay the ring,
+            # die, and churn); the client's EventSource backs off and
+            # retries — against the new instance once the restart lands
+            raise HTTPException(status_code=503, detail="shutting down")
         hub: SseHub = app_state.lc.hub(sid)
+        if hub.closed:
+            # per-hub terminal (defense-in-depth: shutting_down above
+            # always precedes close_streams, so this only fires if a hub
+            # is closed while the global flag is somehow unset)
+            raise HTTPException(status_code=503, detail="shutting down")
         last_event_id = request.headers.get("last-event-id")
         if after is not None:
             start = after
@@ -408,6 +461,12 @@ def build_app(app_state, cfg) -> FastAPI:
                     except asyncio.TimeoutError:
                         yield ":hb\n\n"
                         continue
+                    if hub.closed:
+                        # the stop path closed the hub (SIGTERM drain):
+                        # end the stream — the client's EventSource
+                        # auto-reconnects (to the new instance after the
+                        # restart; ?after=<cursor> resumes)
+                        return
                     batch = hub.events_after(cursor)
                     for e in batch:
                         if await request.is_disconnected():
