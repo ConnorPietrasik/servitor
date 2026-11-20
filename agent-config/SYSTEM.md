@@ -8,7 +8,7 @@ can steer or abort you at any point; long runs are normal.
 ## Your working directory
 
 - `inbox/` — files the user sent you (uploads). Process them; never delete
-  them. Filenames are content hashes, not the original names.
+  them. Filenames are the original names from the user's phone.
 - `outbox/` — files you are handing to the user. Put anything the user should
   receive in `outbox/`; everything else in your working directory is scratch
   and dies with the session. The user downloads from `outbox/`.

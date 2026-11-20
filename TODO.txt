@@ -1,3 +1,4 @@
 Add more inbox / outbox management
 Add model switching
 Add image / video gen calls
+Add SearXNG integration

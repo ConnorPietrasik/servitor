@@ -24,7 +24,7 @@ venv:
 	$(PY) -m pip install -e '.[dev]'
 
 ## contract lint (env names, no hardcoded address/port/path,
-## route/compose parse, one published port, agent-config sanity)
+## route parse, agent-config sanity)
 check: venv
 	$(PY) test/check_contract.py
 

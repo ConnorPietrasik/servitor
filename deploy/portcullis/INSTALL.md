@@ -136,7 +136,7 @@ THIS server's network by construction. Output (in `deploy/guest/images/`):
 `manifest.json` (sha256 recorded; the previous image — the update rollback
 target — is retained, older images are pruned).
 
-## 5. The state disk (the contract: ext4, LABEL=servitor-state)
+## 5. The state disk (the contract: a local disk, LABEL=servitor-state — ext4 is what you create, any local non-overlay fs works)
 
 Loop-free (a raw file directly, no loop device — loop churn correlates
 with host flakiness):
@@ -285,8 +285,8 @@ entries. If the server's portcullis clone pre-dates that merge, pull it first.
 4. `make update` in the portcullis clone (gated by its doctor + snapshot /
    auto-rollback). The server re-pins `servitor.pietrasik.top` itself as
    part of the update; client machines re-run their `tools/panel-hosts.sh`.
-   The compose contract publishes exactly `${SERVITOR_PORT}` (8787); the
-   route targets the VM's published port — that is the whole integration.
+   The app binds `SERVITOR_PORT` (8787) on the VM; the route targets that
+   address:port — that is the whole integration.
 
 ## 9. Verify (the gate list)
 

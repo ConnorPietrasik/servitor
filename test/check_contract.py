@@ -12,11 +12,10 @@ Asserts the interface contract before any runtime code exists:
 2. **Nothing hardcodes an address/port/path** — no IPv4 literals
    anywhere in ``app/`` or ``deploy/`` code; no loopback/any-address
    literal in ``app/`` (the bind comes from env even for loopback dev);
-   the compose contract publishes exactly one port, referenced as
-   ``${SERVITOR_PORT}``; the route file references the VM via
-   placeholders, no literal port.
-3. **Contract files parse** — compose contract and the portcullis
-   route yml load as YAML with the expected shape (one router, the
+   the portcullis route file references the VM via placeholders, no
+   literal port.
+3. **Contract file parses** — the portcullis
+   route yml loads as YAML with the expected shape (one router, the
    servitor hostname, the auth-chain middleware, the SSE flush
    setting, and the absence of the dead readTimeout key).
 4. **Agent-config sanity** — models.json: literal baseUrl (``$VAR`` is
@@ -182,35 +181,6 @@ def main() -> int:
             bad not in app_blob,
             f"app/ contains no {bad!r} literal (env-only)",
         )
-
-    # compose contract: one published port, ${SERVITOR_PORT}, no values
-    compose_raw = (REPO / "compose" / "docker-compose.yml").read_text()
-    compose = yaml.safe_load(compose_raw)
-    svc = compose["services"]["servitor"]
-    ports = svc.get("ports", [])
-    check(len(ports) == 1, "compose contract: exactly one published port")
-    if ports:
-        p = str(ports[0])
-        check(
-            "${SERVITOR_PORT}" in p and "${SERVITOR_BIND}" in p,
-            "published port references ${SERVITOR_BIND}/${SERVITOR_PORT}",
-            p,
-        )
-        check(
-            not re.search(r":\d+", p),
-            "published port has no literal port number",
-            p,
-        )
-    compose_env_names = set()
-    for e in svc.get("environment", []):
-        m = re.match(r"^([A-Z][A-Z0-9_]*)=", str(e))
-        if m:
-            compose_env_names.add(m.group(1))
-    check(
-        compose_env_names <= set(example_names),
-        "compose env names all named in .env.example",
-        str(sorted(compose_env_names - set(example_names))),
-    )
 
     # route file: placeholders only, no literal port
     route_raw = (REPO / "deploy" / "portcullis" / "traefik-dynamic" / "servitor.yml").read_text()

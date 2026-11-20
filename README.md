@@ -18,10 +18,12 @@ steer or abort at any point.
   slot uid from a static pool of 16. The app is privileged; the agent never
   is.
 - **Isolation**: per-session overlay mounts on a fixed-size state volume
-  (`/var/lib/servitor`, real ext4 — never overlay/container storage);
+  (`/var/lib/servitor`, its own local disk — never overlayfs, which would
+  refuse the per-session overlay uppers);
   config, `lib/`, and the toolkit are read-only to the agent; uploads are
-  content-addressed; all cleanup goes through one `release()` that sweeps
-  by owner.
+  hash-verified and delivered by atomic rename (one copy, all-or-nothing
+  from the agent's view); all cleanup goes through one `release()` that
+  sweeps by owner.
 - **Edge contract**: one reverse proxy routes one hostname to the VM's
   ingress port and is the only auth gate. Production: the owner's portcullis
   (Traefik file-provider + Authelia 2FA). Dev runs bind loopback only,
@@ -43,7 +45,8 @@ root). Code and deploy comments cite these by number (`invariant N`).
    network position. Mitigation ladder: VM boundary (no egress filtering
    by design — exfiltration to the open internet is the *accepted
    residual risk*), read-only where injection could persist (config,
-   `lib/`), content-addressed uploads, context-file discovery disabled,
+   `lib/`), hash-verified uploads (staged, sha256-checked, atomically
+   renamed — all-or-nothing), context-file discovery disabled,
    launch-line trust flags asserted in CI, per-session uid + overlay +
    owner-sweep, `lib/` writable only by a distinct human action. One
    further accepted residual with a warning: baseline extension discovery
@@ -98,7 +101,6 @@ root). Code and deploy comments cite these by number (`invariant N`).
 | `lib/` | durable human-curated library — synced read-only to the agent |
 | `deploy/` | guest image build, systemd units, firewall, sync/update/doctor, portcullis install |
 | `test/` | the gate stack: contract lint, unit, conformance, stage2, sandbox-smoke |
-| `compose/` | interface contract (linted by `make check`, not a runtime container) |
 
 ## Dev loop
 

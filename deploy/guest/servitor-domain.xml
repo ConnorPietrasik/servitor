@@ -9,7 +9,8 @@
   Substitutions ({{...}}):
     {{ROOT_QCOW2}}   e.g. /opt/servitor-disk/servitor-pi1.5.2-20261116.qcow2
     {{STATE_QCOW2}}  e.g. /opt/servitor-disk/servitor-state.raw
-                     (ext4, LABEL=servitor-state — the contract in the image's
+                     (local disk — the install creates ext4 —
+                      LABEL=servitor-state is the contract in the image's
                       fstab; see INSTALL.md §5 for the loop-free creation)
     {{BRIDGE}}       the portcullis edge bridge (the docker "edge" network's
                      bridge device: br-<first 12 hex of the network ID>,
@@ -80,9 +81,9 @@
       <target dev='vda' bus='virtio'/>
     </disk>
 
-    <!-- state disk (operator-created raw, ext4, LABEL=servitor-state, ~200 GB
-         sized at creation — no quota mechanism, near-full is a GC
-         trigger) -->
+    <!-- state disk (operator-created raw, ext4 in the standard install,
+         LABEL=servitor-state, ~200 GB sized at creation — no quota
+         mechanism, near-full is a GC trigger) -->
     <disk type='file' device='disk'>
       <driver name='qemu' type='raw' discard='unmap'/>
       <source file='{{STATE_QCOW2}}'/>

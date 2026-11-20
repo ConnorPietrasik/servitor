@@ -1,6 +1,6 @@
 """Session harness — wires iso + launch + driver + mock router for tests.
 
-One instance per test: a scratch state tree (on ext4, never overlay), a
+One instance per test: a scratch state tree (on a local fs, never overlay), a
 staged config version, a toolkit dir, one slot, the mock router, and
 session start/respawn/release. Mirrors what the app does, minus
 the registry (the harness plays it).

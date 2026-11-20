@@ -108,16 +108,38 @@ def check_env(rep: Report, args: argparse.Namespace) -> None:
 
 
 def check_state_fs(rep: Report, root: str) -> None:
+    """The state volume must not be overlayfs: the per-session scratch
+    overlays use it for upperdir/workdir, and overlayfs refuses an
+    upper on overlayfs. The fs TYPE otherwise does not matter (ext4 is
+    what the install creates, but xfs/btrfs are equally fine) — so this
+    check FAILs on overlay, WARNs on volatile tmpfs (state lost on
+    reboot) and on an untested type, and passes nothing else."""
     code, out = _sh(["stat", "-f", "-c", "%T", root])
     fstype = out.strip().splitlines()[0] if code == 0 and out.strip() else "?"
-    if fstype in ("ext2/ext3", "ext4"):
-        rep.add("state.fs", PASS, f"{root} is {fstype} (real ext4, not overlay)")
+    if fstype in ("overlay", "overlayfs"):
+        rep.add(
+            "state.fs", FAIL,
+            f"{root} is overlayfs — the per-session scratch overlays cannot "
+            "use it as upperdir/workdir (attach the state disk)",
+        )
+    elif fstype in ("ext2/ext3", "ext4", "xfs", "btrfs"):
+        rep.add("state.fs", PASS, f"{root} is {fstype} (local, overlay-safe)")
+    elif fstype == "tmpfs":
+        rep.add(
+            "state.fs", WARN,
+            f"{root} is tmpfs (RAM-backed, volatile) — all state is lost on "
+            "reboot; fine for throwaway dev, never for the real state volume",
+        )
     else:
-        rep.add("state.fs", FAIL, f"{root} is {fstype} — the state volume must be real ext4")
+        rep.add(
+            "state.fs", WARN,
+            f"{root} is {fstype} — untested backing fs for the session "
+            "overlays (ext4/xfs/btrfs are the known-good set)",
+        )
 
 
 def check_state_mount(rep: Report, root: str) -> None:
-    # The state volume contract is a separate ext4 DISK. The fstype check
+    # The state volume contract is a separate LOCAL DISK. The fstype check
     # alone cannot catch a MISSING disk: the unmounted fallback dir is on
     # the 24G root disk, which is also ext4. findmnt --mountpoint (exact
     # match), NOT -T. WARN, not FAIL: unprivileged dev uses a plain dir by

@@ -61,7 +61,7 @@ host packages, `.env` template, image, state disk, the libvirt domain from
 4. `doctor` green is the deploy gate: no-prompt spawn resolves a usable
    model (provider/baseUrl listed, `model.id != "unknown"` — no id/context
    pin), launch line == the asserted
-   constant, state volume is real ext4, firewall probe, key material absent
+   constant, state volume is a local non-overlay fs, firewall probe, key material absent
    from the synced tree/session files/app logs, live search works, one live
    prompt end-to-end.
 

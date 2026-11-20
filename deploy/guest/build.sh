@@ -369,11 +369,14 @@ rm -f "$WORK/disk/chroot-systemd.sh"
 
 # fstab: root by UUID + the state disk by label (the operator labels it
 # servitor-state at VM creation, INSTALL.md §5; nofail so boot tolerates
-# its absence — doctor fails loudly when it is missing)
+# its absence — doctor fails loudly when it is missing). The state line is
+# fstype `auto` (not ext4): the label is the contract, and the doctor only
+# requires a local non-overlay fs — the install creates ext4, but a
+# xfs/btrfs state disk must mount too.
 cat > "$WORK/disk/etc/fstab" <<EOF
 # / etc/fstab
 UUID=$ROOT_UUID  /  ext4  defaults  0 1
-LABEL=servitor-state  /var/lib/servitor  ext4  defaults,nofail  0 2
+LABEL=servitor-state  /var/lib/servitor  auto  defaults,nofail  0 2
 EOF
 # ssh: root via the deploy key only
 mkdir -p "$WORK/disk/root/.ssh"

@@ -4,12 +4,11 @@ No wall-clock/iteration/token caps."""
 from __future__ import annotations
 
 import asyncio
-import dataclasses
 import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,7 +18,7 @@ from app.iso.configswap import active_dir as config_active_dir
 from app.iso.configswap import require_active_dir
 from app.iso.layout import SessionMountPaths, StatePaths
 from app.iso.slots import NoFreeSlot, SlotPool
-from app.iso.spawn import slot_identity, spawn_setuid
+from app.iso.spawn import slot_identity
 from app.iso.sweep import kill_strays_by_uid
 from app.iso.release import release_session
 from app.api.sse import SseHub
@@ -89,7 +88,7 @@ class LifecycleConfig:
     shutdown_grace_sec: float = 90.0  # strictly < the unit's TimeoutStopSec
     gc_idle_days: float = 14.0
     gc_interval_sec: float = 300.0
-    delivery: "Delivery | None" = None  # delivery service (blobs/staging)
+    delivery: "Delivery | None" = None  # delivery service (staging)
     sse_ring_bytes: int | None = None  # per-session SSE cap (None = 50 MB default)
     update_pending_path: str | None = None  # the update-pending flag file (sync/update write)
     update_tick_sec: float = 5.0
@@ -221,13 +220,6 @@ class Lifecycle:
         # any surviving staging dir is an interrupted upload
         if self.cfg.delivery is not None:
             self.cfg.delivery.gc_boot()
-            for row in self.cfg.registry.list_sessions():
-                if row.state in (ALLOCATED, LIVE):
-                    try:
-                        slot = slot_identity(row.slot) if row.slot != "waiting" else None
-                        self.cfg.delivery.files(self.cfg.state, row.id, slot).gc_inbox_temps()
-                    except Exception:
-                        pass
         return out
 
     def _rebuild_pool_slot(self, slot, row) -> None:
@@ -948,17 +940,6 @@ class Lifecycle:
                 res = await self.release(row.id, reason="disk pressure")
                 if res.released:
                     released.append(row.id)
-        # delivery GC: orphan blobs no manifest references (bounded)
-        if self.cfg.delivery is not None:
-            manifests = []
-            for row in self.cfg.registry.list_sessions():
-                try:
-                    manifests.append(
-                        self.cfg.delivery.files(self.cfg.state, row.id, None).read_manifest()
-                    )
-                except Exception:
-                    pass
-            self.cfg.delivery.gc_blobs(manifests)
         return released
 
     def _is_running(self, session_id: str) -> bool:
@@ -1217,13 +1198,6 @@ class Lifecycle:
                 except Exception:
                     pass
             self.live.pop(session_id, None)
-        # delivery GC for the released session's inbox (no .incoming-*
-        # may outlive the session)
-        if self.cfg.delivery is not None and live is not None:
-            try:
-                self.cfg.delivery.files(self.cfg.state, session_id, None).gc_inbox_temps()
-            except Exception:
-                pass
         return outcome
 
 

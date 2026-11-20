@@ -1,13 +1,14 @@
-"""Delivery store: uploads (staged → blob → inbox), outbox, manifests.
+"""Delivery store: uploads (staged → verified → atomic rename into the
+inbox), outbox, manifests.
 
 Guarantees: no truncation, no caps (uploads stream to a spooled temp
-file, hashed incrementally); byte-identical (blobs are sha256-verified
-before they are registered or delivered); MIME by magic bytes, never the
-extension; no half-blobs (crash drill) — an upload is visible only after
-it is staged, verified, moved to the content-addressed blob store (atomic
-rename), delivered to the session inbox (temp-write + rename), and
-registered in the session manifest. A crash at any step leaves either
-nothing visible or the complete file; boot GC sweeps the rest.
+file, hashed incrementally); byte-identical (the sha256 is computed
+while streaming and the VERIFIED part is what lands in the inbox); MIME
+by magic bytes, never the extension; no half-files (crash drill) — an
+upload is visible only after it is staged, verified, and renamed into
+the session inbox (atomic: staging and inbox share the state volume's
+filesystem). A crash before that leaves the part in staging, swept by
+the boot GC — nothing half-visible, and no second copy is kept around.
 """
 from __future__ import annotations
 
@@ -25,9 +26,6 @@ from pathlib import Path
 from app.iso.spawn import SlotIdentity
 
 log = logging.getLogger("servitor.delivery")
-
-CHUNK = 1024 * 1024  # 1 MB stream chunks (memory stays flat)
-
 
 class DeliveryError(RuntimeError):
     pass
@@ -58,60 +56,6 @@ class DeliveredFile:
     ts: float
 
 
-class BlobStore:
-    """Content-addressed blob store on the state volume (shared)."""
-
-    def __init__(self, root: Path):
-        self.root = Path(root) / "blobs"
-        self.root.mkdir(parents=True, exist_ok=True)
-
-    def path_for(self, sha: str) -> Path:
-        return self.root / sha[:2] / sha[2:]
-
-    def has(self, sha: str) -> bool:
-        return self.path_for(sha).is_file()
-
-    def register(self, src: Path, sha: str) -> Path:
-        """Atomically move a verified staged file into the store.
-
-        Same-filesystem rename: no partial blob can ever appear at the
-        final path. Idempotent (an existing blob is kept)."""
-        dest = self.path_for(sha)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        if dest.exists():
-            try:
-                os.unlink(src)
-            except OSError:
-                pass
-            return dest
-        os.replace(src, dest)  # atomic on the same fs
-        try:
-            os.chmod(dest, 0o444)
-        except OSError:
-            pass
-        return dest
-
-    def gc_orphans(self, referenced: set[str]) -> list[str]:
-        """Remove blobs no manifest references (best-effort, bounded)."""
-        removed: list[str] = []
-        if not self.root.is_dir():
-            return removed  # no uploads yet (the dir is created on first register)
-        for prefix in sorted(os.listdir(self.root)):
-            pdir = self.root / prefix
-            if not pdir.is_dir() or len(prefix) != 2:
-                continue
-            for name in sorted(os.listdir(pdir)):
-                sha = prefix + name
-                if sha not in referenced:
-                    try:
-                        os.chmod(pdir / name, 0o600)
-                        os.unlink(pdir / name)
-                        removed.append(sha)
-                    except OSError:
-                        pass
-        return removed
-
-
 class Staging:
     """Spooled upload staging: one temp file per upload, on the state
     volume (disk, never RAM). Unregistered dirs are swept at boot."""
@@ -125,9 +69,6 @@ class Staging:
         d = self.root / upload_id
         d.mkdir(parents=True)
         return upload_id, d / "part", hashlib.sha256()
-
-    def finalize_path(self, upload_id: str) -> Path:
-        return self.root / upload_id / "part"
 
     def remove(self, upload_id: str) -> None:
         shutil.rmtree(self.root / upload_id, ignore_errors=True)
@@ -230,33 +171,22 @@ class SessionFiles:
 
     # --- delivery -------------------------------------------------------- #
 
-    def deliver(self, blob_path: Path, name: str) -> None:
-        """Copy a verified blob into the inbox: temp-write + atomic
-        rename (a crash mid-copy leaves an .incoming-* temp, never a
-        half file under the real name)."""
+    def deliver(self, part: Path, name: str) -> None:
+        """Hand the verified staged file to the inbox: chown to the slot,
+        then atomic rename. Staging and inbox share the state volume's
+        filesystem, so the final name appears whole and slot-owned in one
+        step — the agent never sees a root-owned or partially-written
+        file, and a crash before the rename leaves the part in staging
+        for the boot GC, never a half file under the real name."""
         safe = _safe_name(name)
         dest = self.inbox / safe
-        tmp = self.inbox / f".incoming-{uuid.uuid4().hex}"
-        shutil.copyfile(blob_path, tmp)
-        os.chmod(tmp, 0o600)
-        self._chown(tmp)
-        os.replace(tmp, dest)
+        self._chown(part)
+        os.replace(part, dest)  # atomic: same filesystem
         try:
             os.chmod(dest, 0o644)
         except OSError:
             pass
         self._chown(dest)
-
-    def gc_inbox_temps(self) -> list[str]:
-        swept = []
-        try:
-            for name in os.listdir(self.inbox):
-                if name.startswith(".incoming-"):
-                    os.unlink(self.inbox / name)
-                    swept.append(name)
-        except OSError:
-            pass
-        return swept
 
     # --- listing / reads -------------------------------------------------- #
 

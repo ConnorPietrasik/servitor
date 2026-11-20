@@ -77,7 +77,7 @@ class Config:
     ops_subnet: str | None  # None = dev loopback
     browser_origin: str | None  # the one browser origin (CORS allow-list); None = API-only
     # state volume
-    root: str  # real ext4 path; no default — env-only
+    root: str  # state volume root (local, non-overlay fs); no default — env-only
     # lifecycle / delivery (settled defaults — ops, not caps)
     gc_idle_days: int = 14
     drain_grace_secs: int = 90
