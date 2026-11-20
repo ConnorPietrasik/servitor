@@ -11,11 +11,12 @@ the app's update tick:
 
 Env-derived values (keys, subnets) come from the 0600 env file; keys
 ride env only and are never written to the report. The stateful checks
-(no-prompt spawn, then one live run) create a real probe session and
-release it: the live run certifies a REAL model call leaving the VM
-(VM -> edge -> router -> model) and, with EXA_API_KEY, public egress +
-the search extension (one prompt, both jobs). LLM-key-gated; the
-search leg is EXA-key-gated.
+(no-prompt spawn, then one live run) spawn a standalone probe (its own
+scratch tree, no registry row, no lifecycle) and tear it down by path:
+the live run certifies a REAL model call leaving the VM (VM -> edge ->
+router -> model) and, with EXA_API_KEY, public egress + the search
+extension (one prompt, both jobs). LLM-key-gated; the search leg is
+EXA-key-gated.
 
 Exit: 0 = green (warnings allowed), 1 = at least one FAIL.
 """
@@ -26,13 +27,16 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import time
-from contextlib import asynccontextmanager
+import uuid
 
 from app.env import deployment_env, optional_env
+from app.iso import mounts as M
+from app.iso.layout import SessionMountPaths, StatePaths, state_paths
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -250,6 +254,38 @@ def check_slots(rep: Report, slot_names: list[str]) -> None:
         rep.add("slots.home_mode", PASS, "all slot homes 0700")
 
 
+def check_quarantined_slots(rep: Report, args: argparse.Namespace, registry) -> None:
+    """Quarantine is fail-closed by design: a slot whose release sweep
+    failed is never handed out again until a human clears the blocker
+    and re-runs release (RUNBOOK: slot-sweep failure drill) — each one
+    shrinks the pool's capacity. This check is the GATE-level view of
+    that: a stuck release is a DRAINING/CLEANING row on a pool slot
+    (a successful release flips to FREE within seconds; a release
+    interrupted by an app crash keeps its row across restarts, so the
+    shrink persists until the retry). WARN, not FAIL: the system works
+    with fewer slots and the deploy is not at fault — but it must be
+    visible in the gate report, not only in the panel. (A release in
+    flight during the doctor's read looks identical for a few seconds;
+    a spurious WARN then clears on the next run.)"""
+    from app.registry import CLEANING, DRAINING
+
+    stuck = []
+    for name in args.slots:
+        row = registry.session_for_slot(name)
+        if row is not None and row.state in (DRAINING, CLEANING):
+            stuck.append(f"{name} (row {row.id[:8]}, state {row.state})")
+    if stuck:
+        rep.add(
+            "slots.quarantined",
+            WARN,
+            f"stuck release(s) — quarantined slot(s), pool shrunk: {stuck} — "
+            "clear the blocker and re-run release for the session "
+            "(RUNBOOK: slot-sweep failure drill)",
+        )
+    else:
+        rep.add("slots.quarantined", PASS, "no quarantined slots")
+
+
 def check_versions(rep: Report, args: argparse.Namespace, registry) -> None:
     # installed pi version == the env selection
     env_pi = optional_env("SERVITOR_PI_VERSION") or ""
@@ -414,65 +450,192 @@ def check_keys_absent(rep: Report, args: argparse.Namespace, root: str) -> None:
 
 
 # ---------------------------------------------------------------------- #
-# the no-prompt spawn check (stateful: creates + releases one session)  #
+# the no-prompt spawn check (stateful: spawns + cleans one probe)        #
 # ---------------------------------------------------------------------- #
 
+#: the probe's per-run session-id prefix; its scratch/inbox/sessions
+#: trees are reaped by this prefix (the probe keeps no registry row)
+PROBE_SID_PREFIX = "doctor-probe-"
 
-class ProbeLockTimeout(Exception):
-    """Another doctor held the probe lock past the deadline."""
+#: before a probe child/tree is an orphan of a DEAD doctor. A live probe
+#: finishes far inside this (spawn ~2 s + a 300 s settle cap; the tick
+#: doctor's whole subprocess budget is 600 s) — a concurrent live probe
+#: can never be reaped.
+PROBE_ORPHAN_GRACE_SEC = 600.0
 
 
-@asynccontextmanager
-async def _probe_lock(state_root: str, timeout: float = 240.0):
-    """Serialize the stateful probe section across concurrent doctors
-    (host doctor.sh and the app tick's inline doctor). Both probes use
-    the probe uid, and a release's sweep deletes EVERYTHING that uid
-    owns. The 240 s deadline fails the spawn check with a re-run hint
-    before the capped doctor budget (600 s) can kill the waiter
-    silently — waiting out the full concurrent probe would leave no
-    time for its own live run."""
-    import fcntl as _fcntl
+def _uptime_sec() -> float:
+    with open("/proc/uptime", "r", encoding="ascii") as f:
+        return float(f.read().split()[0])
 
-    lock_path = f"{state_root.rstrip('/')}/.doctor-probe.lock"
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
-            break
-        except BlockingIOError:
-            if time.monotonic() > deadline:
-                os.close(fd)
-                raise ProbeLockTimeout
-            await asyncio.sleep(1.0)
+
+def _proc_age_sec(pid: int) -> float | None:
+    """A process's age in seconds (None if unreadable — treat as young)."""
     try:
-        yield
-    finally:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            raw = f.read().decode("ascii", "replace")
+        # field 22 (starttime, clock ticks since boot); the comm field
+        # (field 2) is parenthesized and may contain spaces/parens
+        starttime = int(raw.rsplit(")", 1)[1].split()[19])
+        hz = os.sysconf("SC_CLK_TCK")
+        return (_uptime_sec() * hz - starttime) / hz
+    except (OSError, ValueError, IndexError, OverflowError):
+        return None
+
+
+def _proc_cwd(pid: int) -> str | None:
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+
+
+def _live_pids() -> list[int]:
+    return [int(e) for e in os.listdir("/proc") if e.isdigit()]
+
+
+async def _kill_pid(pid: int, *, term_grace: float = 2.0) -> None:
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + term_grace
+    while time.monotonic() < deadline and os.path.exists(f"/proc/{pid}"):
+        await asyncio.sleep(0.05)
+    if os.path.exists(f"/proc/{pid}"):
         try:
-            _fcntl.flock(fd, _fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+async def reap_stale_probes(state: StatePaths, probe_uid: int) -> list[tuple[str, str]]:
+    """Reap the debris of a previous doctor that died mid-probe.
+
+    PATH-SCOPED (the probe keeps no registry row): (1) kill probe-uid
+    children older than the grace — a dead doctor's child normally exits
+    on stdin EOF on its own; this catches the wedged case, and a live
+    concurrent probe's child is always younger than the grace; (2)
+    unmount + delete stale per-probe trees — older than the grace AND
+    holding no live process (belt: a concurrent probe's tree is never
+    touched). Returns (kind, detail) report items (kind: "tree" | "kill").
+    """
+    from app.iso.sweep import _pids_of_uid
+
+    items: list[tuple[str, str]] = []
+    killed = [
+        pid
+        for pid in _pids_of_uid(probe_uid)
+        if (age := _proc_age_sec(pid)) is not None and age > PROBE_ORPHAN_GRACE_SEC
+    ]
+    for pid in killed:
+        await _kill_pid(pid)
+    if killed:
+        items.append(("kill", f"wedged probe orphan(s) killed (older than grace): {killed}"))
+    scratch_root = Path(state.scratch)
+    now = time.time()  # wall clock: st_mtime is an epoch timestamp
+    for d in sorted(scratch_root.glob(f"{PROBE_SID_PREFIX}*")):
+        if not d.is_dir():
+            continue
+        try:
+            age = now - d.stat().st_mtime
+        except OSError:
+            continue
+        if age < PROBE_ORPHAN_GRACE_SEC:
+            continue
+        # never touch a tree a live process sits in (a concurrent probe;
+        # cwd == the tree or anything under it)
+        dstr = f"{d}"
+        if any(
+            (cwd := _proc_cwd(p)) is not None
+            and (cwd == dstr or cwd.startswith(dstr + os.sep))
+            for p in _live_pids()
+        ):
+            continue
+        sp = SessionMountPaths.for_session(d.name, str(scratch_root))
+        mounted = M.mounted_targets()
+        for target in (sp.workdir, sp.agent_dir):
+            if target in mounted:
+                subprocess.run(["umount", "-l", target], capture_output=True, timeout=10)
+        for area in (str(d), state.inbox_for(d.name), state.sessions_for(d.name)):
+            if os.path.lexists(area):
+                shutil.rmtree(area, ignore_errors=True)
+        items.append(("tree", f"stale probe tree {d.name} removed (previous doctor died mid-probe)"))
+    return items
+
+
+async def _probe_cleanup(
+    driver: "PiSession | None",
+    sp: SessionMountPaths,
+    ops: list[M.MountOp],
+    state: StatePaths,
+) -> list[str]:
+    """PID/path-scoped probe teardown: ladder the probe's OWN child,
+    unmount its own overlays (lazy fallback), delete its own trees. No
+    uid sweep, no registry — every path is this run's (unique per run),
+    so concurrent probes can never tear each other down."""
+    errors: list[str] = []
+    if driver is not None:
+        try:
+            await driver.shutdown()
+        except Exception as e:
+            errors.append(f"probe child shutdown: {e}")
+        try:
+            await driver.close()
+        except Exception:
+            pass
+    if ops:
+        unmounted: list[str] = []
+        try:
+            unmounted = await M.aunmount_all(ops)
+        except M.MountError as e:
+            errors.append(f"probe unmount: {e}")
+        for op in reversed(ops):
+            if op.target not in unmounted:
+                try:
+                    subprocess.run(["umount", "-l", op.target], capture_output=True, timeout=10)
+                    unmounted.append(op.target)
+                except Exception:
+                    pass
+        still = [op.target for op in ops if op.target in M.mounted_targets()]
+        if still:
+            errors.append(f"probe mounts still up: {still}")
+    for area in (sp.scratch, state.inbox_for(sp.session_id), state.sessions_for(sp.session_id)):
+        if os.path.lexists(area):
+            try:
+                shutil.rmtree(area)
+            except OSError as e:
+                errors.append(f"probe rmtree {area}: {e}")
+    return errors
 
 
 async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
-    from app.lifecycle import Lifecycle, LifecycleConfig, PiInstall
-    from app.iso.layout import state_paths
-    from app.registry import (
-        ALLOCATED,
-        CLEANING,
-        DRAINING,
-        FREE,
-        LIVE,
-        Registry,
-    )
-    from app.iso.slots import SlotPool
+    """The no-prompt spawn probe — STANDALONE by design: it builds the
+    launch line, mounts the session and spawns setuid directly, with no
+    Lifecycle and no registry row. Consequences:
+
+    - teardown is PID/path-scoped (ladder the probe's own child, unmount
+      its own overlays, rmtree its own trees) — no uid sweep, so
+      concurrent doctors cannot sweep each other's files: no lock;
+    - the probe uid must still be OUTSIDE the app's pool (an app session
+      on the same uid would hit the probe through the app's uid-gated
+      kills and owner sweep);
+    - a previous doctor that died mid-probe leaves only paths (no row):
+      reap_stale_probes reaps them, age- and cwd-gated, no state machine.
+    """
+    from app.iso.configswap import require_active_dir
+    from app.iso.spawn import slot_identity
+    from app.lifecycle import extension_names
+    from app.rpc.launch import build_launch
+    from app.rpc.session import PiSession
 
     import pwd as _pwd
 
     # the probe slot is outside the app's pool by contract: a probe on an
     # app slot would race the service's uid-gated kills (boot reconciliation
     # after a tick restart SIGTERMs every process of a slot uid that owns a
-    # live row — the probe's own row)
+    # live row — the probe's own row) and its owner sweep would delete the
+    # probe's files
     if args.probe_slot in args.slots:
         rep.add(
             "spawn.probe_slot",
@@ -493,85 +656,59 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
         return
 
     state = state_paths(args.state)
-    registry = Registry(args.registry or f"{args.state}/registry.db")
-    # pool of the probe slot ONLY: the probe is the sole user of it
-    pool = SlotPool((args.probe_slot,))
-    api_key = os.environ.get(args.api_key_env, "")
-    lc = Lifecycle(
-        LifecycleConfig(
-            state=state,
-            pool=pool,
-            registry=registry,
-            pi=PiInstall(node_bin=args.pi_node, cli_js=args.pi_cli, ext_path=args.pi_ext),
-            api_key=api_key,
-            exa_key=os.environ.get(args.exa_key_env) or None,
-            toolkit_dir=args.toolkit,
-            baseline_extensions=tuple(
-                args.baseline_ext or ([Path(args.pi_ext).name] if args.pi_ext else [])
-            ),
-            update_pending_path="",
-        )
-    )
-    # stale probe rows from a previous doctor that died mid-probe: ONLY the
-    # doctor can clean them up (the app's pool does not include the probe
-    # slot). Rebuild the pool view, then the normal release path: ladder
-    # (kills any stray pi child), sweep, free. A row already CLEANING
-    # cannot re-enter draining: clean it physically and close the state
-    # machine by idempotent transition.
-    for row in registry.list_sessions(include_released=False):
-        if row.slot != args.probe_slot or row.state == FREE:
-            continue
-        s = pool.get(args.probe_slot)
-        s.state = "allocated"
-        s.session_id = row.id
-        try:
-            if row.state in (ALLOCATED, LIVE, DRAINING):
-                await lc.release(row.id, reason="stale doctor probe row (previous doctor died)")
-            else:  # CLEANING: the previous doctor died mid-release
-                from app.iso.layout import SessionMountPaths
-                from app.iso.sweep import _mounted_targets, kill_strays_by_uid, sweep_by_owner
-
-                uid = _pw.pw_uid
-                await asyncio.to_thread(kill_strays_by_uid, uid)
-                sp = SessionMountPaths.for_session(row.id, state.scratch)
-                mounted = _mounted_targets()
-                for target in (sp.workdir, sp.agent_dir):
-                    if target in mounted:
-                        subprocess.run(["umount", "-l", target],
-                                       capture_output=True, timeout=10)
-                excludes = (state.inbox_for(row.id), state.scratch_for(row.id),
-                            state.sessions_for(row.id))
-                sweep = await asyncio.to_thread(
-                    sweep_by_owner, uid, excludes, keep_dir=_pw.pw_dir)
-                for area in excludes:
-                    if os.path.lexists(area):
-                        shutil.rmtree(area, ignore_errors=True)
-                registry.set_state(row.id, CLEANING, cause="stale probe cleanup")
-                registry.set_state(row.id, FREE, cause="stale probe cleanup verified")
-                if sweep.ok:
-                    rep.add("spawn.stale_probe", PASS,
-                            f"released stale probe row {row.id[:8]} (was cleaning)")
-                else:
-                    rep.add("spawn.stale_probe", WARN,
-                            f"stale probe row {row.id[:8]}: sweep not clean: {sweep.errors[:3]}")
-            if row.state != CLEANING:
-                rep.add("spawn.stale_probe", PASS,
-                        f"released stale probe row {row.id[:8]} (was {row.state})")
-        except Exception as e:
-            rep.add("spawn.stale_probe", WARN, f"stale probe row {row.id[:8]} not released: {e}")
-    # the spawn uses the ACTIVE config pointer (require_active_dir);
-    # check_config_version already certifies it exists + parses
-    t0 = time.monotonic()
-    sid: str | None = None
+    # stale probe debris from a previous doctor that died mid-probe: ONLY
+    # the doctor can clean it (the app's pool does not include the probe
+    # slot). Path-scoped: no registry row to find, no sweep to re-run.
     try:
-        out = await lc.start_session("doctor-probe")
-        sid = out["session_id"]
+        for kind, detail in await reap_stale_probes(state, _pw.pw_uid):
+            rep.add("spawn.stale_probe", PASS if kind == "tree" else WARN, detail)
+    except Exception as e:
+        rep.add("spawn.stale_probe", WARN, f"stale probe reap failed: {e}")
+
+    ident = slot_identity(args.probe_slot)
+    api_key = os.environ.get(args.api_key_env, "")
+    exa_key = os.environ.get(args.exa_key_env) or None
+    baseline = tuple(args.baseline_ext or ([Path(args.pi_ext).name] if args.pi_ext else []))
+
+    # unique per run: the tree is reaped by prefix, and concurrent probes
+    # never share a path (or a HOME — the per-probe home below)
+    probe_sid = f"{PROBE_SID_PREFIX}{uuid.uuid4().hex[:12]}"
+    sp = SessionMountPaths.for_session(probe_sid, state.scratch)
+    ops: list[M.MountOp] = []
+    driver: PiSession | None = None
+    t0 = time.monotonic()
+    try:
+        # the spawn uses the ACTIVE config pointer (require_active_dir);
+        # check_config_version already certifies it exists + parses
+        lower = require_active_dir(state.config)
+        await asyncio.to_thread(M.ensure_session_dirs, sp, state)
+        # per-probe HOME inside the probe's own scratch tree: teardown is
+        # then purely path-scoped and concurrent probes cannot interleave
+        # in a shared home. The passwd home stays on disk (0700 —
+        # check_slots); pi's state lives in the agent dir, not HOME.
+        home = f"{sp.scratch}/home"
+        os.makedirs(home, exist_ok=True)
+        os.chown(home, ident.uid, ident.gid)
+        ops = await asyncio.to_thread(
+            M.mount_session, sp, lower, state, ident.uid, ident.gid, args.toolkit
+        )
+        launch = build_launch(
+            node_bin=args.pi_node,
+            cli_js=args.pi_cli,
+            session_dir=state.sessions_for(probe_sid),
+            session_id=probe_sid,
+            extension_paths=(args.pi_ext,) if args.pi_ext else (),
+            home=home,
+            user=args.probe_slot,
+            agent_dir=sp.agent_dir,
+            omnissiah_api_key=api_key,
+            exa_api_key=exa_key,
+            web_cache_root=sp.web_cache,
+        )
+        driver = PiSession(launch, ident, cwd=sp.workdir)
+        await driver.start()
+        await driver.get_state()  # the protocol is up (and bounds the timing)
         spawn_sec = time.monotonic() - t0
-        live = lc.live.get(sid)
-        driver = live.driver if live else None
-        if driver is None:
-            rep.add("spawn.no_prompt", FAIL, "session created but no driver")
-            return
         # launch line: executed argv == the golden constant; key off argv
         argv = list(driver.launched_argv)
         if argv != list(driver.launch.argv):
@@ -624,13 +761,8 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
         else:
             rep.add("spawn.timing", WARN, f"no-prompt spawn slow: {spawn_sec:.2f}s")
         # RO bind: the agent-dir models.json is a read-only bind
-        sp = live.sp
-        agent_models = None
-        for cand in (
-            Path(sp.agent_dir) / "models.json" if getattr(sp, "agent_dir", None) else None,
-        ):
-            if cand and cand.exists():
-                agent_models = cand
+        cand = Path(sp.agent_dir) / "models.json"
+        agent_models = cand if cand.exists() else None
         if agent_models is None:
             rep.add("spawn.ro_bind", WARN, "could not locate the bound models.json — check skipped")
         else:
@@ -652,9 +784,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
                 else:
                     rep.add("spawn.ro_bind.unlink", FAIL, f"unlink on RO bind -> {e}")
         # extension baseline (drift = warning)
-        row2 = registry.get(sid)
-        loaded = tuple(row2.loaded_extensions) if row2 else ()
-        baseline = lc.cfg.baseline_extensions
+        loaded = extension_names(sp, args.pi_ext)
         extra = tuple(sorted(set(loaded) - set(baseline)))
         if extra:
             rep.add("spawn.extensions", WARN, f"loaded beyond image baseline: {extra} (drift)")
@@ -770,12 +900,9 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
     except Exception as e:
         rep.add("spawn.no_prompt", FAIL, f"no-prompt spawn failed: {type(e).__name__}: {e}")
     finally:
-        if sid is not None:
-            try:
-                await lc.release(sid, reason="doctor probe")
-            except Exception:
-                pass
-        registry.close()
+        errors = await _probe_cleanup(driver, sp, ops, state)
+        if errors:
+            rep.add("spawn.cleanup", WARN, "; ".join(errors))
 
 
 def check_update_waiting(rep: Report, args: argparse.Namespace) -> None:
@@ -845,6 +972,7 @@ async def main(argv: list[str]) -> int:
 
     registry = Registry(args.registry or f"{args.state}/registry.db")
     check_versions(rep, args, registry)
+    check_quarantined_slots(rep, args, registry)
     check_firewall_rules(rep)
     check_ui(rep)
     check_disk(rep, args.state)
@@ -853,18 +981,7 @@ async def main(argv: list[str]) -> int:
     if args.skip_spawn:
         rep.add("spawn.no_prompt", SKIP, "--skip-spawn")
     else:
-        try:
-            async with _probe_lock(args.state):
-                await check_no_prompt_spawn(rep, args)
-        except ProbeLockTimeout:
-            rep.add(
-                "spawn.no_prompt",
-                FAIL,
-                "probe lock held by another doctor > 240 s — the spawn check "
-                "did not run (doctors serialize on the probe uid; the "
-                "concurrent doctor's live run is probably still in progress — "
-                "re-run the doctor once it finishes)",
-            )
+        await check_no_prompt_spawn(rep, args)
     print(f"RESULT: {'FAIL' if rep.fails else 'GREEN'} ({rep.fails} fail, {rep.warns} warn)")
     return 1 if rep.fails else 0
 

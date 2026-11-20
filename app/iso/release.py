@@ -9,8 +9,8 @@ goes through this one function. Steps, in order:
    a session with a live run (the caller skips and reports).
 3. Kill strays by uid (crash-orphans).
 4. Unmount (reverse mount order).
-5. Sweep by owner: find / -user slotN — home, /tmp, everything dropped
-   outside scratch/ — and delete.
+5. Sweep by owner: find / -user slotN — home, /tmp, /var/tmp,
+   /dev/shm, everything dropped outside scratch/ — and delete.
 6. Delete inbox/<s>/, scratch/<s>/, sessions/<s>/ wholesale, by path.
 7. Free the slot ONLY when the sweep verified empty. A slot that fails
    its sweep is quarantined: visible in the panel, retryable, never

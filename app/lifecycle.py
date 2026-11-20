@@ -247,22 +247,7 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     def _extension_names(self, sp: SessionMountPaths) -> tuple[str, ...]:
-        """Loaded extension set as the app sees it before spawn: the
-        explicit -e paths plus the agent dir's extensions dir (one level
-        deep, pi's discovery rule)."""
-        names: list[str] = []
-        if self.cfg.pi.ext_path:
-            names.append(Path(self.cfg.pi.ext_path).name)
-        ext_dir = Path(sp.agent_dir) / "extensions"
-        if ext_dir.is_dir():
-            for entry in sorted(ext_dir.iterdir()):
-                if entry.is_file() and entry.suffix in (".ts", ".js"):
-                    names.append(f"agent:{entry.name}")
-                elif entry.is_dir() and (entry / "index.ts").exists():
-                    names.append(f"agent:{entry.name}/")
-                elif entry.is_dir() and (entry / "package.json").exists():
-                    names.append(f"agent:{entry.name}/")
-        return tuple(names)
+        return extension_names(sp, self.cfg.pi.ext_path)
 
     def _record_extensions(self, session_id: str, sp: SessionMountPaths) -> None:
         loaded = self._extension_names(sp)
@@ -1201,6 +1186,27 @@ class Lifecycle:
 # ---------------------------------------------------------------------- #
 # helpers                                                                 #
 # ---------------------------------------------------------------------- #
+
+
+def extension_names(sp: SessionMountPaths, ext_path: str | None) -> tuple[str, ...]:
+    """Loaded extension set as the app sees it before spawn: the
+    explicit -e paths plus the agent dir's extensions dir (one level
+    deep, pi's discovery rule). Shared by the registry recorder and the
+    doctor's standalone probe (no registry row)."""
+    names: list[str] = []
+    if ext_path:
+        names.append(Path(ext_path).name)
+    ext_dir = Path(sp.agent_dir) / "extensions"
+    if ext_dir.is_dir():
+        for entry in sorted(ext_dir.iterdir()):
+            if entry.is_file() and entry.suffix in (".ts", ".js"):
+                names.append(f"agent:{entry.name}")
+            elif entry.is_dir() and (entry / "index.ts").exists():
+                names.append(f"agent:{entry.name}/")
+            elif entry.is_dir() and (entry / "package.json").exists():
+                names.append(f"agent:{entry.name}/")
+    return tuple(names)
+
 
 def _new_session_id() -> str:
     import uuid

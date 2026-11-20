@@ -198,19 +198,21 @@ def test_mount_before_spawn_and_teardown_order(iso_env):
 
 
 def test_sweep_walk_finds_and_deletes_everywhere(iso_env):
-    """find / -user slotN catches the home, /tmp, and stray drops; the
-    sweep deletes them and the verification pass comes back empty."""
+    """find / -user slotN catches the home, /tmp, /dev/shm, and stray
+drops; the sweep deletes them and the verification pass comes back
+empty. (/dev/shm: world-writable tmpfs a slot can litter — the walk
+must not prune /dev wholesale.)"""
     ident = slot_identity(SLOT)
     home = Path(f"/home/{SLOT}")
     stray_tmp = Path(f"/tmp/sv-sweep-{SLOT}-probe")
     stray_home = home / "sv-sweep-probe"
-    for p in (stray_tmp, stray_home):
+    stray_shm = Path(f"/dev/shm/sv-sweep-{SLOT}-probe")
+    for p in (stray_tmp, stray_home, stray_shm):
         p.mkdir(parents=True, exist_ok=True)
         (p / "junk.txt").write_text("junk")
-    os.chown(stray_tmp, ident.uid, ident.gid)
-    os.chown(stray_tmp / "junk.txt", ident.uid, ident.gid)
-    os.chown(stray_home, ident.uid, ident.gid)
-    os.chown(stray_home / "junk.txt", ident.uid, ident.gid)
+    for p in (stray_tmp, stray_home, stray_shm):
+        os.chown(p, ident.uid, ident.gid)
+        os.chown(p / "junk.txt", ident.uid, ident.gid)
     # an excluded prefix must survive the sweep
     keep = Path(f"/srv/servitor-test/sv-keep-{SLOT}")
     keep.mkdir(parents=True, exist_ok=True)
@@ -219,12 +221,14 @@ def test_sweep_walk_finds_and_deletes_everywhere(iso_env):
         res = sweep_by_owner(ident.uid, (str(keep),), keep_dir=str(home))
         assert res.ok, f"errors={res.errors}"
         assert not stray_tmp.exists() and not stray_home.exists()
+        assert not stray_shm.exists()  # /dev/shm litter swept
         assert home.exists() and home.is_dir()  # the home dir itself kept
         assert keep.exists()  # excluded prefix pruned
     finally:
         shutil.rmtree(keep, ignore_errors=True)
         shutil.rmtree(stray_tmp, ignore_errors=True)
         shutil.rmtree(stray_home, ignore_errors=True)
+        shutil.rmtree(stray_shm, ignore_errors=True)
 
 
 def test_config_swap_atomicity_live_lower_untouched(iso_env):

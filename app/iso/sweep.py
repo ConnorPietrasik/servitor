@@ -1,9 +1,9 @@
 """Sweep by owner.
 
 ``find / -user slotN`` catches what a session dropped *outside*
-``scratch/`` (``/tmp``, ``/var/tmp``, ``/``) and makes slot release a
-clean handover — with a distinct slot uid, "everything this session
-touched" is one command.
+``scratch/`` (``/tmp``, ``/var/tmp``, ``/dev/shm``, ``/``) and makes
+slot release a clean handover — with a distinct slot uid, "everything
+this session touched" is one command.
 
 The sweep is a REQUIRED step of release: a slot's uid is never handed to
 another session before it is verified clean. A slot that fails its sweep
@@ -16,8 +16,12 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 
-#: pseudo-filesystems the owner walk never descends into
-PSEUDO_FS = ("/proc", "/sys", "/dev", "/run", "/boot/efi")
+#: pseudo-filesystems the owner walk never descends into.
+# /dev is deliberately NOT pruned: /dev/shm is a world-writable tmpfs a
+# slot can litter, and the walk must see it (the device nodes under /dev
+# are root-owned and match nothing; /dev/pts, /dev/mqueue and
+# /dev/hugepages are tiny and harmless to walk).
+PSEUDO_FS = ("/proc", "/sys", "/run", "/boot/efi")
 
 
 @dataclass
