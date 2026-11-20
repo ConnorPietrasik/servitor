@@ -74,7 +74,10 @@ class PiSession:
     """One pi subprocess: spawn, commands, events, dialogs, ladder.
 
     Every session event is delivered to ``on_event``; dialogs to
-    ``on_dialog`` and answered via :meth:`answer_dialog`.
+    ``on_dialog`` and answered via :meth:`answer_dialog`. pi may also
+    resolve a dialog on its own (its timeout, or an abort) without
+    re-notifying: the run's settle sweeps the park and announces the
+    stragglers via ``on_dialog_resolved``.
     """
 
     def __init__(
@@ -87,6 +90,8 @@ class PiSession:
         request_timeout: float = 30.0,
         on_event: Callable[[dict[str, Any]], Any] | None = None,
         on_dialog: Callable[["PiSession", dict[str, Any]], Any] | None = None,
+        on_dialog_resolved:
+        Callable[["PiSession", list[str]], Any] | None = None,
         on_exited: Callable[["PiSession"], Any] | None = None,
         on_settled: Callable[["PiSession", bool], Any] | None = None,
     ) -> None:
@@ -97,6 +102,7 @@ class PiSession:
         self.request_timeout = request_timeout
         self.on_event = on_event
         self.on_dialog = on_dialog
+        self.on_dialog_resolved = on_dialog_resolved
         self.on_exited = on_exited
         self.on_settled = on_settled
 
@@ -117,12 +123,6 @@ class PiSession:
         self._tasks: list[asyncio.Task] = []
         self._parse_errors: list[str] = []
         self._commands_sent: int = 0
-        # backpressure gate: while cleared, the reader stops draining the
-        # child's stdout, the pipe fills, and pi's run pauses (control
-        # responses are never gated)
-        self._events_allowed = asyncio.Event()
-        self._events_allowed.set()
-        self.events_paused = False
 
     # ------------------------------------------------------------------ #
     # lifecycle
@@ -154,18 +154,6 @@ class PiSession:
         is accepted, cleared at ``agent_settled``. The update tick uses
         this: a restart must never land mid-run."""
         return self._run_active
-
-    def pause_events(self) -> None:
-        """Backpressure: stop draining session events (the run pauses).
-        In-flight control responses still flow. Idempotent."""
-        if not self.events_paused:
-            self.events_paused = True
-            self._events_allowed.clear()
-
-    def resume_events(self) -> None:
-        if self.events_paused:
-            self.events_paused = False
-            self._events_allowed.set()
 
     @property
     def pending_dialogs(self) -> dict[str, dict[str, Any]]:
@@ -228,6 +216,10 @@ class PiSession:
         self._tasks.append(asyncio.create_task(self._exit_task(), name="pi-exit"))
 
     async def _stdout_task(self) -> None:
+        """Drain stdout continuously, unconditionally: the run must never
+        stall because a client is slow or gone (invariant 4) — delivery
+        is the SSE hub's concern, and its ring evicts + gaps rather
+        than blocking."""
         assert self._proc is not None and self._proc.stdout is not None
         framer = LFFramer(self._on_record, self._on_parse_error)
         while True:
@@ -235,11 +227,6 @@ class PiSession:
             if not chunk:
                 break
             for record in framer.split_records(chunk):
-                rtype = record.get("type")
-                if rtype != "response" and rtype != "extension_ui_request":
-                    # session event: gated by the backpressure valve — while
-                    # paused this await blocks and pi's in-flight run pauses
-                    await self._events_allowed.wait()
                 self._on_record(record)
 
     async def _stderr_task(self) -> None:
@@ -336,10 +323,25 @@ class PiSession:
     def _on_agent_settled(self, record: dict[str, Any]) -> None:
         self._last_settled_aborted = bool(record.get("aborted", False))
         self._run_active = False
+        # a run cannot settle while a dialog still blocks the child:
+        # anything still parked here was resolved on the pi side (its
+        # timeout or an abort — the child never re-notifies). Sweep it,
+        # so the park (and the UI fed by it) stops reporting a dialog
+        # that can never be answered; announce via on_dialog_resolved.
+        stale = list(self._pending_dialogs)
+        if stale:
+            self._pending_dialogs.clear()
         for fut in self._settled_waiters:
             if not fut.done():
                 fut.set_result(self._last_settled_aborted)
         self._settled_waiters.clear()
+        if stale and self.on_dialog_resolved:
+            try:
+                result = self.on_dialog_resolved(self, stale)
+                if asyncio.iscoroutine(result):
+                    self._tasks.append(asyncio.ensure_future(result))
+            except Exception:
+                log.exception("on_dialog_resolved callback failed")
         if self.on_settled:
             try:
                 self.on_settled(self, self._last_settled_aborted)
@@ -351,7 +353,9 @@ class PiSession:
         rid = str(record.get("id", ""))
         if method in DIALOG_METHODS:
             # blocks the child until answered — park for the human
-            # (indefinitely; never auto-allow, never auto-decline)
+            # (indefinitely; never auto-allow, never auto-decline). pi
+            # may still resolve it on its own (timeout/abort) — the
+            # settle sweep drops whatever never got an answer
             self._pending_dialogs[rid] = record
             if self.on_dialog:
                 try:

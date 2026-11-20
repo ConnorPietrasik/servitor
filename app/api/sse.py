@@ -4,16 +4,17 @@ One hub per session. Every session event — pi events AND app events —
 is published here, gets a monotonic integer id, and is kept in a bounded
 ring (the per-session cap) for ``Last-Event-ID`` resume.
 
-Backpressure: when the unconsumed bytes (slowest live consumer to
-newest event) exceed the cap, the hub pauses the pi process's event
-stream (the driver stops draining the child's stdout — the pipe fills
-and pi blocks, i.e. the RUN pauses). The slowest consumer catching up
-resumes it. Memory is bounded; the transcript on disk is never touched.
+The ring is a replay buffer for delivery; it NEVER feeds back into the
+run. A consumer that falls behind the ring — slow connection,
+backgrounded phone, closed app — is simply evicted: the stream emits a
+``gap`` event (at subscribe and mid-stream) and the client re-syncs via
+the API (transcript fetch + re-subscribe). Invariant 4: the producer
+never awaits a client — a dropped or slow connection never cancels,
+slows, or stalls a run. Memory is bounded (cap + one in-flight event);
+the transcript on disk is never touched.
 
 The cap is a memory policy knob (``SERVITOR_SSE_RING_BYTES``, default
-50 MB) — it bounds the delivery buffer, never a capability cap: a run
-pauses, it is never cut off. Control responses are NOT gated — only
-session events — so the control plane stays responsive.
+50 MB) — it sizes the resume window, never a capability cap.
 """
 from __future__ import annotations
 
@@ -23,11 +24,16 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-# the per-session delivery cap — a memory bound, not a capability cap:
-# the run pauses, it is never cut off or truncated. Per-hub configurable
+# the per-session replay cap — a memory bound on the resume window,
+# never a capability cap: past it the ring evicts and a slow consumer
+# gets a gap (it re-syncs from the API). Per-hub configurable
 # (SseHub(cap_bytes=...), from SERVITOR_SSE_RING_BYTES); this is the
 # production default.
 EVENT_BUFFER_CAP = 50 * 1024 * 1024
+
+# the heartbeat sentinel name stream_events yields (the endpoint maps it
+# to a bare ":hb\n\n" comment line — no id, no data)
+HEARTBEAT = "hb"
 
 
 @dataclass
@@ -39,7 +45,7 @@ class SseEvent:
 
 
 class SseHub:
-    """Bounded per-session event buffer with resume + backpressure.
+    """Bounded per-session event ring with resume + gap semantics.
 
     All methods are called from the app's event loop (publish is
     synchronous by design — it runs inside the driver's gated dispatch).
@@ -48,8 +54,6 @@ class SseHub:
     def __init__(self, session_id: str, cap_bytes: int | None = None) -> None:
         self.session_id = session_id
         self.cap = int(cap_bytes) if cap_bytes else EVENT_BUFFER_CAP
-        # hysteresis: resume once unconsumed falls below half the cap
-        self.resume_threshold = self.cap // 2
         self._next_id = 1
         self._ring: deque[SseEvent] = deque()
         self._bytes = 0
@@ -62,10 +66,6 @@ class SseHub:
         self._waiters: set[asyncio.Future] = set()
         # the app's stop path (SIGTERM drain) — see close()
         self._closed = False
-        # the driver this hub pauses/resumes (wired at spawn)
-        self._session: Any | None = None
-        self.paused = False
-        self.pause_count = 0  # meter: how many pause episodes this session had
 
     # ------------------------------------------------------------------ #
     # publish
@@ -77,7 +77,8 @@ class SseHub:
         self.publish(str(record.get("type", "event")), record)
 
     def publish(self, name: str, data: dict[str, Any] | str) -> int:
-        """Append one event; return its id. Synchronous."""
+        """Append one event; return its id. Synchronous. Never blocks on
+        a consumer — eviction is unconditional (the gap contract)."""
         if isinstance(data, str):
             data_str = data
         else:
@@ -92,28 +93,27 @@ class SseHub:
         self._latest_id = ev.id
         self._ring.append(ev)
         self._bytes += ev.nbytes
-        if self._consumers:
-            # NEVER evict ahead of a live consumer — that is silent data
-            # loss. Free only what every consumer already has; if the
-            # slowest is still more than the cap behind, pause the run
-            # instead of dropping data.
-            mc = self._min_consumed()
-            while self._ring and self._ring[0].id <= mc:
-                old = self._ring.popleft()
-                self._bytes -= old.nbytes
-            if self._unconsumed_bytes() > self.cap:
-                self._do_pause()
-        else:
-            # No live consumers: evict to the cap (a consumer older than
-            # the ring gets a gap and re-syncs from the API).
-            while self._bytes > self.cap and len(self._ring) > 1:
-                old = self._ring.popleft()
-                self._bytes -= old.nbytes
+        self._evict()
         for fut in list(self._waiters):
             if not fut.done():
                 fut.set_result(None)
         self._waiters.clear()
         return ev.id
+
+    def _evict(self) -> None:
+        """Free events every live consumer already has, then evict to the
+        cap. Eviction may move PAST a slow consumer — that is the gap
+        contract (the stream detects the skip via gap_before and the
+        client re-syncs via the API). The run is never blocked by
+        delivery, whatever the consumer does."""
+        mc = self._min_consumed()
+        if mc:
+            while self._ring and self._ring[0].id <= mc:
+                old = self._ring.popleft()
+                self._bytes -= old.nbytes
+        while self._bytes > self.cap and len(self._ring) > 1:
+            old = self._ring.popleft()
+            self._bytes -= old.nbytes
 
     # ------------------------------------------------------------------ #
     # subscribe / consume
@@ -137,6 +137,15 @@ class SseHub:
         self._consumers[sub] = max(after_id, 0)
         return sub, [e for e in self._ring if e.id >= start], gap
 
+    def gap_before(self, cursor: int) -> bool:
+        """True when the ring has evicted past the consumer's next
+        position (cursor + 1): the stream must emit a ``gap`` and the
+        client re-syncs via the API. An empty ring has been evicted past
+        everything too, but then there is nothing to distinguish — the
+        publisher always keeps the newest event, so a non-empty check
+        suffices."""
+        return bool(self._ring) and self._ring[0].id > cursor + 1
+
     def events_after(self, cursor: int) -> list[SseEvent]:
         return [e for e in self._ring if e.id > cursor]
 
@@ -147,7 +156,6 @@ class SseHub:
             return
         if up_to_id > prev:
             self._consumers[sub_id] = up_to_id
-            self._maybe_resume()
 
     def ack(self, sub_id: int, up_to_id: int) -> None:
         """Explicit position ack (POST .../events/ack) — same as consume."""
@@ -155,7 +163,6 @@ class SseHub:
 
     def unsubscribe(self, sub_id: int) -> None:
         self._consumers.pop(sub_id, None)
-        self._maybe_resume()
 
     def close(self) -> None:
         """Terminal (the app's stop path): end every stream. Idempotent.
@@ -211,29 +218,11 @@ class SseHub:
         return self._bytes
 
     # ------------------------------------------------------------------ #
-    # backpressure
+    # diagnostics
     # ------------------------------------------------------------------ #
-
-    def attach(self, session_driver) -> None:
-        """Wire the driver this hub pauses/resumes (at spawn/respawn)."""
-        self._session = session_driver
 
     def _min_consumed(self) -> int:
         return min(self._consumers.values()) if self._consumers else 0
-
-    def _evict_delivered(self) -> None:
-        """Free events every live consumer already has (id <= min
-        consumed). With no live consumers, additionally evict to the cap
-        (the ring is a bounded buffer either way)."""
-        mc = self._min_consumed()
-        if mc:
-            while self._ring and self._ring[0].id <= mc:
-                old = self._ring.popleft()
-                self._bytes -= old.nbytes
-        if not self._consumers:
-            while self._bytes > self.cap and len(self._ring) > 1:
-                old = self._ring.popleft()
-                self._bytes -= old.nbytes
 
     def _unconsumed_bytes(self) -> int:
         if not self._consumers:
@@ -241,32 +230,84 @@ class SseHub:
         mc = self._min_consumed()
         return sum(e.nbytes for e in self._ring if e.id > mc)
 
-    def _do_pause(self) -> None:
-        if self.paused:
-            return
-        self.paused = True
-        self.pause_count += 1
-        if self._session is not None:
-            try:
-                self._session.pause_events()
-            except Exception:
-                pass
-
-    def _maybe_resume(self) -> None:
-        self._evict_delivered()
-        if not self.paused:
-            return
-        if not self._consumers or self._unconsumed_bytes() <= self.resume_threshold:
-            if self._session is not None:
-                try:
-                    self._session.resume_events()
-                except Exception:
-                    pass
-            self.paused = False
-
     def ring_snapshot(self, limit: int = 200) -> list[dict]:
         """Diagnostic view (bounded)."""
         return [
             {"id": e.id, "name": e.name, "nbytes": e.nbytes}
             for e in list(self._ring)[-limit:]
         ]
+
+
+async def stream_events(
+    hub: SseHub,
+    sub_id: int,
+    start: int,
+    replay: list[SseEvent],
+    gap: bool,
+    is_disconnected,
+    heartbeat_secs: float,
+):
+    """The live SSE tail for one subscription — the endpoint's streaming
+    body. Yields ``(name, data, id_or_None)`` tuples; the endpoint
+    formats them into frames. ``(HEARTBEAT, None, None)`` is the
+    heartbeat sentinel.
+
+    Contract (invariant 4): this loop only READS the ring — it never
+    waits on the run for a client. A ``gap`` tuple is emitted whenever
+    the consumer's position has been evicted — at subscribe (phone came
+    back) or mid-stream (the consumer stalled — slow phone,
+    backgrounded app) — and the stream resumes from the newest event:
+    the client re-syncs via the API, never a partial tail. The ring is
+    never re-sent after a gap: it duplicates the transcript fetch and
+    costs up to the cap; events published while the client re-syncs
+    still arrive on this stream (the cursor is snapshotted before the
+    yield).
+    Ends when the request disconnects or the hub is closed (the stop
+    path — the client's EventSource auto-reconnects, ?after= resumes).
+    """
+    if gap:
+        # the requested position was evicted from the ring: the client
+        # must re-sync from the API, not guess.
+        cursor = hub.latest_id
+        yield ("gap", json.dumps({"after": start}), None)
+        hub.consume(sub_id, cursor)
+    else:
+        cursor = start
+        for e in replay:
+            if await is_disconnected():
+                return
+            yield (e.name, e.data, e.id)
+            cursor = e.id
+        hub.consume(sub_id, cursor)
+    while True:
+        if await is_disconnected():
+            return
+        try:
+            await asyncio.wait_for(hub.wait_new(cursor), timeout=heartbeat_secs)
+        except asyncio.TimeoutError:
+            yield (HEARTBEAT, None, None)
+            continue
+        if hub.closed:
+            # the stop path closed the hub (SIGTERM drain): end the
+            # stream — the client's EventSource auto-reconnects
+            # (?after=<cursor> resumes)
+            return
+        # the ring evicted past our cursor (slow consumer): gap — the
+        # client re-syncs via the API; this stream continues from the
+        # newest event AT GAP TIME (no partial tail, no ring re-send,
+        # and events published while the client re-syncs still arrive
+        # on the stream — the cursor is snapshotted before the yield)
+        if hub.gap_before(cursor):
+            missed_from = cursor
+            cursor = hub.latest_id
+            yield ("gap", json.dumps({"after": missed_from}), None)
+            hub.consume(sub_id, cursor)
+            continue
+        batch = hub.events_after(cursor)
+        for e in batch:
+            if await is_disconnected():
+                return
+            yield (e.name, e.data, e.id)
+        if batch:
+            hub.consume(sub_id, batch[-1].id)
+            cursor = batch[-1].id

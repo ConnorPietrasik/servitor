@@ -11,9 +11,6 @@ The contract under test:
 - a child that does not exit on EOF gets SIGTERM after the shared
   window, then SIGKILL (never first) — without holding the other
   children's drain open;
-- a backpressure-paused stream is resumed BEFORE the stdin EOF (a
-  paused child is blocked on a write into the un-drained pipe and
-  would never see the EOF);
 - the budget: notify + close inside the EOF clock, TERM ≤ min(10,
   grace), KILL instant — worst case ≈ 100 s < TimeoutStopSec (120 s),
   independent of N.
@@ -86,9 +83,6 @@ class FakeDriver:
 
     async def abort(self) -> None:
         self.calls.append("abort")
-
-    def resume_events(self) -> None:
-        self.calls.append("resume")
 
     async def close_stdin(self) -> None:
         self.calls.append("close_stdin")
@@ -336,16 +330,3 @@ def test_child_that_dies_during_notify_still_drains(tmp_path):
     asyncio.run(lc.shutdown(cause="test stop"))
     assert d.exited and d.exit_code == 0
     assert _drained(events, "s1") == "exit=0"
-
-
-def test_paused_stream_is_resumed_before_the_eof(tmp_path):
-    """A backpressure-paused child is blocked on a write into the
-    un-drained pipe: resume the stream BEFORE the stdin EOF or the
-    child would never see it (the graceful path degrades to the full
-    TERM/KILL tail)."""
-    d = FakeDriver()
-    lc = _lc(tmp_path, grace=1.0)
-    _add(lc, "s1", d)
-    asyncio.run(lc.shutdown(cause="test stop"))
-    assert "resume" in d.calls
-    assert d.calls.index("resume") < d.calls.index("close_stdin")

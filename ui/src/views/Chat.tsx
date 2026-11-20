@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
-import type { Msg, SessionRow, ToolCall } from "../types";
+import type { ExtensionDialog, Msg, SessionRow, ToolCall } from "../types";
 import Message from "../components/Message";
 import Outbox from "../components/Outbox";
+import Dialogs from "../components/Dialogs";
 import { fmtBytes } from "../format";
 
 // ---- client settings (persisted locally; rendering-only) -------------
@@ -55,6 +56,7 @@ export default function Chat() {
   const [composerPrefill, setComposerPrefill] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
+  const [dialogs, setDialogs] = useState<ExtensionDialog[]>([]);
   const [uploads, setUploads] = useState<
     { name: string; status: "uploading" | "done" | "failed"; size: number }[]
   >([]);
@@ -215,8 +217,14 @@ export default function Chat() {
           ),
         );
         break;
-      case "gap":
-        break; // handled via onGap (resync)
+      case "extension_dialog":
+      case "extension_dialog_answered":
+      case "extension_dialog_resolved":
+        // a dialog parked, was answered, or was resolved by pi on its
+        // own (timeout/abort — the settle swept it): re-fetch the
+        // pending set
+        void refreshDialogs();
+        break;
       default:
         // started/respawned/idle_killed/...: refresh the row
         if (sid) void refreshRow(sid);
@@ -228,6 +236,21 @@ export default function Chat() {
       setRow(await api.getSession(s));
     } catch {
       /* session gone */
+    }
+  }, []);
+
+  // the pending extension dialogs (the run blocks on these until a human
+  // answers). The SSE event is only the notification — the full record
+  // (options/prefill) comes from the API. 409 (no live process) means
+  // nothing pending: a dialog dies with its child.
+  const refreshDialogs = useCallback(async () => {
+    const s = idRef.current;
+    if (!s) return;
+    try {
+      const r = await api.getDialogs(s);
+      if (idRef.current === s) setDialogs(r.dialogs);
+    } catch {
+      if (idRef.current === s) setDialogs([]);
     }
   }, []);
 
@@ -248,12 +271,19 @@ export default function Chat() {
     if (!idRef.current) return;
     const s = idRef.current;
     unsubRef.current?.();
+    // a re-attach (gap re-sync, fork) replaces the transcript
+    // wholesale: drop the old stream's queued events, else a pending
+    // flush applies them on top of the fresh snapshot (duplicate
+    // deltas on the trailing message)
+    queue.current = [];
     try {
       const m = await api.getMessages(s);
       if (idRef.current !== s) return; // navigated away
       setMsgs(m.messages);
       setRunning(false);
       setRow(await api.getSession(s));
+      // a returning client is re-offered any still-pending dialog
+      void refreshDialogs();
       unsubRef.current = api.subscribeEvents(
         s,
         m.cursor,
@@ -491,6 +521,13 @@ export default function Chat() {
               <div className="empty">No messages yet — start below.</div>
             )}
           </div>
+
+          {/* pending extension dialogs: the run waits on the human here */}
+          <Dialogs
+            sid={sid}
+            dialogs={dialogs}
+            onChanged={() => void refreshDialogs()}
+          />
 
           <div className="composer">
             {uploads.length > 0 && (

@@ -291,11 +291,44 @@ class Lifecycle:
         ident = slot_identity(slot_name)
         driver = PiSession(launch, ident, cwd=live.sp.workdir)
         driver.on_settled = lambda *a, **k: self._on_settled(session_id)
-        # event stream is the SSE hub; backpressure pauses this driver
+        # event stream is the SSE hub; delivery never feeds back into the
+        # run (invariant 4 — the hub evicts + gaps, it never blocks)
         hub = self.hub(session_id)
         driver.on_event = hub.on_event
-        hub.attach(driver)
+        # extension dialogs park in the driver (the child blocks until a
+        # human answers or aborts): surface them — feed + SSE stream
+        driver.on_dialog = lambda _d, rec: self._on_dialog(session_id, rec)
+        # pi-side resolution (timeout/abort) is swept at settle
+        driver.on_dialog_resolved = lambda _d, rids: self._on_dialog_resolved(
+            session_id, rids
+        )
         return driver
+
+    def _on_dialog(self, session_id: str, rec: dict) -> None:
+        """An extension dialog just parked (select/confirm/input/editor).
+        The run waits for the human — a designed, visible state: it lands
+        in the event feed and the session's SSE stream (the UI re-fetches
+        the full dialog via GET .../dialogs and answers via POST).
+        Dialogs die with the process; there is nothing to clean up here."""
+        method = str(rec.get("method", ""))
+        rid = str(rec.get("id", ""))
+        title = str(rec.get("title", ""))
+        detail = f"{method} ({rid}): {title}" if title else f"{method} ({rid})"
+        self.events.add(session_id, "extension_dialog", detail)
+        log.info("session %s: extension dialog pending — %s", session_id, detail)
+
+    def _on_dialog_resolved(self, session_id: str, rids: list[str]) -> None:
+        """pi resolved parked dialogs on its own (its timeout, or an
+        abort): the run's settle swept them. The UI re-fetches the
+        pending set on the feed event — the dialogs are gone, and no
+        answer is on the way. Nothing else to clean up: a dialog dies
+        with its process."""
+        for rid in rids:
+            self.events.add(session_id, "extension_dialog_resolved", rid)
+        log.info(
+            "session %s: %d extension dialog(s) resolved by pi at settle: %s",
+            session_id, len(rids), rids,
+        )
 
     def _on_settled(self, session_id: str) -> None:
         live = self.live.get(session_id)
@@ -599,15 +632,6 @@ class Lifecycle:
             for session_id, live in list(self.live.items())
             if live.driver is not None and not live.driver.exited
         ]
-
-        # un-pause every event stream first: a backpressure-paused child is
-        # blocked writing into the pipe and would never see the stdin EOF
-        for session_id, d in drivers:
-            try:
-                d.resume_events()
-            except Exception:
-                log.warning("drain: resume_events failed for %s", session_id,
-                            exc_info=True)
 
         # phase 1 — notify: probe for a run in flight, abort over stdin
         # for every child with work, BEFORE its stdin closes. Gathered:

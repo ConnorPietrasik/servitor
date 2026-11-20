@@ -17,6 +17,8 @@ Routes:
     GET    /api/v1/sessions/{id}/probe
     GET    /api/v1/sessions/{id}/messages        (fetch, never replay)
     POST   /api/v1/sessions/{id}/fork
+    GET    /api/v1/sessions/{id}/dialogs         (pending extension dialogs)
+    POST   /api/v1/sessions/{id}/dialogs/{dialog_id}/answer
     POST   /api/v1/sessions/{id}/stable
     POST   /api/v1/sessions/{id}/release
     GET    /api/v1/sessions/{id}/events            (SSE; Last-Event-ID resume)
@@ -31,26 +33,33 @@ never leaked; file paths cannot escape the session dirs). The LLM key is
 env-only (invariant 5) — never in any request or response. SSE: monotonic integer
 ids per session; replay from the bounded ring via Last-Event-ID/?after=;
 a position past the ring edge is a ``gap`` event (client re-syncs via
-the API — never partial data); a slow consumer that lets the ring pass
-the cap pauses the RUN. No caps: uploads/downloads stream to/from disk.
+the API — never partial data). The run NEVER feeds back on delivery: a
+slow consumer that falls behind the ring simply gets a gap — the run
+continues to completion (invariant 4). No caps: uploads/downloads stream
+to/from disk.
+
+Extension dialogs (select/confirm/input/editor) park in the session's
+process until the human answers (or aborts): the pending set is listed
+via GET .../dialogs and answered via POST .../dialogs/{id}/answer. pi
+may resolve one on its own (its timeout, or an abort); the run's
+settle sweeps the park and publishes `extension_dialog_resolved`.
+A dialog dies with its process; nothing survives a respawn.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import signal
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.api.sse import SseHub
+from app.api.sse import HEARTBEAT, SseHub, stream_events
 from app.delivery.service import Delivery
 from app.delivery.store import DeliveryError, FileNotDelivered, sniff_mime
 from app.iso.spawn import slot_identity
@@ -84,6 +93,12 @@ class ReleaseBody(BaseModel):
     reason: str = "user close"
 
 
+class DialogAnswerBody(BaseModel):
+    value: str | None = None
+    confirmed: bool | None = None
+    cancelled: bool = False
+
+
 class ForkBody(BaseModel):
     entry_id: str
 
@@ -111,6 +126,11 @@ def _row_dict(r: SessionRow, lc: Lifecycle) -> dict:
         and not live.driver.exited
         and live.driver.run_active
     )
+    dialogs_pending = (
+        len(live.driver.pending_dialogs)
+        if live is not None and live.driver is not None and not live.driver.exited
+        else 0
+    )
     return {
         "id": r.id,
         "display_name": r.display_name,
@@ -125,6 +145,7 @@ def _row_dict(r: SessionRow, lc: Lifecycle) -> dict:
         "new_extensions": list(r.new_extensions),
         "last_activity": r.last_activity,
         "live_process": live is not None and live.driver is not None and not live.driver.exited,
+        "dialogs_pending": dialogs_pending,
     }
 
 
@@ -411,43 +432,14 @@ def build_app(app_state, cfg) -> FastAPI:
         async def gen():
             try:
                 yield ":servitor\n\n"
-                if gap:
-                    # the requested position was evicted from the ring:
-                    # the client must re-sync from the API, not guess
-                    yield _sse_frame("gap", json.dumps({"after": start}), None)
-                    cursor = hub.latest_id
-                    hub.consume(sub, cursor)
-                else:
-                    cursor = start
-                for e in replay:
-                    if await request.is_disconnected():
-                        return
-                    yield _sse_frame(e.name, e.data, e.id)
-                    cursor = e.id
-                hub.consume(sub, cursor)
-                while True:
-                    if await request.is_disconnected():
-                        return
-                    try:
-                        await asyncio.wait_for(
-                            hub.wait_new(cursor), timeout=cfg.heartbeat_secs
-                        )
-                    except asyncio.TimeoutError:
+                async for name, data, eid in stream_events(
+                    hub, sub, start, replay, gap,
+                    request.is_disconnected, cfg.heartbeat_secs,
+                ):
+                    if name == HEARTBEAT:
                         yield ":hb\n\n"
-                        continue
-                    if hub.closed:
-                        # the stop path closed the hub (SIGTERM drain):
-                        # end the stream — the client's EventSource
-                        # auto-reconnects (?after=<cursor> resumes)
-                        return
-                    batch = hub.events_after(cursor)
-                    for e in batch:
-                        if await request.is_disconnected():
-                            return
-                        yield _sse_frame(e.name, e.data, e.id)
-                    if batch:
-                        hub.consume(sub, batch[-1].id)
-                        cursor = batch[-1].id
+                    else:
+                        yield _sse_frame(name, data, eid)
             finally:
                 hub.unsubscribe(sub)
 
@@ -467,8 +459,6 @@ def build_app(app_state, cfg) -> FastAPI:
         return {
             "ok": True,
             "latest_id": hub.latest_id,
-            "paused": hub.paused,
-            "pause_count": hub.pause_count,
             "buffered_bytes": hub.buffered_bytes,
             "unconsumed_bytes": hub._unconsumed_bytes(),
         }
@@ -531,6 +521,39 @@ def build_app(app_state, cfg) -> FastAPI:
             raise HTTPException(status_code=404, detail="no such file")
         mime = await asyncio.to_thread(sniff_mime, str(p))
         return FileResponse(str(p), media_type=mime, filename=filename)
+
+    # ------------------------------------------------------------------ #
+    # extension dialogs (the run waits on the human; the dialog dies with
+    # the process)
+    # ------------------------------------------------------------------ #
+
+    @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/dialogs")
+    async def list_dialogs(sid: str):
+        """Pending extension dialogs (select/confirm/input/editor). The
+        full record (title/options/prefill) is here; the SSE event is
+        only the notification. 409 when the process is dead — a dialog
+        cannot outlive its child, so an empty list is the only answer."""
+        _get_row(app_state, sid)
+        driver = _live_driver(app_state, sid)
+        return {"dialogs": list(driver.pending_dialogs.values())}
+
+    @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/dialogs/{{dialog_id}}/answer")
+    async def answer_dialog(sid: str, dialog_id: str, body: DialogAnswerBody):
+        """Answer a parked dialog: value (select/input/editor) or
+        confirmed (confirm) or cancelled — the child unblocks and the
+        run resumes. Unknown id ⇒ 404 (already answered, or resolved
+        by the pi-side timeout/abort and swept at the run's settle)."""
+        _get_row(app_state, sid)
+        driver = _live_driver(app_state, sid)
+        try:
+            await driver.answer_dialog(
+                dialog_id, value=body.value, confirmed=body.confirmed,
+                cancelled=body.cancelled,
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="no pending dialog with that id")
+        app_state.lc.events.add(sid, "extension_dialog_answered", dialog_id)
+        return {"ok": True}
 
     # ------------------------------------------------------------------ #
     # panel (Portcullis) — the exact whitelist, nothing else

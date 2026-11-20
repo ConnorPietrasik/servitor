@@ -1,4 +1,5 @@
 import type {
+  DialogsResp,
   FilesResp,
   MessagesResp,
   SessionRow,
@@ -63,6 +64,19 @@ export const fork = (sid: string, entryId: string) =>
     },
   );
 
+// ---- extension dialogs (the run waits on the human) ----
+export const getDialogs = (sid: string) =>
+  jget<DialogsResp>(`/api/v1/sessions/${sid}/dialogs`);
+export const answerDialog = (
+  sid: string,
+  dialogId: string,
+  body: { value?: string; confirmed?: boolean; cancelled?: boolean },
+) =>
+  jpost<{ ok: boolean }>(
+    `/api/v1/sessions/${sid}/dialogs/${dialogId}/answer`,
+    body,
+  );
+
 // ---- files ----
 export const listFiles = (sid: string) => jget<FilesResp>(`/api/v1/sessions/${sid}/files`);
 
@@ -117,6 +131,9 @@ export function subscribeEvents(
     "interrupted",
     "released",
     "new_extension",
+    "extension_dialog",
+    "extension_dialog_answered",
+    "extension_dialog_resolved",
     "file_uploaded",
     "gap",
   ];

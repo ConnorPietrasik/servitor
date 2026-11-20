@@ -5,6 +5,10 @@ cumulative message_update semantics (each update carries the whole
 accumulated message) bound a single context window's SSE volume far
 below 50 MB, so exercising the mechanism end-to-end at 50 MB in one
 run is impossible by construction.
+
+The ring is a replay buffer only: the run never feeds back on delivery
+(invariant 4). A slow consumer falls behind the ring, gets a gap, and
+re-syncs via the API — the hub never blocks it or the run.
 """
 from __future__ import annotations
 
@@ -18,13 +22,11 @@ def test_default_cap_is_50mb():
     assert EVENT_BUFFER_CAP == 50 * 1024 * 1024
     hub = SseHub("s1")
     assert hub.cap == 50 * 1024 * 1024
-    assert hub.resume_threshold == 25 * 1024 * 1024
 
 
-def test_custom_cap_and_threshold():
+def test_custom_cap():
     hub = SseHub("s1", cap_bytes=1024 * 1024)
     assert hub.cap == 1024 * 1024
-    assert hub.resume_threshold == 512 * 1024
 
 
 def test_ids_are_monotonic_and_gap_detected():
@@ -43,29 +45,54 @@ def test_ids_are_monotonic_and_gap_detected():
     assert gap2 is True, "a position evicted from the ring must be a gap"
 
 
-def test_never_evict_ahead_of_live_consumer():
-    """With a live consumer, events it has not received are NEVER
-    evicted — the run pauses instead (the gate exercises this
-    end-to-end; here: the ring keeps everything the consumer lacks)."""
+def test_slow_consumer_is_evicted_and_gets_a_gap():
+    """A live consumer that falls behind by more than the cap is evicted
+    (the ring stays bounded) — never does the hub (or the run) wait for
+    it. gap_before() is what the stream uses to emit the ``gap`` event;
+    a fresh subscribe at the evicted position also reports the gap.
+    This is the owner's long-task contract: start a run, power the phone
+    off, the run finishes unattended."""
     hub = SseHub("s1", cap_bytes=1000)
     hub.publish("t", {"i": 0})
     sub, _, _ = hub.subscribe(after_id=0)
     hub.consume(sub, 1)  # the consumer has event 1
     for i in range(2, 60):
         hub.publish("t", {"i": i, "pad": "x" * 100})
-    # the consumer is behind by far more than the cap: the hub pauses
-    # (no driver attached: pause is recorded, not actioned) and the
-    # ring still holds everything after the consumer's position
-    assert hub.paused is True
-    missing = hub.events_after(1)
-    assert [e.id for e in missing] == list(range(2, 60))
-    # catch-up: consume + ack resumes
-    hub.consume(sub, 59)
-    assert hub.paused is False
-    assert hub.pause_count == 1
-    # now the ring can evict what everyone has
-    hub._evict_delivered()
+    # bounded despite the behind consumer:
+    assert hub.buffered_bytes <= 1000 + 200  # cap + the newest event
+    # the stream detects the skip:
+    assert hub.gap_before(1) is True
+    # and a re-subscribe at the evicted position is a gap (re-sync):
+    _, _, gap = hub.subscribe(after_id=1)
+    assert gap is True
+
+
+def test_gap_before_false_while_consumer_is_current():
+    hub = SseHub("s1", cap_bytes=1000)
+    for i in range(5):
+        hub.publish("t", {"i": i})
+    assert hub.gap_before(0) is False  # event 1 is still in the ring
+    assert hub.gap_before(4) is False  # current
+    assert hub.gap_before(5) is False  # ahead (nothing missing)
+    # consume everything, then evict the delivered prefix:
+    sub, _, _ = hub.subscribe(after_id=0)
+    hub.consume(sub, 5)
+    hub._evict()
     assert hub.buffered_bytes == 0
+    assert hub.gap_before(5) is False  # empty ring: nothing to gap on
+
+
+def test_consumed_events_are_evicted():
+    """Events every live consumer already received are freed immediately
+    (the ring holds the undelivered tail + the resume window)."""
+    hub = SseHub("s1", cap_bytes=10_000)
+    for i in range(10):
+        hub.publish("t", {"i": i})
+    sub, _, _ = hub.subscribe(after_id=0)
+    hub.consume(sub, 10)
+    hub._evict()
+    assert hub.buffered_bytes == 0
+    assert hub.latest_id == 10
 
 
 def test_no_consumer_evicts_to_cap():
@@ -74,8 +101,9 @@ def test_no_consumer_evicts_to_cap():
         hub.publish("t", {"i": i, "pad": "x" * 100})
     # bounded without consumers
     assert hub.buffered_bytes <= 1000 + 200  # cap + the newest event
-    assert hub.paused is False
-    assert hub.pause_count == 0
+    # the newest event always survives (the publisher keeps it):
+    assert hub.latest_id == 50
+    assert hub.ring_snapshot()[-1]["id"] == 50
 
 
 def test_wait_new_wakes_on_publish():

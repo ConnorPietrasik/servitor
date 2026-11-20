@@ -13,6 +13,7 @@ export interface SessionRow {
   new_extensions: string[];
   last_activity: number | null;
   live_process: boolean;
+  dialogs_pending: number; // extension dialogs waiting on the human
 }
 
 export interface ToolCall {
@@ -63,6 +64,24 @@ export interface UploadRow {
 export interface FilesResp {
   outbox: OutboxFile[];
   uploads: UploadRow[];
+}
+
+// --- extension dialogs (the run blocks until the human answers or
+// aborts; the dialog dies with the process) ---
+
+export interface ExtensionDialog {
+  id: string;
+  method: "select" | "confirm" | "input" | "editor";
+  title?: string;
+  message?: string;
+  options?: string[];
+  placeholder?: string;
+  prefill?: string;
+  timeout?: number; // ms; pi auto-resolves with undefined when it elapses
+}
+
+export interface DialogsResp {
+  dialogs: ExtensionDialog[];
 }
 
 // --- SSE (the live tail; the UI NEVER replays — it fetches, then

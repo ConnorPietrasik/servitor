@@ -609,3 +609,51 @@ a {
 .ctxmenu button:active {
   background: var(--line);
 }
+
+/* ---- extension dialogs (the run waits on the human) ---- */
+.dialogs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 12px;
+}
+
+.dialog-card {
+  flex-direction: column;
+  align-items: stretch;
+  border-color: var(--warn, #b98900);
+}
+
+.dialog-title {
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dialog-msg {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.dialog-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.mini-hint {
+  color: var(--muted);
+  font-size: 12px;
+  align-self: center;
+}
