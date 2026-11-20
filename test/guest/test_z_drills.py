@@ -82,9 +82,9 @@ def skip_if_update_would_move() -> None:
 
     def _npm_versions(pkg: str) -> list[str]:
         # the SAME registry input the update's float reads. npm unreachable
-        # is "cannot certify the world is current", not "the world moved" —
-        # skip (this is the DRILL's skip decision; the update's own
-        # no-movement fail-safe lives in resolve_target).
+        # is "cannot certify the world is current", not "the world moved"
+        # — skip (the update's own no-movement fail-safe lives in
+        # resolve_target).
         r = subprocess.run(["npm", "view", pkg, "versions", "--json"],
                            capture_output=True, text=True)
         if r.returncode != 0 or not r.stdout.strip():
@@ -226,15 +226,13 @@ def test_update_fault_injected_rollback(guest: GuestVM):
     require_root_or_skip()
     # the drill exercises the SHAPE-only rollback path: if the float would
     # move a version line or the image outgrew the floor, guest.update() is
-    # a real update (gate + rebuild + swap — swap_image would target the
-    # host's 'servitor' domain) — skip, like the no-op drill above.
+    # a real update — skip.
     skip_if_update_would_move()
     active_before = guest.run("readlink /var/lib/servitor/config/active").strip()
     r = guest.update(SERVITOR_TEST_CONFIG_FAULT="bork")
     # the update's own verify step must have caught the red doctor and
-    # rolled back: final exit 0 with the rollback reported. The success
-    # marker on stdout is "ROLLED BACK" (the "AUTOMATIC ROLLBACK" trigger
-    # line goes to stderr, so it cannot be the success signal)
+    # rolled back. The success marker on stdout is "ROLLED BACK" (the
+    # trigger line goes to stderr, so it cannot be the success signal)
     assert r.returncode == 0, (
         f"update (fault) did not recover:\n{r.stdout[-4000:]}")
     assert "ROLLED BACK" in r.stdout, f"expected the rollback path, got:\n{r.stdout[-3000:]}"

@@ -5,15 +5,14 @@
 # synced tree's own venv — the doctor is part of the deployed app), then
 # the ONE live probe only the host can make:
 #   open — the host (inside SERVITOR_EDGE_SUBNET) reaches SERVITOR_PORT
-#          (live TCP connect — the only check anywhere that proves edge
-#          ingress reachability: the app's tick path runs the doctor
-#          in-guest and cannot probe its own ingress from the edge).
+#          (live TCP connect — the only check that proves edge ingress
+#          reachability: the app's tick path runs the doctor in-guest and
+#          cannot probe its own ingress from the edge).
 # The ruleset CONTENT (default-deny, port admitted from the edge subnet
 # only) is certified guest-side by app.doctor's firewall.ruleset /
 # firewall.port checks — asserting the same nft state again over the same
-# ssh a few seconds later would add nothing (and the guest's own IP IS in
-# the edge subnet by design, so a live negative probe from it is
-# impossible — the content assertion is the right form).
+# ssh would add nothing (and the guest's own IP IS in the edge subnet by
+# design, so a live negative probe from it is impossible).
 # Doctor must be green before the service starts serving and after every
 # sync; while the update-waiting flag is set, the guest doctor certifies
 # the running state and reports the staged target as a warning.
@@ -24,9 +23,8 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$REPO/.env"
 SSH_TARGET=""
-# ${HOME:-/root}: panel-do's scrubbed env has no HOME (and set -u would die
-# on a bare $HOME here, before --deploy-key is parsed); /root/.srv is the
-# canonical root-side home, and the flag overrides anyway.
+# ${HOME:-/root}: panel-do's scrubbed env has no HOME (set -u would die on a
+# bare $HOME); /root/.srv is the canonical root-side home.
 DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME:-/root}/.srv/deploy_key}"
 
 while [[ $# -gt 0 ]]; do
@@ -67,8 +65,7 @@ echo "=== doctor: firewall probe (host-side) ==="
 PROBE_RC=0
 # open: from the host (edge subnet) -> the port is admitted end-to-end
 # (routing + nft input chain + app listening). The ruleset CONTENT is the
-# guest doctor's job (firewall.ruleset / firewall.port — same nft state,
-# asserted seconds earlier in the same run).
+# guest doctor's job (asserted seconds earlier in the same run).
 if timeout 5 bash -c "exec 3<>/dev/tcp/${SERVITOR_VM_IP}/${SERVITOR_PORT}" 2>/dev/null; then
   echo "PASS  firewall.probe_open   — port ${SERVITOR_PORT} open from ${SERVITOR_VM_IP} (edge subnet)"
 else

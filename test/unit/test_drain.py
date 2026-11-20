@@ -1,10 +1,6 @@
 """The app's stop-path drain (lifecycle.shutdown) — three phases, ONE
 budget.
 
-The sequential design (one child's full abort + EOF grace + TERM grace
-before the next child was even notified) bounded the stop by
-N × ~101 s for N live sessions: two stuck children rode the unit's
-TimeoutStopSec (120 s) out to the SIGKILL that aborts the drain itself.
 The contract under test:
 
 - the per-session order stays load-bearing: the abort travels over
@@ -22,8 +18,7 @@ The contract under test:
   grace), KILL instant — worst case ≈ 100 s < TimeoutStopSec (120 s),
   independent of N.
 
-Fake drivers stand in for the pi children (no subprocess, no root — the
-same shadow pattern as test_session_waiters / test_update_gate);
+Fake drivers stand in for the pi children (no subprocess, no root);
 Lifecycle is built with __new__, the registry is real (sqlite).
 """
 from __future__ import annotations

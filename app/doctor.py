@@ -1,28 +1,21 @@
 """servitorctl doctor — the deploy gate.
 
-Certifies the guest, read-only (with respect to the DEPLOYED
-artifacts: config, image, env file), with a pass/fail report. Runs as
-root on the guest, invoked from the host by ``deploy/doctor.sh`` and,
-in-process, by the app's update tick (the deferred-doctor path):
+Certifies the guest, read-only with respect to the deployed artifacts
+(config, image, env file), with a pass/fail report. Runs as root on the
+guest, invoked from the host by ``deploy/doctor.sh`` and in-process by
+the app's update tick:
 
     .venv/bin/python -m app.doctor --state ROOT [--config-src DIR]
         [--pi-node BIN --pi-cli JS --pi-ext DIR] [--toolkit DIR]
         [--slots slot1,...] [--skip-spawn]
 
-Env-derived values (keys, subnets) come from the environment — the
-0600 env file the service loads; the key rides env only, as
-everywhere, and is never written to the report.
-
-The stateful checks (no-prompt spawn, then one live run on the same
-probe session) create a real session and release it again: the
-no-prompt part certifies that spawning works, resolves a usable model
-WITHOUT a model call, and that the launch line, the RO bind, and the
-extension set are exactly as the image declares; the live run certifies
-what no control command can — that a REAL model call leaves the VM
-(VM -> edge -> router -> model), and, when EXA_API_KEY is present,
-that public egress + the search extension work: the one prompt makes
-the agent search the web, so both ride the same run (one settle wait,
-fewer model calls). LLM-key-gated; the search leg is EXA-key-gated.
+Env-derived values (keys, subnets) come from the 0600 env file; keys
+ride env only and are never written to the report. The stateful checks
+(no-prompt spawn, then one live run) create a real probe session and
+release it: the live run certifies a REAL model call leaving the VM
+(VM -> edge -> router -> model) and, with EXA_API_KEY, public egress +
+the search extension (one prompt, both jobs). LLM-key-gated; the
+search leg is EXA-key-gated.
 
 Exit: 0 = green (warnings allowed), 1 = at least one FAIL.
 """
@@ -83,9 +76,7 @@ def _sh(cmd: list[str]) -> tuple[int, str]:
 
 
 def _msg_text(m: dict[str, Any]) -> str:
-    """Flatten a raw pi message (driver.get_messages() shape) to its text.
-    The doctor reads driver messages directly — NOT the API's transcript
-    mapping — so content parts are joined here, once."""
+    """Flatten a raw pi message (driver.get_messages() shape) to its text."""
     c = m.get("content")
     if isinstance(c, str):
         return c
@@ -126,17 +117,11 @@ def check_state_fs(rep: Report, root: str) -> None:
 
 
 def check_state_mount(rep: Report, root: str) -> None:
-    # The state volume contract is a separate ext4 DISK (the guest: the
-    # LABEL=servitor-state mount). The fstype check alone cannot catch a
-    # MISSING disk: the unmounted fallback dir is on the 24G root disk,
-    # which is also ext4 — the state would silently live there.
-    # findmnt --mountpoint (exact match), NOT -T: -T reports the mount
-    # CONTAINING the path, so the fallback dir on the root fs would pass
-    # with the root device — the missing disk is the case to catch.
-    # WARN, not FAIL: laptop dev uses a plain dir on the home fs by design
-    # (no mount), so the check must not red-light that; on the guest it is
-    # the operator-visible signal that INSTALL.md step 5 (the state disk)
-    # was skipped.
+    # The state volume contract is a separate ext4 DISK. The fstype check
+    # alone cannot catch a MISSING disk: the unmounted fallback dir is on
+    # the 24G root disk, which is also ext4. findmnt --mountpoint (exact
+    # match), NOT -T. WARN, not FAIL: laptop dev uses a plain dir by
+    # design; on the guest it signals INSTALL.md step 5 was skipped.
     code, out = _sh(["findmnt", "--mountpoint", root, "-n", "-o", "SOURCE"])
     src = out.strip().splitlines()[0] if code == 0 and out.strip() else ""
     if src:
@@ -184,15 +169,14 @@ def check_config_version(rep: Report, config_root: str) -> None:
         rep.add("config.active", PASS, f"active pointer -> {v} (dir exists)")
     else:
         rep.add("config.active", FAIL, f"active pointer -> {v} but {d} missing")
-        return  # the dir is gone; the per-file checks below would be noise
+        return  # the dir is gone; the per-file checks would be noise
     for name in ("SYSTEM.md", "models.json", "settings.json"):
         if not (Path(d) / name).exists():
             rep.add(f"config.file.{name}", FAIL, f"{d}/{name} missing from the active config")
             return
     rep.add("config.files", PASS, "SYSTEM.md + models.json + settings.json present")
-    # JSON validity: a truncated/appended artifact (the fault drill's exact
-    # corruption) must fail HERE with a named check, not inside the spawn
-    # check's models parse where the report would blame the spawn
+    # JSON validity: a truncated artifact must fail HERE with a named
+    # check, not inside the spawn check's models parse
     for name in ("models.json", "settings.json"):
         try:
             json.loads((Path(d) / name).read_text())
@@ -218,8 +202,7 @@ def check_slots(rep: Report, slot_names: list[str]) -> None:
         rep.add("slots.users", FAIL, f"missing slot users: {missing}")
         return
     rep.add("slots.users", PASS, f"{len(slot_names)} slot users present")
-    # no root-owned files inside slot-owned trees (the sweep invariant):
-    # the slot homes are the only slot trees that persist
+    # no root-owned files inside slot-owned trees (the sweep invariant)
     code, out = _sh([
         "find", "/home",
         "-maxdepth", "1", "-type", "d", "-name", "slot*", "-user", "root",
@@ -308,11 +291,10 @@ def check_firewall_rules(rep: Report) -> None:
 
 
 def check_ui(rep: Report) -> None:
-    """The chat UI is served by the app itself (static, same port): a GET /
-    on the app's bind address must answer 200. If ui/dist is missing from
-    the deployed tree, the SPA fallback never registers and / is a bare
-    FastAPI 404 — the API stays healthy, so only this check sees it (the
-    portcullis edge probe only ever sees Authelia's 302)."""
+    """The chat UI is served by the app itself (static, same port): GET /
+    on the app's bind address must answer 200. If ui/dist is missing
+    from the deployed tree, / is a bare FastAPI 404 while the API stays
+    healthy — only this check sees it."""
     bind = optional_env("SERVITOR_BIND") or ""
     port = optional_env("SERVITOR_PORT") or ""
     if not bind or not port:
@@ -363,8 +345,8 @@ def check_keys_absent(rep: Report, args: argparse.Namespace, root: str) -> None:
     if not needles:
         rep.add("keys.absent", WARN, "no key values in env — sweep skipped")
         return
-    # sweep roots: the synced tree (config versions + lib), session files,
-    # the app log dir. Key MATERIAL (values) must be nowhere.
+    # sweep roots: the synced tree, session files, the app log dir.
+    # Key values must be nowhere.
     roots = [f"{root}/config", f"{root}/lib", f"{root}/sessions"]
     log_dir = "/var/log/servitor"
     if os.path.isdir(log_dir):
@@ -374,10 +356,9 @@ def check_keys_absent(rep: Report, args: argparse.Namespace, root: str) -> None:
         if not os.path.isdir(r):
             continue
         for needle in needles:
-            # one needle PER grep: `grep -rIl -- a b root` would take the
-            # second needle as a FILE argument (grep: <key>: No such file
-            # or directory) and treat the error line as a hit — and the
-            # error line ECHOES the key value into the report
+            # one needle PER grep: multiple would make grep take the second
+            # as a FILE argument, and the error line echoes the key value
+            # into the report
             code, out = _sh(["grep", "-rIl", "-e", needle, "--", r])
             if code != 0:  # 1 = no match, 2 = error: never a hit
                 continue
@@ -421,22 +402,13 @@ class ProbeLockTimeout(Exception):
 
 @asynccontextmanager
 async def _probe_lock(state_root: str, timeout: float = 240.0):
-    """Serialize the stateful probe section across CONCURRENT doctors.
-
-    The host doctor.sh and the app tick's inline doctor (the
-    post-restart path) can run at the same moment — a shape-changing sync
-    runs its own post-deploy doctor while the tick may be applying a flag.
-    Both probes would use the probe uid, and a release's sweep deletes
-    EVERYTHING that uid owns — including the other probe's live workdir.
-    One lock on the state volume (visible to both paths). The probe is
-    ~1–5 min with the live run (one prompt that searches the web, 300 s
-    budget) — so the second doctor usually CANNOT wait out a concurrent
-    probe AND still finish its own live run inside the capped doctor
-    budget (600 s subprocess: the panel action, the app tick). The
-    default deadline (240 s) is set to fail the spawn check with a
-    re-run hint BEFORE that cap can kill the process silently; an
-    unbounded manual run fails the same way at 240 s (waiting out the
-    full concurrent probe would leave no time for its own live run)."""
+    """Serialize the stateful probe section across concurrent doctors
+    (host doctor.sh and the app tick's inline doctor). Both probes use
+    the probe uid, and a release's sweep deletes EVERYTHING that uid
+    owns. The 240 s deadline fails the spawn check with a re-run hint
+    before the capped doctor budget (600 s) can kill the waiter
+    silently — waiting out the full concurrent probe would leave no
+    time for its own live run."""
     import fcntl as _fcntl
 
     lock_path = f"{state_root.rstrip('/')}/.doctor-probe.lock"
@@ -478,7 +450,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
     # the probe slot is outside the app's pool by contract: a probe on an
     # app slot would race the service's uid-gated kills (boot reconciliation
     # after a tick restart SIGTERMs every process of a slot uid that owns a
-    # live row — the probe's own row) and died intermittently, code -15
+    # live row — the probe's own row)
     if args.probe_slot in args.slots:
         rep.add(
             "spawn.probe_slot",
@@ -500,8 +472,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
 
     state = state_paths(args.state)
     registry = Registry(args.registry or f"{args.state}/registry.db")
-    # pool of the probe slot ONLY: the probe is the sole user of it, and the
-    # app's pool (slot1-16) can never see it
+    # pool of the probe slot ONLY: the probe is the sole user of it
     pool = SlotPool((args.probe_slot,))
     api_key = os.environ.get(args.api_key_env, "")
     lc = Lifecycle(
@@ -519,15 +490,12 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
             update_pending_path="",
         )
     )
-    # stale probe rows from a previous doctor that died mid-probe (a SIGKILL
-    # leaves the row un-released and, possibly, a live pi child on the probe
-    # uid): ONLY the doctor can clean them up (the app's pool does not
-    # include the probe slot, so its reconciliation/GC never look at it).
-    # Rebuild the pool view (as the app's boot reconciliation does for its
-    # slots), then the normal release path: ladder (kills any stray pi
-    # child), sweep, free. A row already CLEANING (the previous doctor died
-    # mid-release) cannot re-enter draining (the registry forbids it): clean
-    # it physically and close the state machine by idempotent transition.
+    # stale probe rows from a previous doctor that died mid-probe: ONLY the
+    # doctor can clean them up (the app's pool does not include the probe
+    # slot). Rebuild the pool view, then the normal release path: ladder
+    # (kills any stray pi child), sweep, free. A row already CLEANING
+    # cannot re-enter draining: clean it physically and close the state
+    # machine by idempotent transition.
     for row in registry.list_sessions(include_released=False):
         if row.slot != args.probe_slot or row.state == FREE:
             continue
@@ -570,7 +538,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
         except Exception as e:
             rep.add("spawn.stale_probe", WARN, f"stale probe row {row.id[:8]} not released: {e}")
     # the spawn uses the ACTIVE config pointer (require_active_dir);
-    # check_config_version already certifies the pointer exists + parses
+    # check_config_version already certifies it exists + parses
     t0 = time.monotonic()
     sid: str | None = None
     try:
@@ -600,7 +568,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
             rep.add("spawn.key_off_argv", FAIL, "the key appears on argv")
         elif api_key:
             rep.add("spawn.key_off_argv", PASS, "key rode env only")
-        # no model call, ever: get_available_models (control command)
+        # no model call, ever: get_available_models is a control command
         try:
             models = await driver.get_available_models()
         except Exception as e:
@@ -618,10 +586,8 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
         else:
             rep.add("spawn.models", FAIL, f"provider/baseUrl not listed: {blob[:300]}")
         # the no-prompt spawn must resolve a USABLE model (the app's own
-        # fail-closed signal: model.id == "unknown" == no usable model).
-        # No specific id or context window is pinned: the agent cannot
-        # change models, and which model the fleet serves is the fleet's
-        # business — the live prompt below proves the router serves it.
+        # fail-closed signal: model.id == "unknown"). No id or context
+        # window pin: the live prompt below proves the router serves it.
         try:
             model = await driver.assert_model_usable()
         except Exception as e:
@@ -676,25 +642,16 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
         else:
             rep.add("spawn.extensions", PASS, f"loaded set == baseline ({list(loaded) or 'none'})")
         # ---- live run (THE integration gate) -----------------------------
-        # Every check above makes NO network call: spawn + control
-        # commands prove the agent starts and resolves a model, but the
-        # classic deploy failures (hairpin NAT on the router's public
-        # name, a dead key, a broken router path, a dead PUBLIC egress
-        # path) only surface when a REAL model call leaves the VM. One
-        # live run end to end certifies VM -> edge -> router -> model
-        # (deploy/README: "one live prompt end-to-end … is THE
-        # integration gate"). ONE prompt does both jobs: it makes the
-        # agent search the web, so the same run certifies public egress
-        # + the installed pi-web-access (the model router is reached
+        # Everything above makes NO network call: classic deploy failures
+        # (hairpin NAT on the router's public name, a dead key, a broken
+        # router path, a dead PUBLIC egress path) only surface when a REAL
+        # model call leaves the VM. ONE prompt does both jobs: it makes the
+        # agent search the web, so the same run certifies public egress +
+        # the installed pi-web-access (the model router is reached
         # edge-internally — a dead public path looks green to the
-        # no-prompt gate — while one Exa round trip sees it). Two report
-        # lines, one settle wait, fewer model calls. Conformance asserts
-        # the key plumbing statically and defers the live round trip to
-        # the doctor (test/conformance/test_key_plumbing.py).
-        # Key-gated: env.llm_key already FAILs the doctor without the
-        # LLM key; without EXA_API_KEY (env.exa_key already WARNs —
-        # search disabled is degraded, not failed) the run degrades to
-        # the echo-only prompt and spawn.live_search is not reported.
+        # no-prompt gate). Two report lines, one settle wait.
+        # Key-gated: without EXA_API_KEY the run degrades to the echo-only
+        # prompt and spawn.live_search is not reported.
         exa_key = os.environ.get(args.exa_key_env, "")
         if api_key:
             prompt_text = (
@@ -704,17 +661,15 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
                 if exa_key else "Reply with exactly: SERVITOR-LIVE-OK")
             t1 = time.monotonic()
             try:
-                # prompt_and_wait_settled installs the settle waiter
-                # BEFORE the prompt (a fast run can settle between the
-                # prompt's reply and a post-hoc waiter) and discards it
-                # on timeout/rejection. 300 s: two model turns + one Exa
-                # round trip — real calls.
+                # prompt_and_wait_settled installs the settle waiter BEFORE
+                # the prompt (a fast run can settle between the prompt's
+                # reply and a post-hoc waiter). 300 s: two model turns +
+                # one Exa round trip.
                 disposition, aborted = await driver.prompt_and_wait_settled(
                     prompt_text, timeout=300)
                 if disposition == "handled":
                     # pi consumed the prompt WITHOUT starting a run —
-                    # there is no model call to certify. A precise
-                    # failure here, not a 300 s settle timeout that
+                    # a precise failure, not a 300 s settle timeout that
                     # would blame key/router/egress.
                     rep.add(
                         "spawn.live_prompt", FAIL,
@@ -756,9 +711,8 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
                         # Match the SEARCH tool by name, not just any
                         # successful toolResult: a file/bash success would
                         # otherwise certify egress. `web_search` is the
-                        # extension's tool name per the conformance contract
-                        # (test_tools_array.py) — a rename shows up here as
-                        # FAIL, which is the point.
+                        # extension's contract tool name — a rename shows
+                        # up here as FAIL, which is the point.
                         ok = [
                             m for m in msgs
                             if m.get("role") == "toolResult"
@@ -832,9 +786,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--toolkit", default=_dep["SERVITOR_TOOLKIT_DIR"] or "/opt/toolkit")
     p.add_argument("--slots", default=",".join(f"slot{i}" for i in range(1, 17)))
     p.add_argument("--probe-slot", default=None,
-                   help="the slot the no-prompt spawn probe uses (default: the "
-                        "image's dedicated probe slot slot0 — outside --slots, "
-                        "which the app's pool owns)")
+                   help="slot for the no-prompt spawn probe (default: the image's "
+                        "dedicated slot0 — outside --slots, which the app's pool owns)")
     p.add_argument("--api-key-env", default="OMNISSIAH_API_KEY")
     p.add_argument("--exa-key-env", default="EXA_API_KEY")
     p.add_argument("--baseline-ext", action="append", default=[])

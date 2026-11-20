@@ -1,32 +1,17 @@
 """PiSession — one `pi --mode rpc` subprocess per conversation.
 
-Protocol rules encoded here (all verified against pi 1.5.2, docs/rpc.md,
-docs/rpc-commands.md, docs/json.md):
-
-- JSONL over stdio; LF-only framing (framer.py); correlate by ``id``.
-- Subscribe (start the stdout dispatcher) BEFORE prompting — structural:
-  the reader task starts in :meth:`PiSession.start`, before any command
-  can be sent.
-- stdout is protocol-only; stderr is captured (logged, NEVER parsed).
-- ``prompt`` response ``disposition``: ``started`` | ``queued`` |
-  ``handled``. ``handled`` = consumed, no run started — do NOT wait for
-  ``agent_settled``. Otherwise the run ends at ``agent_settled`` (not
-  ``agent_end``).
-- A failed prompt response (``success: false``) is TERMINAL. Some failure
-  modes emit zero events (no agent_start, no turn_start, no
-  agent_settled; get_state still success:true and the process idles) — the
-  driver ends the run with the sanitized reason; no automatic retry (a
-  dead credential is a config fault; retrying burns the slot).
-- ``model.id == "unknown"`` is the single no-usable-model signal: the
-  spawn path fails closed on it before any prompt.
-- Orderly shutdown on stdin EOF waits for pending work before exiting —
-  the first rung of the ladder. A second signal exits at once — the
-  SIGKILL rung is what guarantees exit.
-- Extension dialogs (select/confirm/input/editor) block the child until
-  answered: the driver parks them for the human (indefinitely);
-  fire-and-forget records (notify/setStatus/setWidget/setTitle/
-  set_editor_text) are forwarded as events and NEVER answered (a stray
-  reply desynchronizes the sub-protocol).
+Protocol rules (verified against pi 1.5.2, docs/rpc.md, docs/rpc-commands.md,
+docs/json.md): JSONL over stdio with LF-only framing, correlated by ``id``;
+subscribe (start the stdout dispatcher) BEFORE prompting; stdout is
+protocol-only, stderr is captured but never parsed. ``disposition``:
+``started`` | ``queued`` | ``handled`` — ``handled`` means consumed, no run
+started: do NOT wait for ``agent_settled``. A failed prompt response
+(``success: false``) is terminal — no retry. ``model.id == "unknown"`` is
+the single no-usable-model signal. Orderly shutdown on stdin EOF waits for
+pending work (ladder rung 1); a second signal exits at once. Extension
+dialogs block the child until answered; fire-and-forget records are
+forwarded as events and never answered (a stray reply desynchronizes the
+sub-protocol).
 """
 from __future__ import annotations
 
@@ -52,11 +37,8 @@ SettledCallback = Callable[["PiSession", bool], Awaitable[None] | None]
 
 
 class PromptRejected(RuntimeError):
-    """A prompt/steer/follow_up command returned success:false — terminal.
-
-    The run ends with this reason; the process keeps idling (healthy-
-    looking); no retry.
-    """
+    """A prompt/steer/follow_up command returned success:false — terminal;
+    no retry."""
 
     def __init__(self, command: str, reason: str):
         super().__init__(f"{command} rejected: {reason}")
@@ -67,8 +49,7 @@ class PromptRejected(RuntimeError):
 class SpawnFailure(RuntimeError):
     """The process died before/without the protocol coming up, or an
     identity assertion failed. Fatal for the session — route to release,
-    never a retry loop (a missing recorded workdir exits pi with code 1
-    and NO response)."""
+    never a retry loop."""
 
     def __init__(self, reason: str, *, exit_code: int | None = None, stderr_tail: str = ""):
         super().__init__(reason)
@@ -77,9 +58,8 @@ class SpawnFailure(RuntimeError):
 
 
 class ModelUnavailable(RuntimeError):
-    """get_state.model.id == "unknown" — no usable model (models.json
-    absent or credential unresolvable). Config error: fail closed before
-    any prompt."""
+    """get_state.model.id == "unknown" — no usable model. Config error:
+    fail closed before any prompt."""
 
 
 @dataclass(frozen=True)
@@ -93,9 +73,8 @@ class CommandResult:
 class PiSession:
     """One pi subprocess: spawn, commands, events, dialogs, ladder.
 
-    Event flow: every session event is delivered to ``on_event`` (the
-    delivery layer's pump; a listender in tests). Dialogs are
-    delivered to ``on_dialog`` and answered via :meth:`answer_dialog`.
+    Every session event is delivered to ``on_event``; dialogs to
+    ``on_dialog`` and answered via :meth:`answer_dialog`.
     """
 
     def __init__(
@@ -130,7 +109,7 @@ class PiSession:
         self._last_settled_aborted: bool | None = None
         self._exited = asyncio.Event()
         self._exit_code: int | None = None
-        self._run_active = False  # a run is in flight (prompt/steer/follow-up accepted, not yet settled)
+        self._run_active = False  # a run is in flight (not yet settled)
         self._stderr_tail = deque[str](maxlen=4096)
         self._stderr_bytes = 0
         self._stdin_open = False
@@ -138,11 +117,9 @@ class PiSession:
         self._tasks: list[asyncio.Task] = []
         self._parse_errors: list[str] = []
         self._commands_sent: int = 0
-        # backpressure gate: cleared = pause the event stream.
-        # The reader stops draining the child's stdout, the pipe fills, and
-        # pi blocks on write — the RUN pauses (control responses are never
-        # gated, so the control plane stays responsive). Set at all times
-        # unless the delivery layer paused it.
+        # backpressure gate: while cleared, the reader stops draining the
+        # child's stdout, the pipe fills, and pi's run pauses (control
+        # responses are never gated)
         self._events_allowed = asyncio.Event()
         self._events_allowed.set()
         self.events_paused = False
@@ -173,17 +150,14 @@ class PiSession:
 
     @property
     def run_active(self) -> bool:
-        """True while a run is in flight: set when a prompt/steer/
-        follow-up is ACCEPTED (disposition != "handled"), cleared at
-        ``agent_settled`` (abort settles too). The update tick uses
+        """True while a run is in flight: set when a prompt/steer/follow-up
+        is accepted, cleared at ``agent_settled``. The update tick uses
         this: a restart must never land mid-run."""
         return self._run_active
 
     def pause_events(self) -> None:
         """Backpressure: stop draining session events (the run pauses).
-
-        In-flight control responses still flow (they are not gated). Safe
-        to call repeatedly; :meth:`resume_events` re-opens the gate."""
+        In-flight control responses still flow. Idempotent."""
         if not self.events_paused:
             self.events_paused = True
             self._events_allowed.clear()
@@ -200,21 +174,14 @@ class PiSession:
     @property
     def launched_argv(self) -> tuple[str, ...] | None:
         """The argv the kernel actually executed, snapshotted at spawn
-        (None if start() has not run or the child died before the
-        snapshot). See _snapshot_launched_argv for why this must be
-        spawn-time evidence."""
+        (None if start() has not run or the child died first)."""
         return self._launched_argv
 
     async def _snapshot_launched_argv(self, proc) -> tuple[str, ...]:
-        """Read /proc/<pid>/cmdline immediately after spawn.
-
-        Node rewrites its own process title early in startup (pi's
-        process.title becomes "pi"), so /proc/<pid>/cmdline is NOT valid
-        launch-line evidence after the child has booted — the launch line
-        must be captured at spawn. The first non-empty read is the
-        original argv: the setuid preexec ran before the exec, and no JS
-        has executed yet, so nothing could have rewritten the title.
-        """
+        """Read /proc/<pid>/cmdline immediately after spawn: node rewrites
+        its process title early in startup, so /proc/<pid>/cmdline is not
+        valid launch-line evidence after the child has booted. The first
+        non-empty read is the original argv (no JS has executed yet)."""
         for _ in range(150):  # up to ~300 ms for a slow exec to populate
             try:
                 with open(f"/proc/{proc.pid}/cmdline", "rb") as f:
@@ -231,13 +198,9 @@ class PiSession:
         )
 
     async def start(self) -> None:
-        """Spawn setuid, start the dispatcher BEFORE any prompt can go out,
-        and verify the child's uid (done by spawn_setuid).
-
-        A spawn that cannot even exec (stored cwd gone, bad env, exec 127)
-        surfaces as SpawnFailure — the fatal spawn error the caller must
-        NOT retry (a respawn into a missing cwd is a dead session,
-        never a retry loop)."""
+        """Spawn setuid, start the dispatcher before any prompt can go
+        out. A spawn that cannot even exec (stored cwd gone, bad env,
+        exec 127) surfaces as SpawnFailure — fatal, never retried."""
         try:
             proc = await spawn_setuid(
                 list(self.launch.argv),
@@ -254,9 +217,9 @@ class PiSession:
         self._proc = proc
         assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
         self._stdin_open = True
-        # launch-line evidence: what the kernel ran (before node rewrites
-        # the process title). A child that dies before this read is a
-        # fatal spawn error (missing cwd, bad env) — surfaced here.
+        # launch-line evidence: what the kernel ran, before node rewrites
+        # the process title; a child that dies before this read is a fatal
+        # spawn error
         self._launched_argv = await self._snapshot_launched_argv(proc)
 
         # event dispatcher: subscribed before prompting (structural)
@@ -274,14 +237,13 @@ class PiSession:
             for record in framer.split_records(chunk):
                 rtype = record.get("type")
                 if rtype != "response" and rtype != "extension_ui_request":
-                    # session event: gated by the backpressure valve:
-                    # while paused this await blocks, the pipe
-                    # stops draining, and pi's in-flight run pauses.
+                    # session event: gated by the backpressure valve — while
+                    # paused this await blocks and pi's in-flight run pauses
                     await self._events_allowed.wait()
                 self._on_record(record)
 
     async def _stderr_task(self) -> None:
-        """Capture stderr: logged, NEVER parsed as protocol data."""
+        """Capture stderr: logged, never parsed as protocol data."""
         assert self._proc is not None and self._proc.stderr is not None
         while True:
             chunk = await self._proc.stderr.read(65536)
@@ -389,7 +351,7 @@ class PiSession:
         rid = str(record.get("id", ""))
         if method in DIALOG_METHODS:
             # blocks the child until answered — park for the human
-            # (wait indefinitely; never auto-allow, never auto-decline)
+            # (indefinitely; never auto-allow, never auto-decline)
             self._pending_dialogs[rid] = record
             if self.on_dialog:
                 try:
@@ -399,7 +361,7 @@ class PiSession:
                 except Exception:
                     log.exception("on_dialog callback failed")
         elif method in FIRE_AND_FORGET_METHODS:
-            # forward as an event; NEVER send a reply (a stray reply
+            # forward as an event; never send a reply (a stray reply
             # desynchronizes the sub-protocol)
             if self.on_event:
                 try:
@@ -421,11 +383,9 @@ class PiSession:
     async def request(
         self, cmd: dict[str, Any], *, timeout: float | None = None
     ) -> CommandResult:
-        """Send one command, await the correlated response.
-
-        Raises SpawnFailure if the process is gone / dies in flight,
-        asyncio.TimeoutError on timeout.
-        """
+        """Send one command, await the correlated response. Raises
+        SpawnFailure if the process is gone / dies in flight,
+        asyncio.TimeoutError on timeout."""
         if self._exited.is_set():
             raise SpawnFailure(
                 "pi process already exited",
@@ -456,11 +416,9 @@ class PiSession:
         return res.data
 
     async def assert_model_usable(self) -> dict[str, Any]:
-        """The spawn path's fail-closed model check.
-
-        ``model.id == "unknown"`` is the single no-usable-model signal.
-        Returns the model object.
-        """
+        """The spawn path's fail-closed model check: model.id ==
+        "unknown" is the single no-usable-model signal. Returns the model
+        object."""
         data = await self.get_state()
         model = data.get("model")
         if not model or model.get("id") == "unknown":
@@ -518,12 +476,9 @@ class PiSession:
         images: list[dict[str, Any]] | None = None,
         streaming_behavior: str | None = None,
     ) -> str:
-        """Send a prompt; return the disposition.
-
-        ``disposition == "handled"`` => consumed, no run started: do NOT
-        wait for agent_settled. ``success: false`` => terminal
-        PromptRejected (zero-event failures included).
-        """
+        """Send a prompt; return the disposition. ``"handled"`` =>
+        consumed, no run started: do NOT wait for agent_settled.
+        ``success: false`` => terminal PromptRejected."""
         cmd: dict[str, Any] = {"type": "prompt", "message": text}
         if images:
             cmd["images"] = images
@@ -556,24 +511,20 @@ class PiSession:
         return disposition
 
     async def abort(self) -> None:
-        """RPC abort: waits for the session to become idle before responding
-        (rpc-commands.md) — so a successful return means settled-aborted."""
+        """RPC abort: waits for the session to become idle before
+        responding — a successful return means settled-aborted."""
         res = await self.request({"type": "abort"}, timeout=max(self.request_timeout, 120.0))
         if not res.success:
             raise PromptRejected("abort", res.error or "unknown error")
 
     async def wait_settled(self, *, timeout: float | None = None) -> bool:
-        """Wait for agent_settled; return the ``aborted`` flag.
+        """Wait for agent_settled; return the ``aborted`` flag. Raises
+        SpawnFailure if the process dies first. ``timeout=None`` waits
+        forever (no caps — the human controls the run).
 
-        Raises SpawnFailure if the process dies first (a dead process
-        never settles). ``timeout=None`` waits forever (no caps — a
-        20-minute run is normal; the human controls the run).
-
-        Race note: for a prompt whose run may finish before this call is
-        made, install the waiter with :meth:`settle_waiter` BEFORE sending
-        the prompt (the pattern pi's own promptAndWait uses);
-        :meth:`prompt_and_wait_settled` does prompt + pre-installed waiter
-        + cleanup in one call.
+        For a prompt whose run may finish before this call, install the
+        waiter with :meth:`settle_waiter` BEFORE sending the prompt;
+        :meth:`prompt_and_wait_settled` does that in one call.
         """
         fut = self.settle_waiter()
         try:
@@ -610,17 +561,12 @@ class PiSession:
     ) -> tuple[str, bool]:
         """Prompt, then wait for the resulting run to settle.
 
-        Returns ``(disposition, aborted)``. The settle waiter is
-        installed BEFORE the prompt is sent — the race-free pattern from
-        :meth:`wait_settled`'s note; a fast run can settle between the
-        prompt's reply and a post-hoc waiter. The waiter is discarded
-        wherever it would otherwise linger: on prompt rejection, on
-        ``disposition == "handled"`` (consumed, no run started — no
-        settle was ever coming, so nothing is awaited and
-        ``("handled", False)`` is returned immediately), and on settle
-        timeout (a raw ``asyncio.wait_for`` around
-        :meth:`settle_waiter` would leave the cancelled future in
-        ``_settled_waiters``). The caller still has to honor the
+        Returns ``(disposition, aborted)``. The settle waiter is installed
+        BEFORE the prompt is sent (a fast run can settle between the
+        prompt's reply and a post-hoc waiter). The waiter is discarded
+        wherever it would otherwise linger: on rejection, on
+        ``disposition == "handled"`` (no run started, so nothing is
+        awaited), and on settle timeout. The caller still has to honor the
         returned ``disposition`` — ``"handled"`` means nothing was
         certified.
         """
@@ -642,10 +588,9 @@ class PiSession:
             raise
 
     def _discard_settle_waiter(self, fut: asyncio.Future[bool]) -> None:
-        """Remove a waiter that will no longer be awaited (rejection /
-        "handled" / timeout). A settle or exit event that fired in the
-        meantime already consumed and cleared the list — nothing left
-        to remove then."""
+        """Remove a waiter that will no longer be awaited. A settle or exit
+        event that fired in the meantime already consumed and cleared the
+        list — nothing left to remove then."""
         try:
             self._settled_waiters.remove(fut)
         except ValueError:
@@ -677,10 +622,9 @@ class PiSession:
         assert self._proc is not None and self._proc.stdin is not None
         self._proc.stdin.write(encode_command(resp))
         await self._proc.stdin.drain()
-        # the child unblocks; the record stays parked until it does (the
-        # response to a dialog produces no command response of its own)
-        # -> remove once the child consumed it: we cannot know when, so
-        # drop from the park now; re-asking an answered id raises KeyError.
+        # the record stays parked until the child unblocks; we cannot know
+        # when, so drop from the park now — re-asking an answered id
+        # raises KeyError
         self._pending_dialogs.pop(dialog_id, None)
 
     # ------------------------------------------------------------------ #
@@ -689,10 +633,9 @@ class PiSession:
 
     async def close_stdin(self, *, close_timeout: float = 5.0) -> None:
         """Ladder rung 1, NO wait: close stdin — the orderly-shutdown
-        request (pi waits for pending work, then exits). Idempotent.
-        A stdin nobody reads can wedge the flush wait, so it is bounded
-        — the caller decides the next rung (the app's stop path moves on
-        to the shared wait; a single-child caller goes to terminate())."""
+        request (pi waits for pending work, then exits). Idempotent. A
+        stdin nobody reads can wedge the flush wait, so it is bounded.
+        """
         proc = self._proc
         if proc is None or not self._stdin_open or proc.returncode is not None:
             return
@@ -705,8 +648,8 @@ class PiSession:
 
     def terminate(self) -> None:
         """Ladder rung 2: SIGTERM. A single signal does not interrupt an
-        in-progress orderly shutdown — the caller's grace is what lets
-        one finish. Idempotent (no-op on a dead process)."""
+        in-progress orderly shutdown — the caller's grace is what lets one
+        finish. Idempotent."""
         proc = self._proc
         if proc is None or proc.returncode is not None:
             return
@@ -729,8 +672,8 @@ class PiSession:
     def wait_exited(self):
         """Awaitable that completes when the child exits (at once if it
         already has). The app's stop path waits on ALL children's
-        ``wait_exited()`` under ONE shared budget — a sequential
-        per-child wait would add up (N children → N × grace)."""
+        ``wait_exited()`` under ONE shared budget — a sequential wait
+        would add up (N children → N × grace)."""
         return self._exited.wait()
 
     async def shutdown(
@@ -738,17 +681,15 @@ class PiSession:
     ) -> int | None:
         """The kill ladder, ONE child at a time. Returns the exit code.
 
-        Rung 1: close stdin — orderly shutdown; pi waits for pending work.
-        Rung 2: SIGTERM (a single signal does not interrupt an in-progress
-        orderly shutdown — give it its grace).
-        Rung 3: SIGKILL — a second signal exits at once; the rung that
-        guarantees exit.
+        Rung 1: close stdin (orderly shutdown; pi waits for pending
+        work). Rung 2: SIGTERM (give an in-progress orderly shutdown its
+        grace). Rung 3: SIGKILL (the rung that guarantees exit).
 
         The app's stop path uses the steps directly (close_stdin /
-        terminate / kill + wait_exited) so that many children drain in
-        parallel under one shared budget — see Lifecycle.shutdown;
-        this facade is the single-child path (release, probe, respawn,
-        idle-kill, abort-on-start-failure)."""
+        terminate / kill + wait_exited) so many children drain in parallel
+        under one shared budget — see Lifecycle.shutdown; this facade is
+        the single-child path (release, probe, respawn, idle-kill).
+        """
         proc = self._proc
         if proc is None:
             return None
@@ -784,9 +725,8 @@ class PiSession:
         self._tasks.clear()
 
     def classify_exit(self) -> str:
-        """Exit classification for the meters: a child
-        OOM-killed by MemoryMax shows as 'killed by OOM', not hung or
-        successful. Signal 9 = killed; 0 = clean; else crash."""
+        """Exit classification for the meters: signal 9 = killed (OOM
+        under MemoryMax unless the ladder did it); 0 = clean; else crash."""
         if self._exit_code is None:
             return "running"
         if self._exit_code == 0:

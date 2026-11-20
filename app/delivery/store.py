@@ -1,22 +1,13 @@
-"""Delivery store: uploads (staged → blob → inbox), outbox, manifests
-manifests.
+"""Delivery store: uploads (staged → blob → inbox), outbox, manifests.
 
-Guarantees:
-
-- **No truncation, no caps**: uploads are streamed to a spooled temp
-  file on the state volume (never buffered in memory), hashed
-  incrementally; a 100 MB upload is served exactly like a 100 B one.
-- **Byte-identical**: stored blobs are verified (sha256) before they are
-  registered or delivered; downloads stream the stored bytes whole.
-- **MIME by magic**: the content type comes from magic bytes, never the
-  file extension (python-magic).
-- **No half-blobs** (crash drill): an upload is visible to the API only
-  after it is (a) fully staged, (b) verified, (c) moved to the content-
-  addressed blob store (atomic rename on the same fs), (d) delivered to
-  the session inbox (temp-write + rename), and (e) registered in the
-  session manifest. A crash at any step leaves either nothing visible
-  or the complete file; boot GC sweeps unregistered staging dirs and
-  orphan inbox temp files.
+Guarantees: no truncation, no caps (uploads stream to a spooled temp
+file, hashed incrementally); byte-identical (blobs are sha256-verified
+before they are registered or delivered); MIME by magic bytes, never the
+extension; no half-blobs (crash drill) — an upload is visible only after
+it is staged, verified, moved to the content-addressed blob store (atomic
+rename), delivered to the session inbox (temp-write + rename), and
+registered in the session manifest. A crash at any step leaves either
+nothing visible or the complete file; boot GC sweeps the rest.
 """
 from __future__ import annotations
 

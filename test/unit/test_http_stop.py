@@ -1,22 +1,22 @@
 """The HTTP stop path (root-free, loopback-only).
 
-The 2026-11-19 incident: a deploy restart with a connected browser took
-the unit's FULL TimeoutStopSec (120 s -> SIGKILL) because uvicorn's
-graceful shutdown 'waiting for connections' phase is held open by any
-SSE stream (a browser holds it for the life of the tab, and uvicorn
-does not cancel an in-flight streaming response — it only disables
-keep-alive), and the abort-then-drain (lifespan shutdown) only starts
-AFTER that phase.
+uvicorn's graceful shutdown 'waiting for connections' phase is held
+open by any SSE stream (a browser holds it for the life of the tab,
+and uvicorn does not cancel an in-flight streaming response — it only
+disables keep-alive), and the abort-then-drain (lifespan shutdown)
+only starts AFTER that phase. Without intervention, a deploy restart
+with a connected browser rides the stop out to the unit's
+TimeoutStopSec SIGKILL.
 
 The fix under test: the lifespan installs a SIGTERM handler that sets
 shutting_down, closes every SSE hub (the response generators end),
 only then sets uvicorn's should_exit — so the connection wait ends at
 once and the process exits cleanly in well under the stop budget.
 
-A minimal uvicorn app is spawned as a subprocess (signals + the
-event loop need their own process), wired with the REAL SseHub and the
-REAL _install_http_stop_handler from the app; a client holds an SSE
-stream open while SIGTERM lands.
+A minimal uvicorn app is spawned as a subprocess (signals + the event
+loop need their own process), wired with the REAL SseHub and the REAL
+_install_http_stop_handler; a client holds an SSE stream open while
+SIGTERM lands.
 """
 from __future__ import annotations
 

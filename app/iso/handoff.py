@@ -1,14 +1,10 @@
 """Chown-to-slot handoff (uploads).
 
-Uploads are received by the privileged app and written into
-``inbox/<s>/`` then **chowned to the session's slot uid before the agent
-can see them**. The same primitive hands out any app-created file that
-the agent must own (the outbox dir at mount time, save-script
-provenance is the exception — that one STAYS root-owned in lib/, which is
+Uploads are received by the privileged app and **chowned to the
+session's slot uid before the agent can see them**. The same primitive
+hands out any app-created file the agent must own (the outbox dir at
+mount time; save-script provenance stays root-owned in lib/, which is
 read-only to the agent anyway).
-
-Content-addressed naming and MIME-by-magic are the upload pipeline's job;
-this module owns the ownership transfer.
 """
 from __future__ import annotations
 
@@ -40,14 +36,11 @@ def chown_to(path: str, uid: int, gid: int) -> Handoff:
 
 
 def handoff_upload(tmp_path: str, dest_dir: str, final_name: str, uid: int, gid: int) -> str:
-    """Atomic rename into the inbox, chowned BEFORE the final name exists.
-
-    Order matters: the file is chowned while it is still under a private
-    temp name in the SAME directory (same filesystem => rename is
-    atomic), so the agent never sees a root-owned or partially-written
-    file — and no root-owned partial survives an aborted upload (the temp
-    file is chown'd too, or deleted on abort).
-    """
+    """Atomic rename into the inbox, chowned BEFORE the final name
+    exists: the file is chowned while still under a private temp name in
+    the SAME directory (same filesystem => rename is atomic), so the
+    agent never sees a root-owned or partially-written file, and no
+    root-owned partial survives an aborted upload."""
     if os.path.dirname(tmp_path) != dest_dir:
         raise HandoffError("temp file must live in the destination directory (atomic rename)")
     try:

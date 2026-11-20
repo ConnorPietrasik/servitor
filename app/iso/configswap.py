@@ -1,18 +1,14 @@
 """Versioned config swap: stage + rename; a live lower is never
 mutated.
 
-The synced agent config lives in versioned dirs ``config/v<N>/`` under the
-state volume, with an ``active`` pointer (a symlink, flipped atomically).
-A live session's lower is whatever version it booted from (invariant 10:
-config reaches a session only at spawn — a live session keeps the config
-it started with). A swap therefore:
-
-1. stages a fresh copy in ``config/.staging-v<N+1>`` (same filesystem),
-2. renames it to ``config/v<N+1>`` (atomic),
-3. flips the ``active`` symlink via a temp symlink + rename (atomic).
-
-Previous versions are untouched — they are the lowers of live sessions
-and the rollback source.
+The synced agent config lives in versioned dirs ``config/v<N>/`` with an
+``active`` pointer (a symlink, flipped atomically). A live session's
+lower is whatever version it booted from (config reaches a session only
+at spawn). A swap: stage a fresh copy in ``config/.staging-v<N+1>``
+(same filesystem), rename it to ``config/v<N+1>`` (atomic), flip the
+``active`` symlink via a temp symlink + rename (atomic). Previous
+versions are untouched — they are the lowers of live sessions and the
+rollback source.
 """
 from __future__ import annotations
 
@@ -61,10 +57,8 @@ def stage_and_swap(config_root: str, source_dir: str) -> str:
     """Swap in a new version from ``source_dir``; return the version name.
 
     Raises ConfigSwapError on any failure BEFORE the pointer flips; a
-    failure after the rename (which can only be the pointer flip itself)
-    leaves the new version present but not active — detectable by doctor
-    (config version on disk vs active pointer).
-    """
+    failure after the rename leaves the new version present but not
+    active (detectable by doctor)."""
     if not os.path.isdir(source_dir):
         raise ConfigSwapError(f"source config dir missing: {source_dir}")
     os.makedirs(config_root, exist_ok=True)

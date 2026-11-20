@@ -3,35 +3,24 @@
 stdlib-only, unit-tested (test/unit/test_update_resolve.py).
 
 The .env version line is a FLOOR: the target is the newest npm stable
-release in the declared version's MAJOR (same major for everything —
-the 0.x extension floats across minors, stable across them in
-practice; a real 1.0.0 is a major and gets reported, not applied). A
-newer out-of-major release is never applied: it shows up as
-"<target> <latest-overall>" with target < latest-overall — the
-update's MAJOR AVAILABLE report.
+release in the declared version's MAJOR (the 0.x extension floats across
+minors; a real 1.0.0 is a major and gets reported, not applied). A newer
+out-of-major release is never applied: it shows up as "<target>
+<latest-overall>" with target < latest-overall — the update's MAJOR
+AVAILABLE report.
 
 Usage: resolve_target.py <declared> <versions-json>
-  versions-json: the output of `npm view <pkg> versions --json`
-  (may be empty or unparseable — a network failure means NO MOVEMENT,
-  never a failed update; the deployed world is left alone).
+  versions-json: the output of `npm view <pkg> versions --json` (may be
+  empty or unparseable — a network failure means NO MOVEMENT, never a
+  failed update; the deployed world is left alone).
        resolve_target.py --exact <version>
-  exit 0 iff <version> is an exact X.Y.Z (the .env floor-line contract);
-  the update's preflight for the .env version lines (see below).
+  exit 0 iff <version> is an exact X.Y.Z (the .env floor-line contract).
 
 The data arrives via ARGV, never stdin: the natural
 `npm view … --json | python3 - <<EOF` form cannot work — the heredoc
 wins the stdin fight (stdin is the program, the pipe is discarded) and
 the versions list would never arrive: a silent degrade to exact-pin on
 every run. So deploy/update.sh feeds the npm JSON as an argument.
-
-The .env line is an EXACT version (X.Y.Z) — is_exact() is the update's
-preflight for it (deploy/update.sh refuses to run on anything else):
-a range or tag ("^1.5.0", "1.5.x", "latest") would hit the float rule's
-unparseable fail-safe (NO MOVEMENT), but its literal string still
-differs from what is deployed, so the run would gate, float the .env
-line to the garbage, and fail red at the guest's installed==env assert
-—a full rollback cycle for a typo-class mistake. The preflight turns
-that into a one-line error before anything moves.
 """
 from __future__ import annotations
 
@@ -66,10 +55,9 @@ def resolve(declared: str, versions: list[str]) -> tuple[str, str]:
 
 
 # the .env floor-line contract: an EXACT stable version, nothing else —
-# ranges (^1.5.0, ~1.5.0, 1.5.x, latest), tags, and prerelease/build
-# markers are not floors: the float rule walks stable releases only, so
-# a non-exact line could never round-trip a deploy (the guest doctor
-# asserts installed == env)
+# ranges, tags, and prerelease/build markers are not floors: the float
+# rule walks stable releases only, so a non-exact line could never
+# round-trip a deploy (the guest doctor asserts installed == env).
 EXACT_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 

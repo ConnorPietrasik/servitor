@@ -1,6 +1,6 @@
 """Delivery service — the app-level wiring over the store.
 
-One Delivery per app instance (state-volume root). Uploads:
+One Delivery per app instance (state-volume root). Upload:
 
     stream body → staging/<id>/part (disk, 1 MB chunks, sha256 as we go)
     → verify → blobs/<2>/<rest> (atomic rename, 0444)
@@ -8,9 +8,8 @@ One Delivery per app instance (state-volume root). Uploads:
     → session manifest (files.json) → API-visible
 
 A crash at any step leaves nothing half-visible: boot GC sweeps every
-staging dir (a surviving one is by definition an interrupted upload)
-and every ``.incoming-*`` inbox temp; the manifest is the only registry
-of delivered uploads.
+staging dir and every ``.incoming-*`` inbox temp; the manifest is the
+only registry of delivered uploads.
 """
 from __future__ import annotations
 
@@ -62,11 +61,10 @@ class Delivery:
         session_files: SessionFiles,
     ) -> DeliveredFile:
         """Consume an async byte stream (request body) into a delivered
-        file. ``stream`` yields bytes; no size limit (no 413, ever).
-
-        A failure at any step never registers a partial file: the
-        staging dir is unregistered until the manifest write succeeds,
-        and boot GC sweeps it if we die mid-flight."""
+        file. No size limit (no 413, ever). A failure at any step never
+        registers a partial file: the staging dir is unregistered until
+        the manifest write succeeds, and boot GC sweeps it if we die
+        mid-flight."""
         upload_id, part, sha = self.staging.new()
         try:
             size = 0
@@ -97,8 +95,7 @@ class Delivery:
 
     def gc_boot(self) -> dict:
         """At boot: sweep every staging dir (any survivor is an
-        interrupted upload) + inbox temps (handled per-session at
-        release/boot by the caller)."""
+        interrupted upload)."""
         swept = self.staging.gc_unregistered(set())
         log.info("delivery boot gc: swept %d staging dirs", len(swept))
         return {"staging_swept": swept}

@@ -30,9 +30,8 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$REPO/.env"
 SSH_TARGET=""
-# ${HOME:-/root}: panel-do's scrubbed env has no HOME (and set -u would die
-# on a bare $HOME here, before --deploy-key is parsed); /root/.srv is the
-# canonical root-side home, and the flag overrides anyway.
+# ${HOME:-/root}: panel-do's scrubbed env has no HOME (set -u would die on a
+# bare $HOME); /root/.srv is the canonical root-side home.
 DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME:-/root}/.srv/deploy_key}"
 STAGING_WAIT_SECS="${STAGING_WAIT_SECS:-150}"
 
@@ -62,20 +61,16 @@ SSH=(ssh -i "$DEPLOY_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
 run_guest() { "${SSH[@]}" "$@"; }
 # Guest state read with transport-failure detection. ssh exits with the
 # REMOTE command's rc — except 255, which is ssh's own failure (connection
-# dropped / host down). rc 255 means the guest is UNREADABLE, not
-# "nothing deployed": the empty readings a dead ssh fakes look exactly like
-# a fresh image and manufacture a shape diff — a needless deploy + restart
-# of a healthy VM — so 255 aborts BEFORE anything is pushed (exit 1 =
-# pre-deploy failure in update.sh's rc contract: nothing to roll back).
-# Every other rc is a legitimate observation and is kept as-is:
-#   readlink 1 = no active version yet (fresh image)
-#   node 127/1 = extension not installed
-#   find|…|cut pipelines always end 0 (even a missing tree — the
-#     empty-input hash, which correctly forces a push)
-#   cd X && find 1 = no such dir (fresh image)
-# fail-fast ($4): the venv + app tree ship with the image and Registry
-# creates its db when absent, so a non-zero registry read is an anomaly,
-# not a fresh-image state — abort, as the old set -e crash did, but with a
+# dropped / host down). rc 255 means the guest is UNREADABLE, not "nothing
+# deployed": the empty readings a dead ssh fakes look exactly like a fresh
+# image and manufacture a shape diff — a needless deploy + restart of a
+# healthy VM — so 255 aborts BEFORE anything is pushed (exit 1 =
+# pre-deploy failure in update.sh's rc contract). Every other rc is a
+# legitimate observation and is kept as-is (readlink 1 = no active version
+# yet; node 127/1 = extension not installed; the find|…|cut pipelines
+# always end 0 — the empty-input hash correctly forces a push).
+# fail-fast ($4): the venv + app tree ship with the image, so a non-zero
+# registry read is an anomaly, not a fresh-image state — abort with a
 # reason on the line.
 state_read() { # $1 = label, $2 = variable, $3 = remote command, $4 = fail-fast
   local -n _sr="$2"  # nameref: a quoted "$2"="…" would parse as a COMMAND, not an assignment
@@ -99,8 +94,7 @@ trap cleanup EXIT
 # SERVITOR_TEST_CONFIG_DIR: sync this dir instead of agent-config/ (the
 # update-waiting drill points the guest at the host's mock router).
 # SERVITOR_TEST_CONFIG_FAULT=bork: corrupt models.json in the artifact
-# (fault-injected doctor drill: the deployed shape must fail the doctor,
-# and the automatic rollback must restore a healthy state).
+# (fault-injected doctor drill).
 CONFIG_SRC="$REPO/agent-config"
 [[ -n "${SERVITOR_TEST_CONFIG_DIR:-}" ]] && CONFIG_SRC="$SERVITOR_TEST_CONFIG_DIR"
 
@@ -117,9 +111,8 @@ state_read "ui dist hash" GUEST_UI_SHA "cd /opt/servitor/app/ui/dist 2>/dev/null
 state_read "env key slice" GUEST_ENV_SHA "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1"
 
 # ---- artifacts (host) ----------------------------------------------------
-# config version: CONTENT-addressed (the directory's file set + bytes), so a
-# second sync of an unchanged tree is a deterministic NO-OP regardless of
-# time.
+# config version: CONTENT-addressed (the directory's file set + bytes), so
+# a second sync of an unchanged tree is a deterministic NO-OP.
 mkdir -p "$WORK/config"
 cp -a "$CONFIG_SRC/." "$WORK/config/"
 if [[ -n "${SERVITOR_TEST_CONFIG_FAULT:-}" ]]; then
@@ -127,15 +120,14 @@ if [[ -n "${SERVITOR_TEST_CONFIG_FAULT:-}" ]]; then
   printf 'NOT-JSON {{{{\n' >> "$WORK/config/models.json"
 fi
 # the identity is computed from the STAGED artifact (after the test fault
-# hook): the version-dir name is the identity of what actually gets deployed.
-# A faulted artifact must have its OWN name — hashed before the fault it
-# would be indistinguishable from the clean baseline, and the shape check
-# would NO-OP the faulted deploy (the fault drill could never land).
+# hook): the version-dir name is the identity of what actually gets
+# deployed. A faulted artifact must have its OWN name — hashed before the
+# fault it would be indistinguishable from the clean baseline and the
+# shape check would NO-OP the faulted deploy.
 CONFIG_CONTENT_SHA="$(cd "$WORK/config" && find . -type f | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -d' ' -f1)"
 # purely content-addressed: the identity is the content alone. A commit
-# prefix in the name would make EVERY commit (even one that never touches
-# agent-config) "change" the config — re-stage + a service restart on every
-# sync for nothing.
+# prefix in the name would make EVERY commit "change" the config — re-stage
+# + a service restart on every sync for nothing.
 CONFIG_VERSION="c${CONFIG_CONTENT_SHA:0:12}"
 # the test-only router URL must never ride to the guest: the live router
 # comes from models.json (baseUrl) + the env key
@@ -144,18 +136,16 @@ if [[ -f "$WORK/config/models.json" ]] && grep -oE '"baseUrl": *"[^"]*"' "$WORK/
 fi
 
 # content-addressed like the config (find|sort|sha256): independent of tar
-# metadata (owner name vs numeric uid, mtime, traversal order), so a second
-# sync of an unchanged tree is a deterministic NO-OP
+# metadata (owner name vs numeric uid, mtime, traversal order).
 APP_SHA="$(cd "$REPO" && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)"
 
 # UI: build host-side when the ui/ source moved since the last build
 # (stamp: ui/.ui-src-sha), then hash the dist — the same content
-# addressing as config/app, so a second sync of an unchanged tree is a
-# deterministic NO-OP. NO --ignore-scripts (vite/esbuild need install
-# scripts — unlike the pinned pi stage). The app serves the dist on the
-# same port; a UI-only change deploys here without an image rebuild.
-# (The stamp is excluded from the source hash — it is the hash's output,
-# and hashing it in would re-trigger a build on every run.)
+# addressing as config/app. NO --ignore-scripts (vite/esbuild need
+# install scripts — unlike the pinned pi stage). The app serves the dist
+# on the same port; a UI-only change deploys here without an image
+# rebuild. (The stamp is excluded from the source hash — it is the hash's
+# output.)
 UI_SRC_SHA="$(cd "$REPO/ui" && find . -type f -not -path './node_modules/*' -not -path './dist/*' -not -path './.ui-src-sha' | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)"
 if [[ ! -f "$REPO/ui/dist/index.html" || "$(cat "$REPO/ui/.ui-src-sha" 2>/dev/null || true)" != "$UI_SRC_SHA" ]]; then
   echo "sync: building ui (vite)…"
@@ -180,8 +170,7 @@ if [[ -n "$SERVITOR_PI_WEB_ACCESS_VERSION" ]]; then
   # self-contain the extension: npm hoists its deps to SIBLINGS under
   # node_modules/, but only pi-web-access/ ships to the guest (single-dir
   # tar). Move every dep into pi-web-access/node_modules/ so Node's module
-  # resolution finds them and the tar below is complete (fixes the runtime
-  # "Cannot find module 'p-limit'" extension-load failure).
+  # resolution finds them and the tar below is complete.
   NM="$EXT_STAGING/node_modules"
   mkdir -p "$NM/pi-web-access/node_modules"
   shopt -s dotglob nullglob
@@ -214,19 +203,16 @@ SCp() { scp -i "$DEPLOY_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-ne
 # app first (previous tree retained for rollback). Refresh it BEFORE every
 # push, flat: rm-then-copy, because `cp -a` into an EXISTING dir nests the
 # package one level too deep (a rolled-back tree then lands at
-# /opt/servitor/app/app/app — the service keeps running the stale flat
-# tree and the rollback's doctor runs stale code). The image may ship
-# stale app.previous* from its own build-time sync — the refresh replaces
-# them before any rollback can see them.
+# /opt/servitor/app/app/app — the rollback's doctor would run stale code).
+# The image may ship stale app.previous* from its own build-time sync.
 run_guest '
   rm -rf /opt/servitor/app.previous.app /opt/servitor/app.previous.pyproject /opt/servitor/app.previous
   cp -a /opt/servitor/app/app /opt/servitor/app.previous.app
   cp /opt/servitor/app/pyproject.toml /opt/servitor/app.previous.pyproject 2>/dev/null || true
   touch /opt/servitor/app.previous
 ' || true
-# replace the package atomically-enough: rm first, then extract — a bare
-# tar -x over an existing tree keeps stale files (including nested
-# app/app/app from old bugs) and GUEST_APP_SHA (which hashes the whole
+# replace the package: rm first, then extract — a bare tar -x over an
+# existing tree keeps stale files and GUEST_APP_SHA (which hashes the whole
 # tree) would never match the repo, forcing an app re-push on every sync
 run_guest "rm -rf /opt/servitor/app/app"
 tar -C "$REPO" --exclude='app/__pycache__' --exclude='app/*/__pycache__' -cf "$WORK/app.tar" app pyproject.toml
@@ -251,9 +237,9 @@ run_guest "
 # the CONTENT-ADDRESSed name (== CONFIG_VERSION): the directory IS the
 # identity, which is what makes the NO-OP check above stable. (The app's
 # boot-time _stage_config uses its own vN naming only when NO version
-# exists yet: first boot stages v1; the first sync replaces it with the
-# content-addressed name.) The previous active version is recorded in
-# .previous-active; the update's automatic rollback flips back to it.
+# exists yet: first boot stages v1; the first sync replaces it.) The
+# previous active version is recorded in .previous-active; the update's
+# automatic rollback flips back to it.
 PREV_ACTIVE="$(run_guest "readlink /var/lib/servitor/config/active 2>/dev/null" || true)"
 tar -C "$WORK/config" -cf "$WORK/config.tar" .
 SCp "$WORK/config.tar" "$SSH_TARGET:/tmp/servitor-config.tar"
@@ -283,10 +269,9 @@ fi
 # compares the installed extension against the .env selection, and the
 # guest env is the deployment's source of truth — so an extension bump
 # must land there or the post-deploy doctor goes red.
-# write the key slice to a real temp file first: modern OpenSSH scp (SFTP
-# protocol) rejects a process substitution ("/dev/fd/N is not a regular").
-# The file lives in $WORK (the 0700 mktemp dir, removed by the trap) and the
-# secrets already exist on the host in .env, so this is not a new exposure.
+# Write the key slice to a real temp file first: modern OpenSSH scp (SFTP)
+# rejects a process substitution ("/dev/fd/N is not a regular"). The file
+# lives in $WORK (0700 mktemp dir, removed by the trap).
 KEYS_TMP="$WORK/servitor-keys.$$"
 { printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } > "$KEYS_TMP"
 chmod 600 "$KEYS_TMP"
@@ -303,9 +288,8 @@ for raw in open(path):
     line = raw.rstrip('\n')  # normalize: the write adds exactly one '\n' per line
     if not line or line.lstrip().startswith('#'):
         continue  # drop blank/comment lines (systemd ignores them; keeping
-                  # them once was the bloat bug: preserved lines got a second
-                  # '\n' every sync and blank lines DOUBLED each pass, blowing
-                  # the file past execve's env limit after ~28 syncs)
+                  # them once was the bloat bug: blank lines DOUBLED each
+                  # pass, blowing the file past execve's env limit)
     k = line.split('=', 1)[0]
     if k in new:
         out.append(new[k]); seen.add(k)
@@ -321,14 +305,13 @@ os.replace(tmp, path)
 PYEOF
   rm -f /tmp/servitor-keys"
 
-# host name pinning (hairpin NAT): the model router's hostname is pinned to a
-# LAN IP in the laptop's /etc/hosts (panel-hosts block). The guest has no such
-# entry, so its DNS returns a public IP and traffic from the guest — which
-# exits through the host's NAT — hairpins and dies; the real-router prompt
-# then comes back with empty assistant turns. Mirror the host's pinned lines
-# into the guest's /etc/hosts so name resolution matches the laptop. Managed
-# between markers, re-synced idempotently; if the laptop has no pinned lines
-# (public-only setup) nothing is written.
+# host name pinning (hairpin NAT): the model router's hostname is pinned to
+# a LAN IP in the laptop's /etc/hosts (panel-hosts block). The guest has no
+# such entry, so its DNS returns a public IP and traffic from the guest —
+# which exits through the host's NAT — hairpins and dies; the real-router
+# prompt then comes back with empty assistant turns. Mirror the host's
+# pinned lines into the guest's /etc/hosts (managed between markers,
+# re-synced idempotently; public-only setup writes nothing).
 HOSTS_LINES="$(awk '/# BEGIN panel-hosts/,/# END panel-hosts/' /etc/hosts | grep -E '^[0-9]+(\.[0-9]+)+[[:space:]]')"
 if [[ -n "$HOSTS_LINES" ]]; then
   printf '%s\n' "$HOSTS_LINES" > "$WORK/servitor-hosts"
@@ -348,9 +331,8 @@ fi
 # self-heal the edge gateway on images built before the build.sh fix:
 # they bake in a 5-octet invalid gateway (the subnet's zero-base + ".1")
 # which systemd-networkd silently drops — the guest boots with no default
-# route and the live-router gates die. Rewrite + restart networkd only when
-# the line is wrong (a networkd restart briefly flaps the ssh link; the
-# `|| true` swallows that, the next sync sees the fixed line)
+# route. Rewrite + restart networkd only when the line is wrong (a networkd
+# restart briefly flaps the ssh link; the `|| true` swallows that).
 if [[ -n "${SERVITOR_EDGE_SUBNET:-}" ]]; then
   GOOD_GW="$(cut -d. -f1-3 <<<"${SERVITOR_EDGE_SUBNET%%/*}").1"
   run_guest "grep -qx 'Gateway=${GOOD_GW}' /etc/systemd/network/10-servitor.network || { sed -i 's/^Gateway=.*/Gateway=${GOOD_GW}/' /etc/systemd/network/10-servitor.network; systemctl restart systemd-networkd; sleep 1; }" || true
@@ -414,8 +396,8 @@ for ((i = 0; i < STAGING_WAIT_SECS; i += 5)); do
   # rc is the REMOTE test's exit status only when the ssh itself succeeded:
   # 0 = the flag is still staged, 1 = it has been cleared. Any other rc
   # (255 = an ssh hiccup) is NOT "applied" — a transient ssh failure once
-  # flipped APPLIED while the tick was mid-apply, and the edge probe raced
-  # a healthy restart into a false exit 3 (a rollback of a sound deploy).
+  # flipped APPLIED while the tick was mid-apply and raced a healthy
+  # restart into a false exit 3.
   if [[ $rc -eq 1 ]]; then
     APPLIED=1; break
   fi
@@ -426,20 +408,17 @@ if [[ "$APPLIED" == "1" ]]; then
   echo "sync: flag cleared by the new instance; confirming the edge port before the doctor…"
   # APPLIED means the flag FILE is gone — and the file outlives the restart:
   # the tick's consume_restart() only drops the restart bit (crash-safe,
-  # pre-restart; the doctor-only remainder stays) and the NEW instance's
-  # tick unlinks it only AFTER its post-restart doctor runs. So here the
-  # service has already been up long enough to survive a full in-guest
-  # doctor: the drain (≤ 90 s grace, < the unit's TimeoutStopSec) + boot
-  # happen while the file still EXISTS (that is the update-WAITING path
-  # below, where the tick certifies in-guest). The one way the port can be
-  # down here is a post-doctor crash that systemd is cycling
-  # (Restart=on-failure, RestartSec=2) — the probe budget is therefore a
-  # BOOT budget (≤ TimeoutStartSec + imports), not drain+boot. Probe the
-  # real bind address over the edge (the app binds SERVITOR_BIND — a
-  # localhost probe can never see it), and never run the doctor against a
-  # dead port: a refused-port doctor yields a mixed report (spawn checks
-  # pass, everything HTTP fails) that misreads "still starting" as a broken
-  # deploy.
+  # pre-restart) and the NEW instance's tick unlinks it only AFTER its
+  # post-restart doctor runs. So the service has already been up long
+  # enough to survive a full in-guest doctor: the drain (≤ 90 s grace) +
+  # boot happen while the file still EXISTS (the update-WAITING path,
+  # where the tick certifies in-guest). The one way the port can be down
+  # here is a post-doctor crash that systemd is cycling — the probe budget
+  # is therefore a BOOT budget (≤ TimeoutStartSec + imports), not
+  # drain+boot. Probe the real bind address over the edge (the app binds
+  # SERVITOR_BIND — a localhost probe can never see it), and never run the
+  # doctor against a dead port: a refused-port doctor yields a mixed
+  # report that misreads "still starting" as a broken deploy.
   READY=0
   for ((i = 0; i < 90; i += 2)); do
     if curl -sf -m 3 "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" >/dev/null 2>&1; then
@@ -464,12 +443,12 @@ if [[ "$APPLIED" == "1" ]]; then
   fi
 else
   # Not applied within the wait. (A run being active can't be the reason:
-  # that exits earlier, before the staging wait begins.) So the tick is
-  # still applying the flag: pre-restart doctor + restart + post-restart
-  # doctor, and EACH doctor carries a 300 s live-run cap — a full apply can
-  # take ~4–12 min, well past the 150 s staging wait. Fine: the flag
-  # survives, the tick finishes the job, and the post-restart doctor
-  # certifies in-guest. Never blocks, always exit 0.
+  # that exits earlier.) So the tick is still applying the flag: pre-restart
+  # doctor + restart + post-restart doctor, and EACH doctor carries a
+  # 300 s live-run cap — a full apply can take ~4–12 min, past the 150 s
+  # staging wait. Fine: the flag survives, the tick finishes the job, and
+  # the post-restart doctor certifies in-guest. Never blocks, always
+  # exit 0.
   echo "sync: OK — update-WAITING (no run active; the tick is still applying the staged restart + doctor — that can take up to ~10 min: two doctor runs, each with a 300 s live-run cap). The post-restart doctor certifies in-guest; verify with deploy/doctor.sh once it settles."
   exit 0
 fi

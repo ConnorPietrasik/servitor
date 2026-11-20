@@ -1,16 +1,15 @@
-"""Conformance: the failure modes the system must fail CLOSED on (the
-no-API-key no-event repro below).
+"""Conformance: the failure modes the system must fail CLOSED on.
 
-- **no-event failure / no-API-key repro (permanent regression):** an
-  unresolvable credential must NOT leave a healthy-looking dead session.
-  Either the spawn path fails closed (model.id == "unknown") or the prompt
-  returns success:false with ZERO events and the idling process. The
-  driver fails the run, never hangs, never retries (a dead credential is
-  a config fault; retrying burns the slot). No request ever reaches the
+- **no-event failure / no-API-key repro:** an unresolvable credential
+  must NOT leave a healthy-looking dead session. Either the spawn path
+  fails closed (model.id == "unknown") or the prompt returns
+  success:false with ZERO events and the idling process. The driver
+  fails the run, never hangs, never retries (a dead credential is a
+  config fault; retrying burns the slot). No request ever reaches the
   router.
 - **Missing recorded workdir:** respawn with the stored cwd gone — pi
-  exits 1 with NO response. The driver classifies it a fatal spawn error
-  (route to release; never a retry loop).
+  exits 1 with NO response. The driver classifies it a fatal spawn
+  error (route to release; never a retry loop).
 """
 from __future__ import annotations
 

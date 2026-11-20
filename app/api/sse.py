@@ -1,28 +1,19 @@
 """Per-session SSE event hub.
 
-One hub per session. Every session event — pi events (agent_*,
-message_*, tool_*, queue_update) AND app events (spawned, respawned,
-idle_killed, interrupted, new_extension, waiting, released) — is
-published here, gets a monotonic integer id, and is kept in a bounded
-ring buffer (the 50 MB per-session cap) for ``Last-Event-ID`` resume.
+One hub per session. Every session event — pi events AND app events —
+is published here, gets a monotonic integer id, and is kept in a bounded
+ring (the per-session cap) for ``Last-Event-ID`` resume.
 
-Backpressure: when the unconsumed bytes (between the
-slowest live consumer and the newest event) exceed the cap, the hub
-pauses the pi process's event stream (the driver stops draining the
-child's stdout — the pipe fills and pi blocks, i.e. the RUN pauses).
-When the slowest consumer catches up (below the resume threshold), the
-stream resumes. Memory is bounded (~ring + one chunk in flight); the
-transcript on disk is never touched (it is pi's own file and is
-complete regardless of delivery speed).
+Backpressure: when the unconsumed bytes (slowest live consumer to
+newest event) exceed the cap, the hub pauses the pi process's event
+stream (the driver stops draining the child's stdout — the pipe fills
+and pi blocks, i.e. the RUN pauses). The slowest consumer catching up
+resumes it. Memory is bounded; the transcript on disk is never touched.
 
 The cap is a memory policy knob (``SERVITOR_SSE_RING_BYTES``, default
-50 MB): it bounds the delivery buffer, it is never a
-capability cap. A single event larger than the cap is allowed (the
-ring holds at most the cap plus one event for a live consumer); the
-run pauses, it is never cut off.
-
-Control responses (get_state, prompt ack, ...) are NOT gated — only
-session events are — so the control plane stays responsive.
+50 MB) — it bounds the delivery buffer, never a capability cap: a run
+pauses, it is never cut off. Control responses are NOT gated — only
+session events — so the control plane stays responsive.
 """
 from __future__ import annotations
 
@@ -32,10 +23,10 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-# the per-session delivery cap — a memory bound, not a
-# capability cap: the run pauses, it is never cut off or truncated.
-# The cap is per-hub configurable (SseHub(cap_bytes=...), sourced from
-# SERVITOR_SSE_RING_BYTES); this constant is the production default.
+# the per-session delivery cap — a memory bound, not a capability cap:
+# the run pauses, it is never cut off or truncated. Per-hub configurable
+# (SseHub(cap_bytes=...), from SERVITOR_SSE_RING_BYTES); this is the
+# production default.
 EVENT_BUFFER_CAP = 50 * 1024 * 1024
 
 
@@ -103,9 +94,9 @@ class SseHub:
         self._bytes += ev.nbytes
         if self._consumers:
             # NEVER evict ahead of a live consumer — that is silent data
-            # loss. Free only what every consumer already has, and if the
+            # loss. Free only what every consumer already has; if the
             # slowest is still more than the cap behind, pause the run
-            # (the pipe fills, pi blocks) instead of dropping data.
+            # instead of dropping data.
             mc = self._min_consumed()
             while self._ring and self._ring[0].id <= mc:
                 old = self._ring.popleft()
@@ -113,9 +104,8 @@ class SseHub:
             if self._unconsumed_bytes() > self.cap:
                 self._do_pause()
         else:
-            # No live consumers: the ring is a bounded buffer — evict to
-            # the cap (a consumer older than the ring gets a gap and
-            # re-syncs from the API, never partial data).
+            # No live consumers: evict to the cap (a consumer older than
+            # the ring gets a gap and re-syncs from the API).
             while self._bytes > self.cap and len(self._ring) > 1:
                 old = self._ring.popleft()
                 self._bytes -= old.nbytes
@@ -132,12 +122,10 @@ class SseHub:
     def subscribe(self, after_id: int = 0) -> tuple[int, list[SseEvent], bool]:
         """Register a live consumer. Returns (sub_id, replay, gap).
 
-        ``replay`` is a SNAPSHOT (list) of the ring's events with
-        id > after_id (possibly empty). It must not be a lazy view of
-        the ring: the generator yields lazily, and the publisher mutates
-        the ring between yields (deque mutated during iteration). The
-        list comprehension is synchronous (no await), so the snapshot is
-        atomic with respect to the event loop.
+        ``replay`` is a SNAPSHOT (list), not a lazy view of the ring: the
+        generator yields lazily and the publisher mutates the ring between
+        yields; the list comprehension is synchronous (no await), so the
+        snapshot is atomic with respect to the event loop.
 
         ``gap`` is True when the requested position has already been
         evicted — the client must re-sync via the API, not guess.
@@ -174,11 +162,9 @@ class SseHub:
 
         An SSE response never terminates on its own — the browser holds
         it open for the life of the tab, and uvicorn's graceful shutdown
-        only disables keep-alive on an in-flight response — so without
-        this, live waiters hold uvicorn's 'waiting for connections'
-        phase open to the unit's TimeoutStopSec SIGKILL (observed
-        2026-11-19: a deploy restart with a connected browser took the
-        full 120 s stop). It wakes the waiters so the response
+        only disables keep-alive — so without this, live waiters hold
+        uvicorn's 'waiting for connections' phase open to the unit's
+        TimeoutStopSec SIGKILL. It wakes the waiters so the response
         generators exit on their next iteration; a waiter registered
         after the close returns at once (the wait loop checks
         ``closed``)."""
@@ -201,11 +187,9 @@ class SseHub:
             self._waiters.add(fut)
             # re-check BOTH after registering: a close() that lands in the
             # window between the loop-top check and this point (close runs
-            # in the SIGTERM handler, on the loop thread, so it can
-            # interrupt here) has already woken+cleared the set — the
-            # _latest_id check alone would then await a future nobody will
-            # ever resolve. close-after-this-point is safe: the future is
-            # already in the set, so close() resolves it.
+            # in the SIGTERM handler, on the loop thread) has already
+            # woken+cleared the set — the _latest_id check alone would then
+            # await a future nobody will ever resolve.
             if self._latest_id > cursor or self._closed:
                 self._waiters.discard(fut)
                 return

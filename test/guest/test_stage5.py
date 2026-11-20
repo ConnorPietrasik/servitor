@@ -132,8 +132,8 @@ ident = slot_identity(PROBE_SLOT)
 # uid handoff: the Lifecycle's mount_session chowns the whole per-session
 # tree to the slot BEFORE spawn — pi must be able to WRITE the session dir
 # (transcript), the agent dir (models store / auth cache), and cwd (temps).
-# A root-owned 0700/0755 tree leaves model.id == "unknown" (no usable model)
-# even though models.json is present and readable. Reproduce that handoff.
+# A root-owned tree leaves model.id == "unknown" even though models.json
+# is present and readable. Reproduce that handoff.
 def _chown_tree(path, uid, gid):
     os.chown(path, uid, gid)
     for dp, dn, fn in os.walk(path):

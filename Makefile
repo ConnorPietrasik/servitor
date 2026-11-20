@@ -69,10 +69,6 @@ vm-smoke: venv
 guest:
 	unshare -m deploy/guest/build.sh --env $(abspath .env) --deploy-key $(if $(DEPLOY_KEY),$(DEPLOY_KEY),$(HOME)/.srv/deploy_key.pub)
 
-## (no finish-guest target: the one-shot recovery script for the
-## 2026-11-16 interrupted laptop build was removed 2026-11-19 — a clean
-## `make guest` on any host is the recovery path for interrupted builds)
-
 ## standalone/loopback mode behind the local reverse proxy (no root)
 test-standalone: venv
 	$(PY) -m pytest test/standalone -v

@@ -3,11 +3,11 @@
 // its `registry` map.
 //
 // This file is the servitor repo's record of the merged integration.
-// It is NOT built here — if it and portcullis ever
-// disagree, PORTCULLIS WINS: it is what builds, installs, and runs
-// (`make panel-do` there). It exists so this repo documents the exact
-// integration surface without depending on the other repo, and so the
-// merge into a fresh portcullis clone is a mechanical diff.
+// It is NOT built here — if it and portcullis ever disagree, PORTCULLIS
+// WINS: it is what builds, installs, and runs (`make panel-do` there). It
+// exists so this repo documents the exact integration surface without
+// depending on the other repo, and so the merge into a fresh portcullis
+// clone is a mechanical diff.
 //
 //   servitor-status      virsh domstate + best-effort guest /healthz probe
 //   servitor-vm-restart  virsh reboot (planned; the app's boot
@@ -19,15 +19,13 @@
 //                        certification + firewall probes + live prompt
 //                        + live search (one live run that searches the web)
 //
-// Contract points the merged code enforces (violations would be portcullis
-// bugs, not servitor's):
+// Contract points the merged code enforces (violations would be
+// portcullis bugs, not servitor's):
 //   - exec ONLY via runCmd(ctx, "/abs/path", ...) — no shell, no relative
 //     paths, scrubbed env; the env has no HOME, so the deploy key is passed
-//     explicitly as --deploy-key /root/.srv/deploy_key (keep the key there);
+//     explicitly as --deploy-key /root/.srv/deploy_key;
 //   - both deploy scripts pass checkManagedScript before EVERY exec — the
-//     same anti-swap standard as portcullis's auto-update clone scripts
-//     (script + dir chain to /, not group/other-writable, not panel-owned,
-//     exec bit, bash shebang);
+//     same anti-swap standard as portcullis's auto-update clone scripts;
 //   - the healthz probe target (SERVITOR_BIND/SERVITOR_PORT from this
 //     repo's .env) is validated as plain IPv4 + port before use: a bounded
 //     one-shot to a fixed, non-argument target — a documented exception to
@@ -74,8 +72,7 @@ var servitorPortRe = regexp.MustCompile(`^\d{1,5}$`)
 // servitorEnvKV reads ONE key from the servitor checkout's .env (the same
 // contract file deploy/sync.sh consumes). It never sources the file and
 // returns only the one value: the rest of it holds secrets (the API keys)
-// this action must not touch, and quoted multi-word values (SERVITOR_DNS_
-// UPSTREAM) must not be misparsed.
+// this action must not touch.
 func servitorEnvKV(key string) (string, error) {
 	data, err := os.ReadFile(servitorRepoPath + "/.env")
 	if err != nil {
@@ -97,10 +94,9 @@ func servitorEnvKV(key string) (string, error) {
 // checkout's .env declares (SERVITOR_BIND/SERVITOR_PORT — the same contract
 // the sync pipeline and the doctor's open-probe use). A deliberate exception
 // to the "no network" rule, bounded on both ends: a 5 s one-shot curl to a
-// fixed, fully-validated target that no caller input can influence. The
-// vm-up-but-app-down state is the one the dashboard otherwise cannot see.
-// Every probe failure degrades to a string, never an error: status is a
-// viewer, not a gate.
+// fixed, fully-validated target. The vm-up-but-app-down state is the one
+// the dashboard otherwise cannot see. Every probe failure degrades to a
+// string, never an error: status is a viewer, not a gate.
 func probeServitorHealth(ctx context.Context) string {
 	bind, err1 := servitorEnvKV("SERVITOR_BIND")
 	port, err2 := servitorEnvKV("SERVITOR_PORT")
@@ -180,20 +176,16 @@ func servitorScriptTail(what, script, out string, err error, logf func(string, .
 }
 
 // servitorSync — push the host checkout into the VM (config/lib/app + the
-// key slice). The script NEVER blocks a run — with a run active
-// it stages everything, sets the update-waiting flag, and exits 0; the
-// app's tick applies restart+doctor at the first idle moment. It therefore
-// can run for a long while (staging wait ≤150 s + service wait + the
-// post-deploy doctor's live run — one prompt that searches the web, a
-// real model call): 600 s keeps it inside the panel-api's 660 s HTTP
-// cap with headroom. On an action timeout the ctx deadline KILLS the
-// script at the deadline (runCmd: direct child dies, in-flight scp/ssh
-// grandchildren may linger) — safe because the script is idempotent and
-// resumable: re-run it (RUNBOOK → Servitor, troubleshooting).
+// key slice). The script NEVER blocks a run — with a run active it stages
+// everything, sets the update-waiting flag, and exits 0; the app's tick
+// applies restart+doctor at the first idle moment. It can run for a long
+// while (staging wait ≤150 s + service wait + the post-deploy doctor's
+// live run): 600 s keeps it inside the panel-api's 660 s HTTP cap with
+// headroom. On an action timeout the ctx deadline KILLS the script at the
+// deadline (direct child dies, in-flight scp/ssh grandchildren may
+// linger) — safe because the script is idempotent and resumable.
 //
-// The deploy key is passed explicitly: runCmd's scrubbed env has no HOME,
-// so the script's ${HOME:-/root} default is only a backstop — /root/.srv
-// is the canonical root-side home (RUNBOOK → Servitor).
+// The deploy key is passed explicitly: runCmd's scrubbed env has no HOME.
 func servitorSync(ctx context.Context, args []string, logf func(string, ...any)) error {
 	script, err := checkManagedScript(servitorRepoPath, filepath.Join("deploy", "sync.sh"))
 	if err != nil {
@@ -207,8 +199,7 @@ func servitorSync(ctx context.Context, args []string, logf func(string, ...any))
 // host-side firewall probes + one live run that searches the web, which
 // certifies the live prompt and the live search in a single model call).
 // Read-only with respect to the VM (it never changes state), so no
-// confirm — but it spends a live model run (300 s budget), hence its
-// own 600 s action budget.
+// confirm — but it spends a live model run, hence its own 600 s budget.
 func servitorDoctor(ctx context.Context, args []string, logf func(string, ...any)) error {
 	script, err := checkManagedScript(servitorRepoPath, filepath.Join("deploy", "doctor.sh"))
 	if err != nil {
@@ -238,13 +229,11 @@ var _ = map[string]Action{
 	"servitor-sync": {
 		Summary: "Push the host checkout (config/lib/app + key slice) into the servitor VM; never blocks a run",
 		Args:    nil,
-		// 10 min: the post-deploy doctor now ends with one live run that
-		// makes the agent search the web (a real model call; ~1–5 min,
-		// 300 s settle cap), so the doctor itself runs at most ~6 min
-		// (static checks + the cap) — on top of the npm stages +
-		// artifact pushes + the tick wait. Keep this at or below 650 s:
-		// panel-api clamps the action's subprocess to timeout_sec + 10,
-		// capped at 660 s, so a bigger budget here would be dead.
+		// 10 min: the post-deploy doctor ends with one live run that makes
+		// the agent search the web (a real model call; 300 s settle cap),
+		// on top of the npm stages + artifact pushes + the tick wait.
+		// Keep this at or below 650 s: panel-api clamps the action's
+		// subprocess to timeout_sec + 10, capped at 660 s.
 		Timeout: 600 * time.Second,
 		Confirm: true,
 		Run:     servitorSync,
@@ -254,7 +243,7 @@ var _ = map[string]Action{
 		Args:    nil,
 		// 10 min: the live run (one prompt that searches the web; 300 s
 		// budget) is a real model call; the static checks are seconds.
-		// Same panel-api clamp as servitor-sync (timeout_sec + 10, cap 660 s).
+		// Same panel-api clamp as servitor-sync.
 		Timeout: 600 * time.Second,
 		Confirm: false,
 		Run:     servitorDoctor,

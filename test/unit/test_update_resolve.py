@@ -3,10 +3,10 @@
 Pins the rule against a synthetic registry — and its ARGV contract,
 which is the rule's only input path: the natural
 `npm view … --json | python3 - <<EOF` form cannot feed a piped payload
-to a heredoc program (the heredoc wins the stdin fight — stdin is the
-program, the pipe is discarded — and the float would silently degrade
-to exact-pin), so deploy/update.sh feeds the versions list as an
-argument. A list is what `npm view <pkg> versions --json` emits.
+to a heredoc program (the heredoc wins the stdin fight — the pipe is
+discarded — and the float would silently degrade to exact-pin), so
+deploy/update.sh feeds the versions list as an argument. A list is
+what `npm view <pkg> versions --json` emits.
 
 The rule itself, pinned against a synthetic registry:
 
@@ -17,8 +17,8 @@ The rule itself, pinned against a synthetic registry:
   applied;
 - an empty or unparseable registry is NO MOVEMENT, not a failure;
 - the .env floor-line preflight (--exact) accepts only a plain X.Y.Z:
-  ranges, tags and prerelease markers are rejected (a non-exact line
-  could never round-trip a deploy — installed == env is doctor-asserted).
+  ranges, tags and prerelease markers are rejected (installed == env
+  is doctor-asserted).
 """
 from __future__ import annotations
 
@@ -94,8 +94,7 @@ def test_declared_not_in_registry_still_floats():
 def test_empty_or_garbage_registry_is_no_movement():
     # these must all equal "declared declared" — a network failure is
     # NO MOVEMENT (the deployed world is left alone), never a failed
-    # update, and never mistaken for a MAJOR AVAILABLE report (that
-    # needs a real latest-overall newer than the target).
+    # update, and never a MAJOR AVAILABLE report.
     assert run("1.5.2", "") == ["1.5.2", "1.5.2"]
     assert run("1.5.2", json.dumps([])) == ["1.5.2", "1.5.2"]
     assert run("1.5.2", "not json") == ["1.5.2", "1.5.2"]

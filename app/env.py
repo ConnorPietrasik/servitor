@@ -1,13 +1,12 @@
 """Servitor environment contract — the single source for env var names.
 
-Contract: every env var the app reads is named in `.env.example`,
-and nothing hardcodes an address/port/path. This module is the one place
-env vars are read; app code goes through :class:`Config` and never touches
+Every env var the app reads is named in `.env.example`, and nothing
+hardcodes an address/port/path. This module is the one place env vars are
+read; app code goes through :class:`Config` and never touches
 ``os.environ`` directly (the gate AST-scans for violations).
 
-Settled values appear here as *documented* defaults for the
-ops parameters only. Addresses, ports, subnets, and the state-volume root
-have no defaults: they come from the env file, full stop.
+Addresses, ports, subnets, and the state-volume root have no defaults:
+they come from the env file, full stop.
 """
 from __future__ import annotations
 
@@ -17,8 +16,7 @@ from typing import Mapping
 
 # Every env var the app (and the deploy scripts it drives) reads, exactly
 # once. test/check_contract.py asserts ENV_NAMES + HOST_DEPLOY_ENV_NAMES
-# (disjointly) equals the names in .env.example, and that no env read in
-# app/ escapes ENV_NAMES.
+# (disjointly) equals the names in .env.example.
 ENV_NAMES: tuple[str, ...] = (
     # --- machine credentials (the only secrets; invariant 5: env-only) ---
     "OMNISSIAH_API_KEY",  # router bearer (host's LLM_API_KEY)
@@ -49,13 +47,11 @@ ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_DOCTOR_CWD",  # cwd for the doctor command (the app tree)
 )
 
-# Host-side deploy names — read ONLY by the host deploy scripts
-# (deploy/sync|doctor|update.sh) and the guest image build
-# (deploy/guest/build.sh): never by the app, and never synced into the guest
-# (the build bakes the address/DNS pair into the image; the update knobs
-# are read by deploy/update.sh only). They live in .env.example so that
-# file is the complete record of the host .env, but they are outside the app
-# contract on purpose — the gate asserts they stay disjoint from ENV_NAMES.
+# Host-side deploy names — read ONLY by the host deploy scripts and the
+# guest image build: never by the app, never synced into the guest. They
+# live in .env.example (the complete record of the host .env) but are
+# outside the app contract on purpose — the gate asserts they stay
+# disjoint from ENV_NAMES.
 HOST_DEPLOY_ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_VM_IP",  # the VM's edge address (ssh target; baked into the image)
     "SERVITOR_HOST_BRIDGE_IP",  # host edge-bridge IP; the guest firewall admits 22 from its /32 (baked in)
@@ -152,11 +148,10 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     if not (1 <= port <= 65535):
         raise ConfigError(f"SERVITOR_PORT out of range: {port}")
 
-    # INVARIANT: the app runs privileged (root on the guest).
-    # The agent never is. This is a boot assertion, not a hint.
+    # INVARIANT: the app runs privileged (root on the guest); the agent
+    # never is. Laptop dev may run unprivileged for pure-protocol work,
+    # but any iso/rpc spawn path re-asserts root before setuid/mount work.
     if hasattr(os, "geteuid") and os.geteuid() != 0:
-        # Laptop dev may run unprivileged for pure-protocol work, but any
-        # iso/rpc spawn path re-asserts root before setuid/mount work.
         pass
 
     return Config(
@@ -179,15 +174,11 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
 
 
 def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Config:
-    """Config for the HTTP front door.
-
-    Requires only the network contract (SERVITOR_BIND / SERVITOR_PORT —
-    no defaults, env-only) and the state root (from the --state arg when
-    the env file does not set it). The ops parameters and version picks
-    fall back to their documented defaults: the pi install itself is
-    resolved by the caller (CLI), so the version floors are not needed to
-    serve HTTP.
-    """
+    """Config for the HTTP front door: only the network contract
+    (SERVITOR_BIND / SERVITOR_PORT) and the state root are required; the
+    ops parameters and version picks fall back to their documented
+    defaults (the pi install is resolved by the caller, so the version
+    floors are not needed to serve HTTP)."""
     if env is None:
         env = os.environ
     port_raw = _require(env, "SERVITOR_PORT")

@@ -1,23 +1,22 @@
 """Per-session mounts.
 
-Mounted at allocate, before **any** spawn/respawn; live for the SESSION
+Mounted at allocate, before any spawn/respawn; live for the SESSION
 lifetime — pi runs a session in its recorded cwd, so idle-kill never
 unmounts; only release does (reverse order).
 
 The four real mounts:
 
-1. **Workdir overlay** — lower = /opt/toolkit (baked toolkit, a plain
-   directory, never a mount), upper/work = scratch/<s>/{upper,work},
-   merged at the stable per-session workdir path — the recorded cwd.
+1. **Workdir overlay** — lower = /opt/toolkit (baked, a plain directory,
+   never a mount), upper/work = scratch/<s>/{upper,work}, merged at the
+   stable per-session workdir path — the recorded cwd.
 2. **Agent-dir overlay** — lower = config/v<N> (the version this session
-   booted from — a plain subdirectory, never a mount; overlayfs won't show
-   a nested mount inside a lowerdir), upper/work =
-   scratch/<s>/{agent-upper,agent-work}. PI_CODING_AGENT_DIR = merged.
+   booted from; overlayfs won't show a nested mount inside a lowerdir),
+   upper/work = scratch/<s>/{agent-upper,agent-work}.
+   PI_CODING_AGENT_DIR = merged.
 3. **inbox bind** — state/inbox/<s> into the merged workdir as ./inbox.
 4. **models.json single-file RO bind** — over the merged agent dir (the
    agent could otherwise shadow it in the upper and steer the NEXT run's
-   endpoint; the bearer key rides along — verified EROFS on write,
-   EBUSY on unlink, even as root).
+   endpoint; the bearer key rides along).
 
 Read-only to the agent = root-owned, slot-uid-unwritable.
 """

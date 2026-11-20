@@ -5,21 +5,19 @@ goes through this one function. Steps, in order:
 
 1. Mark ``draining`` in the registry BEFORE side effects (a crash
    mid-release must not hand out an unswept slot).
-2. Kill the subprocess (the ladder) if alive. Slot/disk pressure never
-   releases a session with a live run (the caller skips and reports);
-   the idle GC likewise.
-3. Kill strays by uid (everything the slot uid still owns — crash-orphans).
+2. Kill the subprocess (the ladder) if alive. Pressure/GC never releases
+   a session with a live run (the caller skips and reports).
+3. Kill strays by uid (crash-orphans).
 4. Unmount (reverse mount order).
-5. Sweep by owner: find / -user slotN — its home, /tmp, everything
-   dropped outside scratch/ — and delete.
-6. Delete inbox/<s>/, scratch/<s>/ (overlay uppers included),
-   sessions/<s>/ — wholesale, by path.
-7. Free the slot ONLY when the sweep verified empty (allocated →
-   cleaning → free). A slot that fails its sweep is quarantined: visible
-   in the panel, retryable, never reused.
+5. Sweep by owner: find / -user slotN — home, /tmp, everything dropped
+   outside scratch/ — and delete.
+6. Delete inbox/<s>/, scratch/<s>/, sessions/<s>/ wholesale, by path.
+7. Free the slot ONLY when the sweep verified empty. A slot that fails
+   its sweep is quarantined: visible in the panel, retryable, never
+   reused.
 
-Release does ALL session cleanup. There is no other path that deletes
-session state or frees a slot.
+Release does ALL session cleanup; no other path deletes session state or
+frees a slot.
 """
 from __future__ import annotations
 

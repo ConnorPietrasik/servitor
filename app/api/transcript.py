@@ -1,20 +1,15 @@
 """Transcript reading (reattach on load — fetch, never replay).
 
 The session file is an append-only tree of entries with stable ids
-(``--session-dir`` flat layout: one jsonl per session). Every entry is
-``{type, id, parentId, timestamp, ...}``; message entries carry
-``message: {role: user|assistant|toolResult, content: [parts], ...}``.
+(``--session-dir`` flat layout: one jsonl per session); message entries
+carry ``message: {role: user|assistant|toolResult, content: [parts]}``.
 
-A live process is authoritative (pi RPC: get_entries). When the
-process is dead (idle-killed, crashed, app restarted) the file on disk is
-the same truth — the readers here work on it directly so the UI can
-reattach to any session without a live process.
-
-The ACTIVE BRANCH is the parent chain from the current leaf. For a live
-process pi reports the leaf (get_entries.leafId); for a
-dead process the leaf is the last entry in append order (pi appends to
-the file in write order, and after a fork all new entries belong to the
-new branch — the file's tail is the active branch's tail).
+A live process is authoritative (pi RPC: get_entries); when the process
+is dead the file on disk is the same truth. The ACTIVE BRANCH is the
+parent chain from the leaf: pi reports the leaf for a live process; for
+a dead process the leaf is the last entry in append order (after a fork
+all new entries belong to the new branch — the file's tail is the active
+branch's tail).
 """
 from __future__ import annotations
 

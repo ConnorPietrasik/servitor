@@ -1,12 +1,9 @@
 """16 static slot uids.
 
-One per LIVE session (running or awaiting release), not per simultaneous
-run. A stable session pins its slot until closed. Uids are discovered from
-the passwd database (created at guest image build) — never hardcoded.
-
-``$HOME`` follows the uid, not an env var: a shared uid with per-session
-$HOME leaks the first time a script forgets to export it, and concurrent
-sessions collide in caches. Signals are uid-gated, not cgroup-gated.
+One per LIVE session (running or awaiting release); a stable session pins
+its slot until closed. Uids are discovered from the passwd database (created
+at guest image build) — never hardcoded. ``$HOME`` follows the uid, not an
+env var. Signals are uid-gated, not cgroup-gated.
 """
 from __future__ import annotations
 
@@ -69,7 +66,7 @@ class SlotPool:
     def by_session(self, session_id: str) -> Slot | None:
         """The slot owning this session — allocated, cleaning, OR
         quarantined (a quarantined slot still owns that session's
-        cleanup: the retry path goes through it)."""
+        cleanup)."""
         for s in self.slots.values():
             if s.session_id == session_id and s.state in ("allocated", "cleaning", "quarantined"):
                 return s
@@ -80,8 +77,7 @@ class SlotPool:
 
     def allocate(self, session_id: str, *, stable: bool = False) -> Slot:
         # idempotent per session: a RESPAWN of a live session reuses the
-        # slot it already pins (a stable session pins its slot until
-        # closed — the respawn path never re-rolls the uid)
+        # slot it already pins (the respawn path never re-rolls the uid)
         for s in self.slots.values():
             if s.session_id == session_id and s.state == "allocated":
                 s.stable = s.stable or stable
@@ -127,8 +123,8 @@ class SlotPool:
 
     def release_slot_if_owned(self, session_id: str, slot: "Slot") -> None:
         """Return a slot whose session's START failed (allocated, never
-        live, no mounts handed to a process): the allocation is rolled
-        back. A LIVE or DRAINING session never loses its slot here."""
+        live): the allocation is rolled back. A LIVE or DRAINING session
+        never loses its slot here."""
         if slot.session_id == session_id and slot.state == "allocated":
             slot.state = "free"
             slot.session_id = None

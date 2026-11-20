@@ -1,5 +1,5 @@
-"""Conformance: pi-web-access key plumbing (verified against the
-pinned 0.48.0 dist, recorded here as a standing conformance fact).
+"""Conformance: pi-web-access key plumbing (against the pinned 0.48.0
+dist).
 
 The 0.48.0 dist: config lookup is agent-dir-based
 (`getWebSearchConfigDir()` returns PI_CODING_AGENT_DIR when set — which
@@ -8,13 +8,13 @@ credential resolves ENV-FIRST (`EXA_API_KEY` beats any web-search.json
 literal). So:
 
 - the key rides the spawn env allowlist (like OMNISSIAH_API_KEY);
-- servitor NEVER writes a key file: no web-search.json exists anywhere in
-  the session's trees after a run;
+- servitor NEVER writes a key file: no web-search.json exists anywhere
+  in the session's trees after a run;
 - nothing credential-shaped enters the synced config tree or a session
   file.
 
-(The LIVE keyed search — a real Exa round trip — is the doctor
-gate, which has the real key; here we assert the plumbing statically.)
+(The LIVE keyed search — a real Exa round trip — is the doctor gate,
+which has the real key; here we assert the plumbing statically.)
 """
 from __future__ import annotations
 

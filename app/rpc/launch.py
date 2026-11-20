@@ -6,18 +6,17 @@ would not catch a future pi default change).
 
 Hard rules encoded here:
 - ``--no-approve`` always; ``--approve`` NEVER appears.
-- ``--no-context-files`` always (injection's favorite filenames).
-- exactly one session-dir mechanism: the ``--session-dir`` flag, identically
-  at spawn/respawn/probe; NEVER ``PI_CODING_AGENT_SESSION_DIR``.
+- ``--no-context-files`` always.
+- exactly one session-dir mechanism: ``--session-dir``, identically at
+  spawn/respawn/probe; NEVER ``PI_CODING_AGENT_SESSION_DIR``.
 - first spawn ``--session-id <minted uuid>``; respawn/probe
-  ``--session <recorded sessionFile>`` — captured verbatim from get_state.
-- NEVER ``--api-key`` (the key rides env only — invariant 5).
-- NEVER ``PI_OFFLINE`` (disables only catalog refresh; buys nothing for a
-  static models.json deploy).
-- NEVER ``--no-extensions`` (baseline extension loading is deliberate;
-  the compensating control is the new-extension warning).
-- the search extension loads by explicit ``-e`` path — the one surface the
-  agent cannot rewrite.
+  ``--session <recorded sessionFile>`` (captured verbatim from get_state).
+- NEVER ``--api-key`` (the key rides env only).
+- NEVER ``PI_OFFLINE``; NEVER ``--no-extensions`` (baseline extension
+  loading is deliberate; the compensating control is the new-extension
+  warning).
+- the search extension loads by explicit ``-e`` path — the one surface
+  the agent cannot rewrite.
 - env is an explicit allowlist, never the app's inherited environment.
 """
 from __future__ import annotations
@@ -83,10 +82,8 @@ def build_launch(
     lang: str = "C.UTF-8",
 ) -> Launch:
     """Build the exact launch line for a spawn, respawn, or probe.
-
     ``session_id`` (first spawn) and ``session_file`` (respawn/probe) are
-    mutually exclusive and exactly one must be given.
-    """
+    mutually exclusive and exactly one must be given."""
     if (session_id is None) == (session_file is None):
         raise ValueError("exactly one of session_id / session_file is required")
 

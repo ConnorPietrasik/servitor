@@ -73,13 +73,7 @@ def test_panel_start_respawns_dead_process(api, api_env):
         assert d["disposition"] == "started"
         api.settle(sid)
 
-        # kill the process via idle-kill (the panel cannot see the driver;
-        # the API has no direct kill — idle-kill is the production path)
-        # (the test env runs idle-kill at 3600s; use release-free kill via
-        # the app: there is no API kill — so: abort, wait for exit, then
-        # start must respawn.)
-        # Simplest deterministic death: the process is still alive but
-        # idle — start must be a no-op:
+        # the process is still alive but idle — start must be a no-op
         r = api.post(f"/panel/sessions/{sid}/action", json_body={"action": "start"}, timeout=60)
         assert r.status_code == 200
         assert r.json()["alive"] is True

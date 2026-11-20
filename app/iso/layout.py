@@ -3,16 +3,15 @@
 Two distinct kinds of path live here, and only here:
 
 1. **Image-baked guest paths** — defined by the guest image build
-   (``deploy/guest/``). The image is the versioned artifact; these
-   constants mirror it. ``/opt/toolkit`` and the session tree roots must
-   stay free of AGENTS.md/CLAUDE.md/SYSTEM.md/.pi context files (they are
-   overlay lowers / cwd ancestors of every session).
+   (``deploy/guest/``); these constants mirror it. ``/opt/toolkit`` and
+   the session tree roots must stay free of AGENTS.md/SYSTEM.md/.pi
+   context files (they are overlay lowers / cwd ancestors of every
+   session).
 2. **State-volume areas** — relative to ``SERVITOR_ROOT`` (the only
-   env-supplied path). Computed by :func:`state_paths`; never
-   hardcoded elsewhere.
+   env-supplied path). Computed by :func:`state_paths`; never hardcoded
+   elsewhere.
 
-Nothing in this module is an address or a port. Deployment parameters come
-from :class:`app.env.Config` exclusively.
+Nothing in this module is an address or a port.
 """
 from __future__ import annotations
 
@@ -20,46 +19,38 @@ from dataclasses import dataclass
 
 # --- image-baked guest paths -----------------------------------------------
 
-#: Baked toolkit — overlay lower of every session workdir. Root-owned 0755
-#: (read-only to slots), a plain directory, never a mount. Must contain no
-#: AGENTS.md/CLAUDE.md/SYSTEM.md/APPEND_SYSTEM.md/.pi (image gate asserts).
+# Baked toolkit — overlay lower of every session workdir. Root-owned 0755,
+# a plain directory, never a mount. Must contain no context files
+# (image gate asserts).
 TOOLKIT_DIR = "/opt/toolkit"
 
-#: pi-web-access install root. Created by the sync pipeline (stage +
-#: rename), never baked into the image.
+# pi-web-access install root. Created by the sync pipeline (stage +
+# rename), never baked into the image.
 PI_EXT_DIR = "/opt/pi-ext/pi-web-access"
 
-#: npm prefix for the pinned pi install (``npm install --ignore-scripts``).
-#: The absolute CLI path is a constant in the harness — never PATH
-#: resolution.
+# npm prefix for the pinned pi install. The absolute CLI path is a
+# constant in the harness — never PATH resolution.
 PI_PREFIX = "/opt/servitor/pi"
 NODE_BIN = "/usr/bin/node"  # LTS, pinned by the image build
 PI_CLI_JS = f"{PI_PREFIX}/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
 
-#: App install (baked into the image at build; the sync pipeline updates
-#: only agent-config/ and lib/).
+# App install (baked into the image; sync updates only agent-config/ + lib/).
 APP_HOME = "/opt/servitor/app"
 
-#: 0600 env file consumed by the systemd unit (the key slice).
+# 0600 env file consumed by the systemd unit (the key slice).
 ENV_FILE = "/etc/servitor/servitor.env"
 
 # --- slots ------------------------------------------------------------------
 
-#: 16 static slot uids, one per live session (running or awaiting release).
-#: Fixed uids, real passwd homes, created at guest image build. ``$HOME``
-#: follows the uid (never an env var). Uids are discovered from the passwd
-#: entries at runtime — never hardcoded here.
+# 16 static slot uids, one per live session. Fixed uids, real passwd homes,
+# created at image build; uids are discovered from passwd at runtime.
 SLOT_NAMES: tuple[str, ...] = tuple(f"slot{i}" for i in range(1, 17))
 SLOT_HOME = "/home/{slot}"
 
-#: The DOCTOR PROBE slot — the one slot OUTSIDE the app's pool (SLOT_NAMES).
-#: The doctor's no-prompt spawn check owns it exclusively: its Lifecycle is
-#: built with a pool of (PROBE_SLOT,) only, and the app never allocates it,
-#: so the app's uid-gated kills (boot reconciliation, respawn invariant 7,
-#: release strays) can never SIGTERM the probe's pi child mid-command while
-#: the service is running or restarting (the doctor certifies a
-#: LIVE guest; a probe on an app slot raced the tick's restart and was
-#: intermittently killed, code -15). Created at image build (uid 9000).
+# The DOCTOR PROBE slot — the one slot OUTSIDE the app's pool. The doctor's
+# no-prompt spawn check owns it exclusively, so the app's uid-gated kills
+# (boot reconciliation, respawn, release strays) can never SIGTERM the
+# probe's pi child. Created at image build (uid 9000).
 PROBE_SLOT = "slot0"
 
 # --- state volume -----------------------------------------------------------
@@ -68,8 +59,8 @@ PROBE_SLOT = "slot0"
 STATE_AREAS: tuple[str, ...] = ("config", "lib", "inbox", "scratch", "sessions")
 
 #: Context-file names that must never exist under the session tree root's
-#: ancestors or the toolkit lower (--no-context-files removes them
-#: from loading; the doctor asserts the chains are free of them anyway).
+#: ancestors or the toolkit lower (--no-context-files removes them from
+#: loading; the doctor asserts the chains are free of them).
 CONTEXT_FILE_NAMES: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md", ".pi")
 
 

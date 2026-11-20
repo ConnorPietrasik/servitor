@@ -33,11 +33,10 @@ def test_kill9_mid_upload_no_half_blobs(api_env):
     digest = hashlib.sha256(payload).hexdigest()
 
     # start a SLOW upload in a thread, then kill -9 the app mid-stream.
-    # The content is throttled on the client side (~50 ms per 64 KB
-    # chunk ≈ 250 KB/s): 16 MB takes ~60 s, so the kill at 2 s lands
-    # deterministically mid-stream. (Unthrottled, loopback delivers
-    # 16 MB in well under a second and the upload completes before the
-    # kill — the drill would not be testing a crash mid-upload.)
+    # The content is throttled on the client side (~250 KB/s): 16 MB
+    # takes ~60 s, so the kill at 2 s lands deterministically
+    # mid-stream (unthrottled, loopback delivers 16 MB in well under a
+    # second and the upload completes before the kill).
     state_box: dict = {"code": None, "err": None}
 
     def slow_chunks():

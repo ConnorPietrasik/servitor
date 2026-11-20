@@ -1,10 +1,8 @@
 """The servitor HTTP/SSE API.
 
 One published port (the container's loopback ingress, edge-only; the
-Portcullis panel is the only public front). This module is the front
-door over the same Lifecycle the stdio protocol used —
-the lifecycle semantics (registry truth, respawn-on-pickup, probe
-rules, ladder, no caps) are unchanged.
+Portcullis panel is the only public front). The front door over the same
+Lifecycle the stdio protocol used — lifecycle semantics unchanged.
 
 Contract surface (versioned in test/.scratch/api-contract.json):
 
@@ -28,21 +26,13 @@ Contract surface (versioned in test/.scratch/api-contract.json):
     GET    /api/v1/sessions/{id}/files/{path}      (outbox/... | uploads/...)
     POST   /panel/sessions/{id}/action             (whitelist)
 
-Rules encoded:
-- Authz is per session: a released/unknown session is 404 (existence of
-  other sessions is never leaked); file paths cannot escape the session
-  dirs (traversal => 404).
-- The API key is never in any response: session creation may carry
-  ``api_key`` (the browser holds it in sessionStorage); it rides the
-  spawn env in-memory only.
-- SSE: monotonic integer ids per session; ``Last-Event-ID`` (or
-  ``?after=``) replays from the bounded ring; a position past the ring
-  edge is a ``gap`` event (the client re-syncs via the API — never
-  partial data). Backpressure: a slow consumer that lets the ring pass
-  the 50 MB cap pauses the RUN; catch-up resumes it.
-- No caps: uploads stream to disk (no 413, no truncation); downloads
-  stream the whole stored file; the event ring is a memory bound, not a
-  message cap.
+Rules: authz is per session (released/unknown ⇒ 404, other sessions
+never leaked; file paths cannot escape the session dirs). The API key is
+never in any response (browser-held, env-only). SSE: monotonic integer
+ids per session; replay from the bounded ring via Last-Event-ID/?after=;
+a position past the ring edge is a ``gap`` event (client re-syncs via
+the API — never partial data); a slow consumer that lets the ring pass
+the cap pauses the RUN. No caps: uploads/downloads stream to/from disk.
 """
 from __future__ import annotations
 
@@ -178,23 +168,18 @@ def _install_http_stop_handler(app_state) -> None:
     Called from the ASGI lifespan startup — by then uvicorn's own
     handler (installed via ``signal.signal`` when ``serve()`` began)
     is in place, and ``signal.signal`` overrides it for the server's
-    life. (Installing before ``serve()`` would not work: uvicorn saves
-    the pre-existing handler as the "original" and masks it.)
+    life (installing before ``serve()`` would not work: uvicorn saves
+    the pre-existing handler as the "original" and masks it).
 
-    uvicorn's handler only sets ``should_exit``: the in-flight SSE
-    streams keep the 'waiting for connections' phase open (a browser
-    holds an SSE connection for the life of the tab, and uvicorn does
-    not cancel an in-flight streaming response — it only disables
-    keep-alive), so the stop runs to the unit's TimeoutStopSec SIGKILL
-    with the abort-then-drain (lifespan shutdown, which starts only
-    AFTER the connection wait) never running, and ``shutting_down``
-    never set (the update tick kept acting on the dying instance — the
-    2026-11-19 false-negative sync: a 120 s deploy stop, a flag eaten
-    by the old instance's dying tick, a false exit 3). The app's
-    handler: ``shutting_down`` now, close every stream, only then let
-    uvicorn exit — the connection wait ends at once, the lifespan
-    shutdown runs the drain (bounded < TimeoutStopSec), and the process
-    exits clean. No-op outside the HTTP front door (no ``http_server``).
+    uvicorn's handler only sets ``should_exit``: in-flight SSE streams
+    keep the 'waiting for connections' phase open (uvicorn does not
+    cancel an in-flight streaming response), so the stop would run to
+    the unit's TimeoutStopSec SIGKILL with the abort-then-drain never
+    running and ``shutting_down`` never set. The app's handler:
+    ``shutting_down`` now, close every stream, only then let uvicorn
+    exit — the connection wait ends at once and the lifespan shutdown
+    runs the drain (bounded < TimeoutStopSec). No-op outside the HTTP
+    front door (no ``http_server``).
     """
     server = getattr(app_state, "http_server", None)
     if server is None:
@@ -209,8 +194,8 @@ def _install_http_stop_handler(app_state) -> None:
 
 
 def build_app(app_state, cfg) -> FastAPI:
-    """Build the FastAPI app over the App core (registry +
-    lifecycle + delivery). ``cfg`` is the validated env Config."""
+    """Build the FastAPI app over the App core (registry + lifecycle +
+    delivery). ``cfg`` is the validated env Config."""
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -223,8 +208,8 @@ def build_app(app_state, cfg) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(_request: Request, exc: Exception):
-        # log + surface the reason (a bare 500 body is not debuggable over
-        # the one published port); the panel/UI sees a clean error JSON
+        # log + surface the reason (a bare 500 body is not debuggable
+        # over the one published port)
         log.exception("unhandled error in %s", _request.url.path)
         return JSONResponse(
             status_code=500,
@@ -256,7 +241,7 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.get(f"/api/{API_VERSION}/sessions")
     async def list_sessions():
         # released sessions are GONE (404 everywhere); the list shows
-        # live sessions only (FREE rows linger until the registry GC)
+        # live sessions only
         return {
             "sessions": [_row_dict(r, app_state.lc) for r in
                          app_state.registry.list_sessions(include_released=False)]
@@ -339,15 +324,13 @@ def build_app(app_state, cfg) -> FastAPI:
             result = await app_state.lc.probe(sid, which)
         except ValueError:
             # fresh session, no transcript yet: the probe's short-lived
-            # spawn is refused by the first-touch rule (it must never be
-            # the first process to touch an agent dir) — the busy state is
+            # spawn is refused by the first-touch rule; the busy state is
             # everything a waiter polling this endpoint needs
             return {"result": None, "busy": busy}
         return {"result": result, "busy": busy}
 
     # ------------------------------------------------------------------ #
-    # transcript fetch (reattach on load: fetch, never replay) +
-    # fork/branch (the last slice)
+    # transcript fetch + fork/branch
     # ------------------------------------------------------------------ #
 
     @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/messages")
@@ -363,11 +346,8 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/fork")
     async def fork(sid: str, body: ForkBody):
         """Fork from a previous user message ('edit that message').
-        Dead process ⇒ respawn first. The active branch moves to the new
-        fork — the client re-fetches messages afterwards. An extension
-        can cancel the fork: then `forked` is false, `cancelled` is
-        true, and nothing changed (the process stays on the original
-        file)."""
+        Dead process ⇒ respawn first. An extension can cancel the fork:
+        then `forked` is false, `cancelled` is true, and nothing changed."""
         _get_row(app_state, sid)
         try:
             out = await app_state.lc.fork(sid, body.entry_id)
@@ -409,18 +389,15 @@ def build_app(app_state, cfg) -> FastAPI:
         if app_state.lc.shutting_down:
             # the stop path is draining: gate BEFORE hub() — hub() is
             # lazy, so a session with no hub yet would get a fresh OPEN
-            # hub handed out here, and that stream would never be closed
-            # by the stop path (close_streams already ran at SIGTERM) —
-            # it would ride the graceful backstop. Don't hand a fresh
-            # stream to a reconnector either (it would replay the ring,
-            # die, and churn); the client's EventSource backs off and
-            # retries — against the new instance once the restart lands
+            # hub that the stop path would never close (close_streams
+            # already ran at SIGTERM). The client's EventSource backs off
+            # and retries against the new instance once the restart lands.
             raise HTTPException(status_code=503, detail="shutting down")
         hub: SseHub = app_state.lc.hub(sid)
         if hub.closed:
-            # per-hub terminal (defense-in-depth: shutting_down above
-            # always precedes close_streams, so this only fires if a hub
-            # is closed while the global flag is somehow unset)
+            # per-hub terminal (defense-in-depth: shutting_down always
+            # precedes close_streams, so this only fires if a hub is
+            # closed while the global flag is somehow unset)
             raise HTTPException(status_code=503, detail="shutting down")
         last_event_id = request.headers.get("last-event-id")
         if after is not None:
@@ -441,7 +418,7 @@ def build_app(app_state, cfg) -> FastAPI:
                     # the requested position was evicted from the ring:
                     # the client must re-sync from the API, not guess
                     yield _sse_frame("gap", json.dumps({"after": start}), None)
-                    cursor = hub.latest_id  # don't hold back backpressure
+                    cursor = hub.latest_id
                     hub.consume(sub, cursor)
                 else:
                     cursor = start
@@ -464,8 +441,7 @@ def build_app(app_state, cfg) -> FastAPI:
                     if hub.closed:
                         # the stop path closed the hub (SIGTERM drain):
                         # end the stream — the client's EventSource
-                        # auto-reconnects (to the new instance after the
-                        # restart; ?after=<cursor> resumes)
+                        # auto-reconnects (?after=<cursor> resumes)
                         return
                     batch = hub.events_after(cursor)
                     for e in batch:
@@ -611,9 +587,8 @@ def build_app(app_state, cfg) -> FastAPI:
         raise HTTPException(status_code=400, detail="unreachable")
 
     # ------------------------------------------------------------------ #
-    # static UI (served by the app, same port, no second
-    # service). Built to ui/dist; absent in dev checkouts — the API
-    # alone is the API surface and keeps working.
+    # static UI (served by the app, same port). Built to ui/dist; absent
+    # in dev checkouts — the API alone keeps working.
     # ------------------------------------------------------------------ #
     ui_dist = Path(__file__).resolve().parents[2] / "ui" / "dist"
     if ui_dist.is_dir() and (ui_dist / "index.html").is_file():

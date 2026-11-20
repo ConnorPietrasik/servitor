@@ -1,23 +1,21 @@
 """Lifecycle gate: session registry + lifecycle.
 
 The gates, verbatim:
-- app-crash/restart drill: kill -9 the app mid-run with the mock's long
-  tool call still in flight — the orphan keeps running; restart ⇒ boot
-  reconciliation kills the orphan via the ladder, registry reconciles,
+- app-crash/restart drill: kill -9 the app mid-run — restart ⇒ boot
+  reconciliation kills any orphan via the ladder, registry reconciles,
   no double slot allocation, session marked interrupted, transcript not
   interleaved; pickup respawns from transcript as the sole process.
 - probe rules: list = registry only, O(1) (zero pi processes); probe as
   slot uid with the run mounts; one process per session file; probe
   never first to touch an agent dir.
-- idle-kill never fires mid-run/mid-compaction and never unmounts — a
-  long synthetic run (long scripted tool call via the mock) that outlasts
-  the idle threshold is never killed (compressed timescale: the rule is
-  threshold-independent).
+- idle-kill never fires mid-run/mid-compaction and never unmounts (a
+  long synthetic run that outlasts the idle threshold is never killed —
+  compressed timescale: the rule is threshold-independent).
 - respawn of a transcript-less row = "idle, nothing to resume", not an
   error.
 - planted-extension test: drop an extension into the agent upper,
   respawn, assert the warning lands in the event feed + registry and
-  the run is unaffected (pi loaded it; warn, never block).
+  the run is unaffected (warn, never block).
 """
 from __future__ import annotations
 
@@ -193,15 +191,11 @@ def stage2_env(run_root):
 
 def test_crash_restart_drill(stage2_env):
     """kill -9 the app mid-run with the mock's long tool call still in
-    flight (on pi 1.5.2 verified behavior: the
-    orphan's stdin closes at app death and pi's EOF shutdown ABORTS the
-    in-flight run and exits — verified behavior, cited in the test history).
-    Restart ⇒ boot reconciliation: any still-alive orphan is killed via
-    the ladder, the registry reconciles (interrupted — by the live
-    orphan OR the transcript crash signature), no double slot
-    allocation (the stable crashed session keeps its slot; a new session
-    waits), the transcript is not interleaved, and pickup respawns from
-    the transcript as the sole process."""
+    flight. The orphan's stdin closes at app death; pi's EOF shutdown
+    aborts the in-flight run and exits. Restart ⇒ boot reconciliation:
+    any still-alive orphan is killed via the ladder, the registry
+    reconciles (interrupted), no double slot allocation, the transcript
+    is not interleaved, and pickup respawns as the sole process."""
     env = stage2_env
     state_root, pi, run_root = env["state_root"], env["pi"], env["run_root"]
     state = env["state"]
@@ -236,27 +230,28 @@ def test_crash_restart_drill(stage2_env):
         # the child is alive (slot uid)
         assert _slot_uid_pids(uid), "no slot-uid process mid-run"
 
-        # KILL -9 THE APP — the drain never runs. The crash sends the orphan
-        # no signal (SIGKILL is not propagated): the orphan's stdin simply
-        # closes, and pi 1.5.2's EOF shutdown aborts the in-flight run and
-        # exits on its own — within a few hundred ms (verified). What is
-        # deterministic and asserted: the run never completed (no second
-        # request), and after restart nothing slot-uid is alive, the registry
-        # is reconciled (interrupted), and the session survived for pickup.
+        # KILL -9 THE APP — the drain never runs. The crash sends the
+        # orphan no signal (SIGKILL is not propagated): the orphan's
+        # stdin simply closes, and pi's EOF shutdown aborts the in-flight
+        # run and exits. What is deterministic and asserted: the run
+        # never completed (no second request), and after restart nothing
+        # slot-uid is alive, the registry is reconciled (interrupted),
+        # and the session survived for pickup.
         app.proc.kill()
         app.proc.wait()
 
-        # the orphan must be gone on its own (EOF shutdown), and the
-        # aborted run must never have completed (no second request at the mock)
+        # the orphan must be gone on its own (EOF shutdown); the aborted
+        # run must never have completed (no second request at the mock)
         deadline = time.time() + 20
         while _slot_uid_pids(uid) and time.time() < deadline:
             time.sleep(0.3)
         assert not _slot_uid_pids(uid), "orphan survived (reconciliation window)"
         assert len(router.requests()) == 1, "the aborted run must not have completed"
 
-        # RESTART: boot reconciliation reconciles the registry. The orphan
-        # self-exited in this timing; if it had still been alive (a slower
-        # shutdown), the ladder kills it — boot_report records either case
+        # RESTART: boot reconciliation reconciles the registry. The
+        # orphan self-exited in this timing; if it had still been alive
+        # (a slower shutdown), the ladder kills it — boot_report records
+        # either case
         app2 = start_app(state_root, pi=pi, slot=SLOT, router=router, run_root=run_root,
                          shutdown_grace_sec=5.0)
         try:
@@ -272,7 +267,7 @@ def test_crash_restart_drill(stage2_env):
 
             # transcript not interleaved: every line parses, header first,
             # the single prompt exactly once, the aborted run's trace at
-            # the tail (no final answer to the first prompt)
+            # the tail
             lines = _transcript_lines(rows[sid]["session_file"])
             assert lines[0].get("type") == "session"
             flat = json.dumps(lines, ensure_ascii=False)
@@ -345,8 +340,8 @@ def test_probe_rules(stage2_env):
         app.send("settle", {"session_id": sid}, timeout=90)
 
         # list = registry only, O(1): list_sessions must not WAKE a pi
-        # process (the resident idle process is fine — that is the
-        # idle-kill contract, not the list's)
+        # process (a resident idle process is the idle-kill contract,
+        # not the list's)
         before = set(_slot_uid_pids(uid))
         listed = app.send("list_sessions")["sessions"]
         after = set(_slot_uid_pids(uid))
@@ -558,11 +553,10 @@ def test_planted_extension_warns_and_run_unaffected(stage2_env):
 
         # plant the extension THROUGH the merged agent dir — exactly how
         # the agent does it (its writes land in the upper). Creating it
-        # directly in the upperdir instead would hit a kernel overlayfs
-        # quirk: pi's startup scan already looked up the absent
-        # `extensions` dir (cached negative dentry), and an externally
-        # created upper entry stays invisible to lookups (readdir shows
-        # it; stat does not) until the overlay is remounted.
+        # directly in the upperdir would hit a kernel overlayfs quirk:
+        # pi's startup scan already looked up the absent `extensions`
+        # dir (cached negative dentry), and an externally created upper
+        # entry stays invisible to lookups until the overlay is remounted.
         ext_dir = Path(state) / "scratch" / sid / "agent-dir" / "extensions"
         ext_dir.mkdir(parents=True, exist_ok=True)
         planted = ext_dir / "planted.ts"

@@ -66,13 +66,11 @@ def api_env(sse_cap, tmp_path_factory):
     run_root = Path(f"/srv/servitor-test/run-{tag}")
     run_root.mkdir(parents=True, exist_ok=True)
     run_root.chmod(0o755)
-    # the state root lives on the SHARED 0755 tree, NOT under a slot home:
-    # every slot's pi process must traverse state (transcripts under
-    # state/sessions/<s>, mounts under state/scratch/<s>) — a 0700 slot
+    # the state root lives on the SHARED 0755 tree, NOT under a slot
+    # home: every slot's pi process must traverse state — a 0700 slot
     # home makes the state invisible to every other slot (EACCES: pi
-    # exits 1 at spawn; existsSync false on its own session dir).
-    # This mirrors production, where state is a dedicated volume,
-    # never inside a slot home.
+    # exits 1 at spawn). Mirrors production, where state is a dedicated
+    # volume, never inside a slot home.
     state_root = run_root / "state"
     state_root.mkdir(parents=True, exist_ok=True)
     state_root.chmod(0o755)

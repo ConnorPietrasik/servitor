@@ -1,17 +1,13 @@
-"""The servitor app entry: the HTTP/SSE API on the one published
-port (uvicorn), with the JSON-over-stdio protocol kept behind
-``--stdio`` (the crash drill and the lifecycle regression tests use
-it).
+"""The servitor app entry: the HTTP/SSE API on the one published port
+(uvicorn), with the JSON-over-stdio protocol kept behind ``--stdio``
+(crash drill + lifecycle regression tests use it).
 
-The front door is thin: the Lifecycle (registry truth, respawn-on-
-pickup, probe rules, ladder, no caps) is the same object in both modes.
+The front door is thin: the same Lifecycle object in both modes.
 
-Protocol (stdio mode): one JSON object per line on stdin, one JSON
-object per line on stdout:
+Protocol (stdio mode): one JSON object per line on stdin/stdout:
 
     {"id": 1, "cmd": "start_session", "args": {"display_name": "x"}}
     -> {"id": 1, "ok": true, "result": {...}}
-    -> {"id": 1, "ok": false, "error": "TypeError: ..."}
 
 Commands: start_session, prompt, settle, steer, follow_up, abort,
 list_sessions, probe, release, events, idle_kill_tick, gc_tick,
@@ -156,8 +152,7 @@ class App:
             )
             if not run_active:
                 # 'settle' = wait until idle: already idle ⇒ return at once
-                # (a settle that fired before this command is still the
-                # answer — a waiter installed after the fact would hang)
+                # (a waiter installed after the fact would hang)
                 return {"aborted": bool(live.driver.last_settled_aborted),
                         "already_settled": True}
             fut = live.driver.settle_waiter()
@@ -265,10 +260,8 @@ class App:
 
     async def run_http(self) -> None:
         """Front door: uvicorn on SERVITOR_BIND:SERVITOR_PORT
-        (env-only, no defaults). The ASGI app is the same Lifecycle.
-
-        The fastapi/uvicorn imports are lazy: the stdio front door
-        runs without them."""
+        (env-only, no defaults). The fastapi/uvicorn imports are lazy:
+        the stdio front door runs without them."""
         import uvicorn
 
         from app.api.app import build_app
@@ -279,8 +272,7 @@ class App:
         # the SSE ring cap is a per-hub memory policy (default 50 MB):
         # wire it before any session hub is created (hubs are lazy)
         self.lc.cfg.sse_ring_bytes = cfg.sse_ring_bytes
-        # start_update_tick is idempotent; the ASGI lifespan starts the
-        # GC — the tick starts here (before the first request)
+        # start_update_tick is idempotent; the ASGI lifespan starts the GC
         self.lc.start_update_tick()
         asgi = build_app(self, cfg)
         server = uvicorn.Server(
@@ -294,24 +286,17 @@ class App:
                 # backstop for the 'waiting for connections' phase.
                 # Normal stop: the stop path (lifespan-installed SIGTERM
                 # handler) closes every SSE hub the instant SIGTERM
-                # lands, the connection wait ends at once (~0 s), and
-                # the budget is the drain that follows — three phases
-                # under ONE shared clock (lifecycle.shutdown): ≤ ~25 s
-                # (notify + stdin close) inside the ≤ 90 s EOF grace,
-                # + 10 s TERM + an instant KILL ≈ 100 s worst case,
-                # REGARDLESS of how many children are live (a
-                # sequential per-child wait would add up: N stuck
-                # children → N × ~101 s, riding the unit's
-                # TimeoutStopSec out to the SIGKILL). The backstop
-                # itself fires only for a connection that survives the
-                # hub close (a bug) — kept small so even that tail
-                # (≈ 20 + 100 s, at the window's edge) is no worse than
-                # the pre-fix 120 s SIGKILL.
+                # lands, the connection wait ends at once, and the
+                # budget is the drain that follows — three phases under
+                # ONE shared clock (lifecycle.shutdown), bounded
+                # REGARDLESS of how many children are live. The backstop
+                # fires only for a connection that survives the hub
+                # close (a bug) — kept small.
                 timeout_graceful_shutdown=20.0,
             )
         )
         # the stop path (app.py's lifespan) needs the server to set
-        # should_exit; stash it before serve() installs the signal handlers
+        # should_exit; stash it before serve() installs its handlers
         self.http_server = server
         await server.serve()
 

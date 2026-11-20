@@ -69,10 +69,10 @@ def _mount_session(env, session_id: str) -> tuple[SessionMountPaths, list[M.Moun
     lower = configswap.stage_and_swap(str(state.config), str(env["run_root"] / "cfgsrc"))
     lower_dir = configswap.require_active_dir(str(state.config))
     ident = slot_identity(SLOT)
-    # make the staged config tree slot-owned (the bind SOURCE): the agent's
-    # write denials are then attributable to the MOUNT (EROFS), not the
-    # file's permission bits (EACCES) — the strictest form of "writes
-    # refused". Production's contract is the same, root-owned source.
+    # make the staged config tree slot-owned (the bind SOURCE): the
+    # agent's write denials are then attributable to the MOUNT (EROFS),
+    # not the file's permission bits (EACCES). Production's contract is
+    # the same, root-owned source.
     for dirpath, dirnames, filenames in os.walk(lower_dir):
         for name in dirnames + filenames:
             os.chown(os.path.join(dirpath, name), ident.uid, ident.gid)

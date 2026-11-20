@@ -1,7 +1,5 @@
 """The session registry — SQLite, the ONLY source of session truth.
-
-The session list reads this table only — O(1), zero pi processes,
-always. Everything else (probe, respawn, GC, the panel) derives from it.
+The session list reads this table only — O(1), zero pi processes.
 
 State machine (validated — a crash mid-release must not hand out an
 unswept slot):
@@ -12,9 +10,8 @@ unswept slot):
     cleaning ── sweep verified empty ──▶ free
     cleaning ── sweep failed ──▶ (slot quarantined; row stays draining)
 
-    * live→cleaning: release of a never-spawned allocated row (no process,
-      no mounts — still goes through draining first; the shortcut exists
-      only as a state-machine convenience the release path uses).
+    * live→cleaning: release of a never-spawned allocated row (a
+      state-machine convenience the release path uses).
 
 The `free` row is a DEAD row: slot released, transcript areas deleted.
 It stays in the table (the panel shows closed sessions) until a registry

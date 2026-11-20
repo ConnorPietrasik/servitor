@@ -3,17 +3,17 @@
 The pi RPC protocol is strict JSONL: one JSON object per record, LF-
 terminated. Splitting rules, exactly:
 
-- split records ONLY on ``b"\\n"`` (0x0A). ``U+2028``/``U+2029`` are legal
+- split records ONLY on ``b"\n"`` (0x0A). ``U+2028``/``U+2029`` are legal
   inside JSON strings and are NOT record boundaries — Node's ``readline``
   splits on them (the documented trap), and so does Python text-mode
   ``readline()``.
-- strip ONE optional trailing ``b"\\r"`` (tolerate CRLF input).
+- strip ONE optional trailing ``b"\r"`` (tolerate CRLF input).
 - decode each record as UTF-8 from bytes — never run the stream through
-  text-mode universal-newline translation, which rewrites embedded CRLF and
-  corrupts JSON strings.
+  text-mode universal-newline translation, which rewrites embedded CRLF
+  and corrupts JSON strings.
 
-This class is deliberately synchronous (a feed loop) so the same code runs
-under asyncio (``StreamReader.read``) and in unit tests (byte chunks).
+Deliberately synchronous (a feed loop) so the same code runs under
+asyncio and in unit tests.
 """
 from __future__ import annotations
 

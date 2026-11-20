@@ -31,14 +31,12 @@ table inet servitor {
 		ct state invalid drop
 		ip saddr { $SERVITOR_EDGE_SUBNET } tcp dport $SERVITOR_PORT accept comment "servitor api — edge subnet only (invariant 3)"
 		# ops ssh from the host bridge IP AND the ops subnet: the host's
-		# own ssh to the VM (sync/doctor/update, the panel actions' scripts,
-		# the manual key path) sources the host's EDGE BRIDGE IP — the
-		# kernel picks the output-interface address for the connected
-		# route — so admit exactly that /32 (the full edge segment would
-		# put every edge container on sshd's doorstep, and LAN-only would
-		# lock the host out of its own VM). A LAN workstation (host
-		# forward rule, no SNAT) keeps its LAN source address — hence the
-		# ops subnet here too.
+		# own ssh to the VM sources the host's EDGE BRIDGE IP (the kernel
+		# picks the output-interface address for the connected route) —
+		# admit exactly that /32 (the full edge segment would put every
+		# edge container on sshd's doorstep; LAN-only would lock the host
+		# out of its own VM). A LAN workstation (host forward rule, no
+		# SNAT) keeps its LAN source address — hence the ops subnet too.
 		ip saddr { $SERVITOR_HOST_BRIDGE_IP/32, $SERVITOR_OPS_SUBNET } tcp dport 22 accept comment "ops ssh — host bridge IP + LAN"
 	}
 	chain forward {

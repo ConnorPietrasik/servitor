@@ -5,8 +5,7 @@ Method: a network namespace with ONLY loopback. The mock router is on
 loopback (it works); the npm registry is not (it cannot). If pi or the
 extension attempts ANY registry contact at load/startup — an unpinned
 re-check, a fetch, a telemetry call — the run fails in the netns and the
-test fails. An exact pin is not re-checked against npm at start;
-this proves it live, not by reading the docs.
+test fails.
 
 Root required (unshare -n); loud-skip otherwise. The inner script runs
 the same harness code path in the netns (spawn, get_state, prompt,

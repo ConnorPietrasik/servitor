@@ -4,26 +4,26 @@
 Asserts the interface contract before any runtime code exists:
 
 1. **Env contract** — every env var the app reads is named in
-   `.env.example`; the file is the complete record of the host `.env`, so
-   its name set equals ``app.env.ENV_NAMES`` (app-contracted) plus
-   ``HOST_DEPLOY_ENV_NAMES`` (host deploy scripts + image build — never the
-   app; asserted disjoint). App code reads env only through
-   ``app/env.py`` (AST scan: no other ``os.environ``/``os.getenv`` reads).
-2. **Nothing hardcodes an address/port/path** — no IPv4 literals anywhere
-   in ``app/`` or ``deploy/`` code; no loopback/any-address literal in
-   ``app/`` (the bind comes from env even for standalone); the compose
-   contract publishes exactly one port, referenced as ``${SERVITOR_PORT}``;
-   the route file references the VM via placeholders, no literal port.
-3. **Contract files parse** — compose contract and the portcullis route
-   yml load as YAML with the expected shape (one router, the servitor
-   hostname, the auth-chain middleware, the SSE flush setting, and the
-   absence of the dead readTimeout key (not a Traefik v3 field)).
-4. **Agent-config sanity** — models.json: literal baseUrl (``$VAR`` is NOT
-   interpolated), ``apiKey: "$OMNISSIAH_API_KEY"`` (env-only key),
+   `.env.example`; the file is the complete record of the host `.env`,
+   so its name set equals ``app.env.ENV_NAMES`` plus
+   ``HOST_DEPLOY_ENV_NAMES`` (host deploy scripts + image build —
+   never the app; asserted disjoint). App code reads env only through
+   ``app/env.py`` (AST scan).
+2. **Nothing hardcodes an address/port/path** — no IPv4 literals
+   anywhere in ``app/`` or ``deploy/`` code; no loopback/any-address
+   literal in ``app/`` (the bind comes from env even for standalone);
+   the compose contract publishes exactly one port, referenced as
+   ``${SERVITOR_PORT}``; the route file references the VM via
+   placeholders, no literal port.
+3. **Contract files parse** — compose contract and the portcullis
+   route yml load as YAML with the expected shape (one router, the
+   servitor hostname, the auth-chain middleware, the SSE flush
+   setting, and the absence of the dead readTimeout key).
+4. **Agent-config sanity** — models.json: literal baseUrl (``$VAR`` is
+   NOT interpolated), ``apiKey: "$OMNISSIAH_API_KEY"`` (env-only key),
    image-capable model declared; no ``auth.json``/``models-store.json``
    (a stale stored credential would silently beat the env var); no
-   AGENTS.md/CLAUDE.md (context-file names); SYSTEM.md carries the
-   config-gate marker.
+   context-file names; SYSTEM.md carries the config-gate marker.
 
 Exit 0 = green. Run: `make check` (stdlib + PyYAML from the venv).
 """

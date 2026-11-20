@@ -2,21 +2,17 @@
 
 Host-side ``sync.sh`` / ``update.sh`` write this file when a deployed
 shape change (config / extension / keys / image) needs a service
-restart and/or a doctor run. The app's in-process tick consumes it:
-
-- a run is active  -> defer: the flag survives, the affected sessions
-  get ``update_waiting`` set (visible in the panel), the tick retries;
-- no run active    -> the tick applies the restart (and the doctor runs
-  on the new instance's first idle tick, or inline when the flag carries
-  doctor without restart). A doctor-only flag is cleared ONLY when the
-  doctor passes: "file gone" is the fact sync's post-clear edge probe
-  trusts (it must imply an instance's cert passed against a live port);
-  a failed cert keeps the flag visible and retries on the next tick.
+restart and/or a doctor run. The app's in-process tick consumes it: a run
+active -> defer (the flag survives, sessions get ``update_waiting``, the
+tick retries); no run active -> apply the restart (the doctor runs on the
+new instance's first idle tick, or inline for a doctor-only flag). A
+doctor-only flag is cleared ONLY when the doctor passes: "file gone" is
+the fact sync's post-clear edge probe trusts.
 
 Crash safety: the restart bit is cleared BEFORE the restart is issued
 (consume_restart), so a crash between clear and restart can never
-double-restart; a crash mid-restart just leaves a doctor-only flag,
-which the new instance's tick applies.
+double-restart; a crash mid-restart leaves a doctor-only flag for the new
+instance.
 """
 from __future__ import annotations
 

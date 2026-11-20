@@ -2,8 +2,7 @@
 
 Gates assert ROUTER-SIDE: the captured request's `tools` array is
 authoritative (the system prompt string is a red herring — it mentions
-"codemode" in its docs index even when the tool is gone, per the 2026-11-14
-verification).
+"codemode" in its docs index even when the tool is gone).
 
 v1 declared set: the four pi-web-access tools present
 (`web_search`, `source_check`, `fetch_content`, `get_search_content`) +

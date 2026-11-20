@@ -1,12 +1,12 @@
 """Mock LLM router — OpenAI-compatible, request-recording, scripted.
 
-Permanent test infrastructure: a small HTTP server that
-records every request (headers, body) and returns scripted
-OpenAI-compatible completions — including thinking blocks (on every run,
-per the verified behavior), parallel tool_calls, error responses, and long
+A small HTTP server that records every request (headers, body) and
+returns scripted OpenAI-compatible completions — including thinking
+blocks (on every run), parallel tool_calls, error responses, and long
 gaps. The entire driver is testable without inference; gates assert
-router-side (a request arrived, with the right Bearer/model/content) — a
-gate that only checks `disposition: started` passes while inference is dead.
+router-side (a request arrived, with the right Bearer/model/content) —
+a gate that only checks `disposition: started` passes while inference
+is dead.
 
 Stdlib only. Control endpoints (same port, never on the LLM surface):
   POST /mock/script   — set the scripted scenario
@@ -196,12 +196,11 @@ class MockRouter:
                 self._send_sse(chunks)
 
         # find a free port on the requested host (loopback by default; the
-        # the guest drills bind the host's bridge address so the guest
-        # can reach the mock). The host firewall default-drops inbound from
+        # guest drills bind the host's bridge address so the guest can
+        # reach the mock). The host firewall default-drops inbound from
         # the servitor edge subnet EXCEPT the test-mock range 48700:48799
-        # (one-time host setup: ufw allow in from 10.42.0.0/24 to any port
-        # 48700:48799 proto tcp comment servitor-test-mock) — prefer that
-        # range so a guest-bound mock is actually reachable from the guest.
+        # (one-time host ufw setup) — prefer that range so a guest-bound
+        # mock is actually reachable from the guest.
         import socket
 
         self._port = 0

@@ -2,15 +2,9 @@
 
 - A doctor-only flag is cleared ONLY by a PASSED cert: a failed doctor
   keeps the flag (visible — panel update_waiting, doctor update.waiting
-  warn — and retried by the SAME instance on its next tick: a
-  doctor-only flag stages no restart, so there is no post-restart
-  instance; doctor runs are sequential, each bounded by the doctor's
-  600 s subprocess timeout). "File gone" is the fact sync's post-clear edge
-  probe trusts: it must imply an instance's cert passed against a live
-  port. The 2026-11-19 false-negative sync ran on the old contract,
-  where the stop-draining OLD instance re-ran the doctor against its
-  own just-closed port and the unconditional clear let it eat the NEW
-  instance's cert.
+  warn — and retried by the SAME instance on its next tick). "File
+  gone" is the fact sync's post-clear edge probe trusts: it must imply
+  an instance's cert passed against a live port.
 - A pre-restart doctor FAIL must not hold the staged restart
   (provisioning: the restart IS the fix).
 - A degenerate all-false flag is cleared (a lingering file would wedge
@@ -19,13 +13,11 @@
 - The HTTP stop path (lifespan-installed SIGTERM handler):
   shutting_down FIRST, then close every SSE stream, only then
   uvicorn's should_exit — the streams end before uvicorn's 'waiting
-  for connections' phase, so a connected browser's SSE stream can no
-  longer ride the stop out to the unit's TimeoutStopSec SIGKILL.
+  for connections' phase.
 
 Lifecycle is built with __new__ (no __init__ side effects); the
 doctor/registry seams are real (sqlite + the real flag file with its
-locking) and the doctor run itself is shadowed, per the
-test_session_waiters / test_fork_gate pattern.
+locking) and the doctor run itself is shadowed.
 """
 from __future__ import annotations
 

@@ -7,15 +7,12 @@
 # the freshness floor (IMAGE_MAX_AGE_DAYS): the rebuild re-resolves the Arch
 # packages, so kernel/node/python float with it (recorded in the manifest).
 # Retention: the NEW active image + exactly the previous one (the update's
-# automatic rollback target, manifest entry "retained_previous") — every
-# older image is pruned here (qcow2 + extracted kernel/initramfs + manifest
-# entry): the freshness floor makes rebuilds routine, and an image triple is
-# multi-GB, so unbounded retention would grow the checkout forever.
+# automatic rollback target) — every older image is pruned here (qcow2 +
+# extracted kernel/initramfs + manifest entry): an image triple is multi-GB
+# and rebuilds are routine.
 #
-# Determinism: pinned base (pins.json: url + sha256); the package set
-# comes from the Arch repos at build time and is recorded in the
-# manifest. Two builds from the same pins + repo state + repo snapshot
-# produce the same image bytes.
+# Determinism: pinned base (pins.json: url + sha256); the package set comes
+# from the Arch repos at build time and is recorded in the manifest.
 #
 # Requirements: root (mkfs/loop mounts/chroot), qemu (qemu-img), network
 # (Arch repos + npm). Run from the repo root:
@@ -23,10 +20,7 @@
 #
 # unshare -m keeps the build's loop/mount activity in a PRIVATE mount
 # namespace: a mid-build crash leaves no host mounts behind, and the heavy
-# mount churn (chroot pseudo mounts, the devtmpfs bind) stays out of the
-# host mount table entirely (2026-11-16: two sessions lost their agent
-# bash tool with `spawn /bin/bash ENOENT` right around this churn; both
-# cleared by reboot. unshare -m is the mitigation, the reboot the cure).
+# mount churn stays out of the host mount table entirely.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -80,11 +74,9 @@ fi
 # the guest's static edge config, derived from the .env (no literals here)
 GUEST_ADDR="${SERVITOR_VM_IP}/${SERVITOR_EDGE_SUBNET##*/}"
 # gateway = the subnet's .1 (the host bridge IP — harness invariant). NOT
-# "${SUBNET%%/*}.1": for a base like the /24's zero-address that yields a
-# 5-octet invalid string (e.g. base + ".1" = "a.b.c.0.1") which
-# systemd-networkd silently drops — the guest then boots with no default
-# route and every live-router gate dies (empty assistant turns on the real
-# router; exa searches time out)
+# "${SUBNET%%/*}.1": for a /24's zero-address base that yields a 5-octet
+# invalid string which systemd-networkd silently drops — the guest then
+# boots with no default route and every live-router gate dies.
 GUEST_GW="$(cut -d. -f1-3 <<<"${SERVITOR_EDGE_SUBNET%%/*}").1"
 [[ -f "$DEPLOY_KEY" ]] || {
   echo "deploy key not found: $DEPLOY_KEY" >&2
@@ -187,9 +179,9 @@ echo "    installed: $(tr '\n' ' ' < "$WORK/disk/tmp/pkglist.txt" | cut -c1-160)
 mkdir -p "$WORK/disk/opt/servitor/app"
 rsync -a --delete "$REPO/app/" "$WORK/disk/opt/servitor/app/app/"
 cp "$REPO/pyproject.toml" "$WORK/disk/opt/servitor/app/pyproject.toml"
-# never ship rollback remnants: an in-build sync (or an earlier build
-# iteration) leaves app.previous* — a stale previous tree baked into the
-# image poisons the FIRST update rollback (it restores pre-build code)
+# never ship rollback remnants: an in-build sync leaves app.previous* — a
+# stale previous tree baked into the image poisons the FIRST update
+# rollback (it restores pre-build code)
 rm -rf "$WORK/disk/opt/servitor/app.previous" \
        "$WORK/disk/opt/servitor/app.previous.app" \
        "$WORK/disk/opt/servitor/app.previous.pyproject"
@@ -198,11 +190,10 @@ rm -rf "$WORK/disk/opt/servitor/app.previous" \
 # (app/api/app.py resolves <app root>/ui/dist — on the guest that is
 # /opt/servitor/app/ui/dist). Built host-side at image time with vite
 # (nodejs is a required host package). NO --ignore-scripts here, unlike
-# the pi stage: esbuild (a vite dep) needs its install script to lay down
-# its binary. A dist-less image is API-only — the phone gets a 404 behind
-# the 2FA gate and nothing in the API-only gate stack says why — so this
-# is a hard build step, not a convenience. sync.sh keeps it current on
-# the guest for UI-only changes (no image rebuild).
+# the pi stage: esbuild (a vite dep) needs its install script. A dist-less
+# image is API-only (a 404 behind the 2FA gate, nothing explaining why) —
+# so this is a hard build step, not a convenience. sync.sh keeps it
+# current on the guest for UI-only changes (no image rebuild).
 ( cd "$REPO/ui" && npm ci --no-audit --no-fund >/dev/null && npm run build >/dev/null )
 rm -rf "$WORK/disk/opt/servitor/app/ui"
 mkdir -p "$WORK/disk/opt/servitor/app/ui"
@@ -336,8 +327,7 @@ systemctl enable sshd servitor-firewall servitor systemd-networkd systemd-resolv
 ssh-keygen -A >/dev/null
 # first-boot hygiene: the bootstrap ships an EMPTY machine-id, so
 # systemd-firstboot.service would drop into an interactive prompt and HANG
-# boot (no one to answer the serial console). Set a machine-id and mask
-# firstboot so the image boots straight to multi-user.
+# boot. Set a machine-id and mask firstboot.
 systemd-machine-id-setup >/dev/null 2>&1 || true
 ln -sf /dev/null /etc/systemd/system/systemd-firstboot.service
 cat > /etc/zram-generator.conf <<'CONF'
@@ -359,11 +349,8 @@ Gateway=${GUEST_GW}
 NET
 # DNS: no DHCP on the edge bridge, so systemd-resolved must be enabled with
 # an explicit upstream (.env SERVITOR_DNS_UPSTREAM; public resolvers work
-# over the host's egress NAT). An earlier image shipped resolved DISABLED
-# with a stale NetworkManager resolv.conf pointing at the stub address of a
-# dead service — the guest booted unable to resolve any public name: exa
-# searches died and the real router was only reachable via the LAN hosts
-# pin. Stub listener stays on the standard loopback stub.
+# over the host's egress NAT). Stub listener stays on the standard loopback
+# stub.
 mkdir -p /etc/systemd/resolved.conf.d
 cat > /etc/systemd/resolved.conf.d/10-servitor.conf <<DNS
 [Resolve]
@@ -452,13 +439,12 @@ if prev and prev != name:
 manifest["images"][name] = entry
 manifest["active"] = name
 # retention: the new active + exactly the previous (the rollback target)
-# only. Everything older is trash — files AND manifest entries (see the
-# header). The previous is NEVER pruned here: it is the update's rollback
-# target, and the NEXT build supersedes it, one generation at a time.
-# Files go first, the manifest after: a crash in between leaves orphan
-# files (visible trash), not a manifest pointing at pruned rollback
-# targets. A file that cannot be deleted keeps its manifest entry — the
-# next build retries the prune.
+# only. Everything older is trash — files AND manifest entries. The
+# previous is NEVER pruned here: it is the update's rollback target, and
+# the NEXT build supersedes it, one generation at a time. Files go first,
+# the manifest after: a crash in between leaves orphan files (visible
+# trash), not a manifest pointing at pruned rollback targets. A file that
+# cannot be deleted keeps its manifest entry — the next build retries.
 dir = os.path.dirname(manifest_path) or "."
 pruned = []
 for n in sorted(n for n in manifest["images"] if n not in ({name} | ({prev} if prev and prev != name else set()))):
@@ -479,8 +465,7 @@ for n in sorted(n for n in manifest["images"] if n not in ({name} | ({prev} if p
 for n in pruned:
     del manifest["images"][n]
 # atomic write (temp + rename): a crash here must not corrupt the manifest
-# — it is the source of "which image runs" (update.sh's OLD_IMAGE/age,
-# the guest suite's boot image, this step's retention)
+# — it is the source of "which image runs".
 fd, tmp = tempfile.mkstemp(dir=dir)
 with os.fdopen(fd, "w") as fh:
     json.dump(manifest, fh, indent=2, sort_keys=True)

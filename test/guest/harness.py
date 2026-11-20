@@ -39,10 +39,9 @@ HOST_BRIDGE_IP = "10.42.0.1"
 BRIDGE = "servitor-edge"
 PORT = 8787
 STATE_SIZE = "16G"
-# the per-VM tap, attached to BRIDGE. We create + attach it ourselves (root)
-# and hand it to qemu via `-netdev tap` — this bypasses the setuid
-# qemu-bridge-helper, whose ACL rejects our bridge name ("access denied by
-# acl file").
+# the per-VM tap, attached to BRIDGE. We create + attach it ourselves
+# (root) and hand it to qemu via `-netdev tap` — this bypasses the setuid
+# qemu-bridge-helper, whose ACL rejects our bridge name.
 TAP = "servitor-tap"
 
 
@@ -115,9 +114,9 @@ class GuestVM:
     # ---- disk + boot -------------------------------------------------
     def make_state_disk(self) -> None:
         # a 16G sparse raw file, mkfs'd DIRECTLY (mkfs.ext4 formats a
-        # regular file — no loop device). Keeping this path loop-free avoids
-        # the host loop churn that correlates with the intermittent kernel
-        # exec-path flakiness (2026-11-16). qemu takes the raw drive directly.
+        # regular file — no loop device; loop churn correlates with
+        # host kernel exec-path flakiness). qemu takes the raw drive
+        # directly.
         if not self.state_disk.exists():
             subprocess.run(["qemu-img", "create", "-f", "raw", str(self.state_disk),
                             STATE_SIZE], check=True, capture_output=True)
@@ -269,7 +268,6 @@ class GuestVM:
         # ActiveEnterTimestampMonotonic is the CLOCK_MONOTONIC value AT the
         # moment the unit entered active state — i.e. VM-seconds-since-boot
         # of the last activation, NOT the time the service has been up.
-        # Subtract it from the current monotonic time (/proc/uptime).
         out = self.run("systemctl show servitor -p ActiveEnterTimestampMonotonic")
         entered = int(out.split("=")[1]) / 1e6
         now = float(self.run("cat /proc/uptime").split()[0])

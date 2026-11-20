@@ -62,13 +62,13 @@ sudo systemctl enable --now libvirtd
 ```bash
 sudo git clone git@github.com:ConnorPietrasik/servitor.git /opt/servitor-repo
 cd /opt/servitor-repo
-# VM root ssh: single-purpose key (NOT your laptop agent key). build.sh bakes
-# the PUBLIC half into the image's /root/.ssh/authorized_keys.
+# VM root ssh: single-purpose key (NOT your laptop agent key). build.sh
+# bakes the PUBLIC half into the image's /root/.ssh/authorized_keys.
 #
-# The keypair lives in ROOT's home (/root/.srv): the panel-do actions run with
-# a scrubbed env (no $HOME), so they pass this exact path via --deploy-key
-# (the scripts' ${HOME:-/root} default resolves the same path as a backstop).
-# Keep the key there — moving it breaks the panel actions, not just the scripts.
+# The keypair lives in ROOT's home (/root/.srv): the panel-do actions run
+# with a scrubbed env (no $HOME), so they pass this exact path via
+# --deploy-key. Keep the key there — moving it breaks the panel actions,
+# not just the scripts.
 mkdir -p /root/.srv && chmod 700 /root/.srv
 ssh-keygen -t ed25519 -N '' -f /root/.srv/deploy_key
 ```
@@ -233,28 +233,26 @@ root-owned, and root's `$HOME` is exactly where both live by default — a
 non-root run would need `--deploy-key /root/.srv/deploy_key` plus read access
 to the `.env`, which it does not have.
 
-The first sync is NOT a no-op by design. It pushes the app tree (when the sha
-differs), the chat UI's built dist (built host-side when the `ui/` source
-moved since the last build), stages the content-addressed config, pushes
-`lib/`, installs pi-web-access 0.48.0 (host npm stage → self-contained dir
-on the guest), re-injects the key slice into the guest's 0600 env file,
-mirrors any host `/etc/hosts` pins (hairpin NAT — none on a clean server),
-self-heals the edge gateway, writes the update-pending flag, waits for the
-app's tick to restart at idle, then runs the doctor (now including one
-live run that makes the agent search the web — a real model call, the
-VM → router → model and public-egress proof; that is why the panel's
-`servitor-doctor`/`servitor-sync` budget is 10 min).
+The first sync is NOT a no-op by design. It pushes the app tree (when the
+sha differs), the chat UI's built dist, stages the content-addressed
+config, pushes `lib/`, installs pi-web-access at the `.env` selection,
+re-injects the key slice into the guest's 0600 env file, mirrors any host
+`/etc/hosts` pins, self-heals the edge gateway, writes the update-pending
+flag, waits for the app's tick to restart at idle, then runs the doctor
+(including one live run that makes the agent search the web — a real
+model call, the VM → router → model and public-egress proof; that is why
+the panel's `servitor-doctor`/`servitor-sync` budget is 10 min).
 
 **Success marker:** `sync: OK — shape deployed, doctor GREEN` (exit 0).
 On the first sync — and any shape change that triggers the live doctor —
-the realistic outcome is instead `sync: OK — update-WAITING` (exit 0): the
-staged update takes TWO in-guest doctor runs (pre-restart cert +
-post-restart cert, each with a 300 s live-run cap) plus the restart itself
-— longer than the sync's 150 s staging wait, so the sync exits and the
-app's tick finishes the job. Certify with `deploy/doctor.sh` (§9) once it
+the realistic outcome is instead `sync: OK — update-WAITING` (exit 0):
+the staged update takes TWO in-guest doctor runs (pre-restart +
+post-restart cert, each with a 300 s live-run cap) plus the restart —
+longer than the sync's 150 s staging wait, so the sync exits and the app's
+tick finishes the job. Certify with `deploy/doctor.sh` (§9) once it
 settles.
-Exit 3 = deploy landed but doctor red (the `update.sh` path owns automatic
-rollback); exit 1 = pre-deploy failure, nothing landed.
+Exit 3 = deploy landed but doctor red (the `update.sh` path owns
+automatic rollback); exit 1 = pre-deploy failure, nothing landed.
 
 ## 8. Merge into portcullis (the edge side)
 
@@ -324,14 +322,14 @@ sudo useradd -u 9001 -m -s /usr/sbin/nologin slot1    # the gate's spawn uid
 sudo useradd -u 9002 -m -s /usr/sbin/nologin slot2
 ```
 
-The guest image creates its own slot0–16; the HOST gate needs its own — the
-conformance harness setuid-spawns a real pi as `slot1` and keeps its scratch
-under `/home/slot1`. `slot2` is only wanted if you also run the wider suites
-on the server: `make test`'s unit half is in-process (no spawn) but
-`test/unit/test_slots.py` still resolves BOTH `slot1` and `slot2` from passwd,
-and `make sandbox-smoke` spawns as `slot2`. Without `slot1` the gate is RED
-on the first versioned update: nothing deploys. That is the gate working as
-intended, but the fix is two commands, not a debug session.
+The guest image creates its own slot0–16; the HOST gate needs its own —
+the conformance harness setuid-spawns a real pi as `slot1` and keeps its
+scratch under `/home/slot1`. `slot2` is only wanted if you also run the
+wider suites on the server (`test/unit/test_slots.py` resolves both
+slot1 and slot2 from passwd; `make sandbox-smoke` spawns as `slot2`).
+Without `slot1` the gate is RED on the first versioned update: nothing
+deploys — that is the gate working as intended, and the fix is two
+commands, not a debug session.
 
 ---
 
@@ -348,17 +346,3 @@ with the non-key deploy defaults, and the deploy key in root's
 `authorized_keys`. **Not** in the image, by design: the API keys, the
 pi-web-access extension, and any state volume — the first sync + the state
 disk provide those.
-
-## Appendix B — failure modes seen on the laptop (and their cures)
-
-| symptom | cause | cure |
-|---|---|---|
-| VM up, no default route | gateway line wrong in `10-servitor.network` (the 5-octet bug in pre-fix builds) | sync.sh self-heals the Gateway line on next sync; or fix by hand + `systemctl restart systemd-networkd` |
-| public names don't resolve in the VM | resolved disabled / stale resolv.conf | image patch #4; `systemctl enable --now systemd-resolved`, check `resolvectl status` |
-| guest → router prompts return empty turns | hairpin NAT (router's public IP dead from behind the host NAT) | pin `*.pietrasik.top` → a routable address in the guest's `/etc/hosts` (sync.sh mirrors the host's panel-hosts block); on the server the edge-internal router address is usually routable directly — verify with a guest-side curl before the first sync |
-| sync env file grows unbounded | (fixed) old rewriter doubled blank lines | the current sync.sh normalizes + self-heals a bloated file |
-| service crash-loop `ModuleNotFoundError: app` | unit pointed at `app.api.main` (no such module) | the template is fixed (`-m app.main`); rebuild or sed the unit |
-| panel `servitor-sync`/`-doctor` → "deploy key not found" | the key is not at `/root/.srv/deploy_key` — panel-do's scrubbed env has no `$HOME`, so it passes the path explicitly via `--deploy-key` (the scripts' `${HOME:-/root}` default resolves the same path as a backstop) | keypair at `/root/.srv/deploy_key` (0600, root), per §2; the public half must also be the one baked into the image |
-| server can't ssh the VM (first sync dies/times out at ssh, doctor can't reach the guest) | the host's ssh to the VM sources the host's EDGE BRIDGE IP; the guest admits 22 from `SERVITOR_HOST_BRIDGE_IP`/32 + the ops subnet — a wrong or stale bridge IP in the guest's 0600 env locks the host out of its own VM | nbd-patch `/etc/servitor/servitor.env` — `SERVITOR_HOST_BRIDGE_IP` — and `systemctl restart servitor-firewall`, or rebuild the image (§4) |
-| panel `servitor-sync`/`-doctor` → "group/other-writable" / "owned by the panel user" | `/opt/servitor-repo` (or a directory above it) lost its modes/owner — the `checkManagedScript` anti-swap gate refuses to exec | `chmod go-w` the offending path (the gate names it); never `chown panel` the checkout |
-| VM up, no public egress (search/model calls die) | missing host egress rule — the VM is not a docker container, so docker's FORWARD rules never see its traffic | `sudo ufw route allow from <SERVITOR_VM_IP>/32` (INSTALL.md §6; portcullis `make doctor` checks it against the route's upstream IP) |

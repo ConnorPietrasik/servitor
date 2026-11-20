@@ -6,8 +6,7 @@ got) — catching drift between the constant and the spawn path.
 
 Evidence source: the driver's SPAWN-TIME /proc/<pid>/cmdline snapshot
 (launched_argv). Node rewrites its own process title to "pi" shortly
-after boot, so a late /proc read is not valid launch-line evidence —
-the snapshot is taken in the spawn window before any JS runs.
+after boot, so a late /proc read is not valid launch-line evidence.
 
 - launched_argv == the exact golden argv (node, absolute cli, --mode
   rpc, --no-approve, --no-context-files, --session-dir,

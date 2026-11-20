@@ -2,86 +2,57 @@
 # Servitor update — the single day-2 command (portcullis parity).
 #
 # One command takes the guest to "current within the operator's slots",
-# verified. The update FLOATS — it does not ask, and a current world is a
-# result of the update, not a state the operator opts into:
+# verified. The update FLOATS:
 #
 #   1. RESOLVE    pi + extension: the .env line is an EXACT version (X.Y.Z)
-#                 and a FLOOR — anything else fails the preflight (a range
-#                 could never round-trip a deploy: installed == env is
-#                 doctor-asserted). The target is the newest npm release in
-#                 the same MAJOR (the 0.x extension floats across minors
-#                 too — stable across them in practice; a real 1.0.0 is a
-#                 major and gets reported, not applied). A newer
-#                 out-of-major release is REPORTED (MAJOR AVAILABLE) and
-#                 never applied — accepting one is editing the .env line
-#                 to that major's release.
+#                 and a FLOOR (a range could never round-trip a deploy:
+#                 installed == env is doctor-asserted); the target is the
+#                 newest npm release in the same MAJOR (the 0.x extension
+#                 floats across minors). A newer out-of-major release is
+#                 REPORTED (MAJOR AVAILABLE), never applied.
 #   2. PRECHECK   the deployed doctor must be green before anything moves
 #                 (a pre-existing failure would auto-revert the whole
-#                 update). Skipped only on a world-current run — an
-#                 age-out-only rebuild still pays it (and the gate below):
-#                 both fail fast BEFORE the ~40-min build, and the gate
-#                 re-certifies the deployed versions before the rebuild
-#                 reinstalls them into the new image.
-#   3. GATE       the conformance suite runs HOST-SIDE against the
-#                 resolved versions (the guest is untouched until it
-#                 passes), then the .env lines are floated to the targets
-#                 — bump before apply, portcullis order: build.sh reads
-#                 the .env for the pi install, and the sync's key slice
-#                 carries the values into the guest's 0600 env file (the
-#                 guest doctor asserts installed == env).
-#   4. PROVISION  only what moved:
-#                 pi or stale userland => image rebuild (the rebuild
-#                 re-resolves the Arch packages — kernel/node/python float
-#                 with it, recorded in the manifest) + image swap (clean
-#                 ACPI shutdown, domain retarget, start: explicit
-#                 downtime, loudly reported). Retention keeps exactly the
-#                 new image + the previous one (the rollback target) — the
-#                 build prunes everything older (files AND manifest
-#                 entries; an image triple is multi-GB and the freshness
-#                 floor makes rebuilds routine)
-#                 extension => the sync's host stage
+#                 update); skipped only on a world-current run.
+#   3. GATE       the conformance suite runs HOST-SIDE against the resolved
+#                 versions (the guest is untouched until it passes), then
+#                 the .env lines are floated to the targets — bump before
+#                 apply, portcullis order (build.sh reads the .env; the
+#                 sync's key slice carries the values into the guest's
+#                 0600 env file).
+#   4. PROVISION  only what moved: pi or stale userland => image rebuild
+#                 (the Arch packages re-resolve — kernel/node/python float
+#                 with it) + image swap (clean ACPI shutdown, domain
+#                 retarget, start: explicit downtime, loudly reported);
+#                 retention keeps exactly the new image + the previous one
+#                 (the rollback target). extension => the sync's host stage.
 #   5. DEPLOY     the sync's swap-based path (never blocks a run — an
 #                 active run gets the update-waiting flag and the tick
 #                 applies at the first idle moment).
 #   6. VERIFY     doctor. Doctor red => AUTOMATIC ROLLBACK (image, the
 #                 manifest's active and the .env back to what is actually
-#                 running — always; the shape back to the retained
-#                 previous TOO, but only when THIS run's sync deployed it:
-#                 a sync that failed before deploying left the shape
-#                 untouched, and reverting it would roll an EARLIER
-#                 deploy's change back a generation), re-doctor, report.
+#                 running; the shape back to the retained previous TOO, but
+#                 only when THIS run's sync deployed it), re-doctor, report.
 #
 # No failure path leaves the world ahead of what is running: a BUILD
-# failure restores the .env to the pre-run selections (it was floated
-# before the build — a floated .env over an unchanged guest would leak
-# into the guest's env file on the next servitor-sync: installed !=
-# env, doctor red), and a SWAP failure additionally restores the
-# manifest's active to the still-running image (the freshness floor
-# measures the running image's age). Re-run make update either way: a
-# built-but-not-swapped image is REUSED (the swap is retried — a rebuild
-# would just re-convert the same deterministic name over the finished
-# image, re-paying the ~40-min build), never rebuilt in place.
+# failure restores the .env to the pre-run selections; a SWAP failure
+# additionally restores the manifest's active to the still-running image.
+# Re-run make update either way: a built-but-not-swapped image is REUSED
+# (the swap is retried), never rebuilt in place.
 #
-# A world-current run (no in-major release newer than the deployed one, the
-# image within the freshness floor, the shape unchanged) touches nothing,
-# restarts nothing, and reports NO-OP: the update ran and had nothing to
-# change.
+# A world-current run (no in-major release newer, the image within the
+# freshness floor, the shape unchanged) touches nothing, restarts nothing,
+# and reports NO-OP.
 #
 # Runs as root only (the gate's venv, the image build, the swap). Knobs —
-# precedence: a non-empty .env line (a settled choice) > the caller's
-# environment (the portcullis update tail inherits UPDATE_DOCTOR) > the
+# precedence: a non-empty .env line > the caller's environment > the
 # default below (an empty .env line is "unset"):
 #   UPDATE_DOCTOR=1         precheck + verify doctor (0 = skip both)
 #   IMAGE_MAX_AGE_DAYS=7    rebuild the image when its manifest built_at is
 #                           older than this — the guest userland (kernel
 #                           included) is no older than the floor after an
 #                           update. 0 = rebuild as soon as the image is
-#                           older than TODAY (a same-day image is age 0 —
-#                           within the floor; and a rebuild always carries
-#                           a fresh date-stamped name, so it can never
-#                           overwrite the running image's file).
-#   SHUTDOWN_TIMEOUT=240    ACPI shutdown budget for the image swap (the
-#                           app's abort-then-drain is up to 120 s)
+#                           older than TODAY.
+#   SHUTDOWN_TIMEOUT=240    ACPI shutdown budget for the image swap
 #
 # Usage: sudo deploy/update.sh [--env .env] [--ssh root@<vm-edge-ip>] [--deploy-key K]
 set -euo pipefail
@@ -89,8 +60,6 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="$REPO/.env"
 SSH_TARGET=""
-# ${HOME:-/root}: robust under any env (set -u would die on a bare $HOME);
-# /root/.srv is the canonical root-side home, and the flag overrides anyway.
 DEPLOY_KEY="${SERVITOR_DEPLOY_KEY:-${HOME:-/root}/.srv/deploy_key}"
 IMAGES_DIR="$REPO/deploy/guest/images"
 MANIFEST="$IMAGES_DIR/manifest.json"
@@ -106,13 +75,11 @@ done
 
 [[ "$(id -u)" == "0" ]] || { echo "update runs as root (sudo make update): the gate's venv, the image build and the swap need it" >&2; exit 1; }
 [[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
-# update-run knobs: precedence is a NON-EMPTY .env line (a settled choice)
-# > the caller's environment (the portcullis update tail passes
-# UPDATE_DOCTOR via sudo) > the default below. The caller's values are
-# captured BEFORE the source: an empty .env line means "unset here", and
-# the source's empty assignment must not erase an explicit caller value
-# (without the capture the re-assert would default it and, e.g., the
-# host's UPDATE_DOCTOR=0 would be lost — the doctors would run anyway).
+# update-run knobs: a non-empty .env line (a settled choice) > the caller's
+# environment (the portcullis update tail passes UPDATE_DOCTOR via sudo) >
+# the default. The caller's values are captured BEFORE the source: an empty
+# .env line means "unset here", and the source's empty assignment must not
+# erase an explicit caller value.
 IN_UPDATE_DOCTOR="${UPDATE_DOCTOR:-}"
 IN_IMAGE_MAX_AGE_DAYS="${IMAGE_MAX_AGE_DAYS:-}"
 IN_SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-}"
@@ -120,32 +87,28 @@ set -a; source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE"); set +a
 # The defaults are re-asserted AFTER the source (${VAR:-d} catches a
 # set-BUT-EMPTY line, not just an unset one — the caller's value sits
 # behind the .env's) — without it the failures are SILENT, in the wrong
-# directions: an empty UPDATE_DOCTOR is not "1" (the doctor is skipped),
-# an empty IMAGE_MAX_AGE_DAYS evaluates to 0 in the age comparison
-# (rebuild EVERY run), an empty SHUTDOWN_TIMEOUT to a 0 s ACPI budget
-# (force-destroy on sight).
+# directions: an empty UPDATE_DOCTOR skips the doctor, an empty
+# IMAGE_MAX_AGE_DAYS rebuilds EVERY run, an empty SHUTDOWN_TIMEOUT is a 0 s
+# ACPI budget (force-destroy on sight).
 UPDATE_DOCTOR="${UPDATE_DOCTOR:-${IN_UPDATE_DOCTOR:-1}}"
 IMAGE_MAX_AGE_DAYS="${IMAGE_MAX_AGE_DAYS:-${IN_IMAGE_MAX_AGE_DAYS:-7}}"
 SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-${IN_SHUTDOWN_TIMEOUT:-240}}"
 : "${SERVITOR_PI_VERSION:?SERVITOR_PI_VERSION missing}"
 : "${SERVITOR_PI_WEB_ACCESS_VERSION:=0.48.0}"
-# the .env version lines are FLOORS: exact versions (X.Y.Z), never ranges —
-# a range ("^1.5.0", "1.5.x", "latest") would hit the float rule's
-# unparseable fail-safe (NO MOVEMENT), but its literal string still differs
-# from what is deployed, so the run would gate, float the .env line to the
-# range, and fail red at the guest's installed==env assert (a full rollback
-# cycle for a typo-class mistake). The preflight turns that into a one-line
-# error before anything moves (the rule itself is unit-tested:
-# test/unit/test_update_resolve.py).
+# the .env version lines are FLOORS: exact versions (X.Y.Z), never ranges
+# — a range hits the float rule's unparseable fail-safe (NO MOVEMENT), but
+# its literal string still differs from what is deployed, so the run would
+# gate, float the .env line to the range, and fail red at the guest's
+# installed==env assert. The preflight turns that into a one-line error
+# before anything moves (the rule itself: test/unit/test_update_resolve.py).
 if ! python3 "$REPO/deploy/resolve_target.py" --exact "$SERVITOR_PI_VERSION" \
    || ! python3 "$REPO/deploy/resolve_target.py" --exact "$SERVITOR_PI_WEB_ACCESS_VERSION"; then
   echo "SERVITOR_PI_VERSION / SERVITOR_PI_WEB_ACCESS_VERSION must each be an exact version (X.Y.Z) — the line is a FLOOR the update floats in-major; a range, tag or prerelease is not accepted (pin the exact release; accepting a new major = editing the line to that major's release)" >&2
   exit 1
 fi
 # the PRE-FLOAT lines, captured before anything mutates the .env: the
-# automatic rollback restores the .env (and the guest env file) to
-# exactly these — what the world declared before this run, not a guest
-# probe that can come back empty on a degraded guest.
+# automatic rollback restores the .env (and the guest env file) to exactly
+# these.
 PI_FLOOR_ORIG="$SERVITOR_PI_VERSION"
 EXT_FLOOR_ORIG="$SERVITOR_PI_WEB_ACCESS_VERSION"
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
@@ -180,8 +143,8 @@ EOF
 
 # per-image field: the image NAME contains dots (servitor-pi1.5.2-<date>.qcow2),
 # so it must arrive as a SINGLE argument — a dotted path like
-# "images.<name>.built_at" cannot encode it (jsonget's split would break the
-# name apart and the lookup would silently return nothing => age 0 => the
+# "images.<name>.built_at" cannot encode it (the split would break the name
+# apart and the lookup would silently return nothing => age 0 => the
 # freshness floor would never fire).
 image_field() { # $1 = image name  $2 = field (e.g. built_at)
   python3 - "$MANIFEST" "$1" "$2" 2>/dev/null <<'EOF' || true
@@ -193,10 +156,9 @@ except Exception:
 EOF
 }
 
-# package lookup by name: EXACT name first, then the first <name>-* variant.
-# The kernel is the package named exactly `linux` — a bare startswith("linux-")
-# would report `linux-api-headers` as the kernel, and list order (sorted) is
-# no contract to rely on for the exact name to sort first.
+# package lookup by name: EXACT name first, then the first <name>-* variant
+# (the kernel is the package named exactly `linux`; a bare startswith would
+# report `linux-api-headers` as the kernel).
 manifest_pkg() {
   python3 - "$MANIFEST" "$1" "$2" 2>/dev/null <<'EOF' || true
 import json, sys
@@ -216,11 +178,8 @@ EOF
 }
 
 # newest npm stable release in the declared version's MAJOR (the declaration
-# is a floor, never a ceiling) — same major for everything: 1.5.2 -> 1.9.7
-# (2.0.0 out); 0.48.0 -> 0.49.0 in (the 0.x extension floats across minors —
-# stable across them in practice; a 1.0.0 would be reported, not applied).
-# prints "<target> <latest-overall>"; target == latest-overall exactly when
-# the newest release is in slot (or nothing exists). The rule itself is the
+# is a floor, never a ceiling) — 1.5.2 -> 1.9.7 (2.0.0 out); 0.48.0 ->
+# 0.49.0 in. prints "<target> <latest-overall>". The rule itself is the
 # unit-tested pure function deploy/resolve_target.py, and the npm JSON
 # arrives at it via ARGV, never stdin: `cmd | python3 - <<EOF` gives the
 # heredoc the stdin fight (stdin is the program, the pipe is discarded) and
@@ -233,9 +192,8 @@ resolve_target() { # $1=pkg  $2=declared
 
 # rewrite one .env line in place (mode kept, ATOMIC: temp + rename in the
 # same dir — a crash mid-write must not corrupt the .env, the version
-# source of truth; the same mkstemp+replace shape as the guest-side env
-# re-injection in rollback_all). The file is never sourced as shell by
-# this script's callers, only re-read.
+# source of truth). The file is never sourced as shell by this script's
+# callers, only re-read.
 float_env_line() { # $1=key $2=value
   python3 - "$ENV_FILE" "$1" "$2" <<'EOF'
 import os, sys, tempfile
@@ -265,16 +223,12 @@ except BaseException:
 EOF
 }
 
-# .env back to the PRE-RUN selections (float_env_line is atomic; a
-# restore that changes nothing rewrites the identical lines). Used by
-# every failure path that exits AFTER the .env was floated: a floated
-# .env over a guest still on the old versions is ahead of the world —
-# the next servitor-sync would push the floated line into the guest's
-# 0600 env file (installed != env -> the doctor's versions.* red, and
-# the next update's precheck would refuse to move). GUARDED: callers
-# run in `||` contexts where set -e is suppressed — an unguarded
-# failure here would be reported as a clean failure with the .env
-# still floated.
+# .env back to the PRE-RUN selections. Used by every failure path that
+# exits AFTER the .env was floated: a floated .env over a guest still on
+# the old versions is ahead of the world — the next servitor-sync would
+# push the floated line into the guest's 0600 env file (installed != env
+# -> the doctor's versions.* red). GUARDED: callers run in `||` contexts
+# where set -e is suppressed.
 restore_env_floors() {
   float_env_line SERVITOR_PI_VERSION "$PI_FLOOR_ORIG" \
     || { echo "    WARNING: could not restore SERVITOR_PI_VERSION in $ENV_FILE — re-set it to $PI_FLOOR_ORIG by hand (until then a servitor-sync pushes the floated line into the guest — installed != env, doctor red)" >&2; return 1; }
@@ -283,14 +237,12 @@ restore_env_floors() {
   return 0
 }
 
-# the manifest's 'active' is the single source of "which image runs"
-# (update.sh's OLD_IMAGE/age, the guest suite's boot image, the
-# build's retention all read it) — every path that changes the running
-# image re-points it ATOMICALLY (temp + rename): $1 = the new active,
-# $2 = its retained_previous (the pair that is actually on disk).
-# Without this after a swap failure the next run would read the
-# NOT-running image's built_at (the freshness floor would go blind to
-# the running image's age) and retention would keep the wrong pair.
+# the manifest's 'active' is the single source of "which image runs" —
+# every path that changes the running image re-points it ATOMICALLY
+# (temp + rename): $1 = the new active, $2 = its retained_previous (the
+# pair that is actually on disk). Without this after a swap failure the
+# next run would read the NOT-running image's built_at (the freshness
+# floor would go blind) and retention would keep the wrong pair.
 manifest_set_active() { # $1 = new active image name  $2 = its retained_previous
   python3 - "$MANIFEST" "$1" "$2" <<'EOF'
 import json, os, sys, tempfile
@@ -309,27 +261,22 @@ EOF
 # image swap: retarget the LIVE domain definition (the operator's sizing is
 # preserved — the template is only the first-deploy input) to the named
 # image, across a clean ACPI shutdown. The old image file is untouched on
-# disk — it is the rollback target. The manifest name IS the file basename
-# (including .qcow2 — build.sh writes the boot files as <stem>.vmlinuz /
-# <stem>.initramfs.img alongside it).
+# disk — it is the rollback target. The manifest name IS the file
+# basename (including .qcow2 — build.sh writes the boot files alongside it).
 swap_image() { # $1 = image name (manifest name, includes .qcow2)
   # This function is only called in conditional contexts (if ! swap_image …),
   # where set -e is suppressed for the WHOLE function body — every state
-  # change below is therefore guarded explicitly. Invariant: the domain is
-  # never left UNDEFINED (an undefined VM is unbootable and invisible to
-  # virsh start and the panel's servitor-status) — the pre-undefine dump is
-  # the restore source if the re-define fails.
+  # change below is guarded explicitly. Invariant: the domain is never
+  # left UNDEFINED (the pre-undefine dump is the restore source).
   local name="$1" stem="${1%.qcow2}"
   local qcow2="$IMAGES_DIR/$name" kern="$IMAGES_DIR/${stem}.vmlinuz" initrd="$IMAGES_DIR/${stem}.initramfs.img"
   if [[ ! -f "$qcow2" || ! -f "$kern" || ! -f "$initrd" ]]; then
     echo "swap: image files missing for $name" >&2
     return 1
   fi
-  # capture the autostart flag NOW: the virsh undefine below drops it (the
-  # template does not set it — an operator may have; re-applied after define).
-  # The query is `virsh dominfo`: `virsh autostart` has no --query option
-  # (only --disable/--once), so a "query" through autostart always errored
-  # and the flag was silently dropped on every swap.
+  # capture the autostart flag NOW: the virsh undefine below drops it
+  # (the template does not set it — an operator may have; re-applied after
+  # define). `virsh dominfo`: `virsh autostart` has no --query option.
   local autostart=0
   if virsh dominfo servitor 2>/dev/null | grep -q '^Autostart:.*enable'; then autostart=1; fi
   local state0
@@ -347,11 +294,10 @@ swap_image() { # $1 = image name (manifest name, includes .qcow2)
     *)
       echo "    IMAGE SWAP: shutting down the VM (downtime; the app's abort-then-drain is up to 120 s, budget ${SHUTDOWN_TIMEOUT} s)"
       if ! virsh shutdown servitor; then
-        # the REQUEST was refused (set -e is suppressed in this function —
-        # an unguarded call would burn the full budget below with no trace
-        # of why). Still wait: a refusal is not proof the guest will not
-        # finish (a shutdown already in flight, a spurious libvirt error) —
-        # the loop gives it the full ACPI budget, then the same force-destroy.
+        # the REQUEST was refused (set -e is suppressed in this function).
+        # Still wait: a refusal is not proof the guest will not finish
+        # (a shutdown already in flight, a spurious libvirt error) — the
+        # loop gives it the full ACPI budget, then the same force-destroy.
         echo "    WARNING: virsh shutdown was refused (its error is above) — waiting out the ACPI budget anyway, then forcing" >&2
       fi
       local t=0 state=""
@@ -366,9 +312,8 @@ swap_image() { # $1 = image name (manifest name, includes .qcow2)
       fi
       ;;
   esac
-  # dump the XML only once the domain is "shut off": a running-domain dump
-  # carries runtime-only state that should not ride into the redefinition.
-  # The dump doubles as the restore source for the define below.
+  # dump the XML only once the domain is "shut off" (a running-domain dump
+  # carries runtime-only state); the dump doubles as the restore source.
   virsh dumpxml servitor > "$WORK/domain.xml" \
     || { echo "swap: virsh dumpxml failed — the domain is untouched" >&2; return 1; }
   python3 - "$WORK/domain.xml" "$WORK/domain.new.xml" "$qcow2" "$kern" "$initrd" <<'EOF' \
@@ -376,12 +321,11 @@ swap_image() { # $1 = image name (manifest name, includes .qcow2)
 import sys, xml.etree.ElementTree as ET
 src, dst, qcow2, kern, initrd = sys.argv[1:6]
 # Match by LOCAL name, not by path: the domain root may or may not carry
-# a default xmlns (libvirt keeps what the define XML declared — the repo's
-# template is namespace-free, but an operator-defined domain can carry
-# one), and ElementTree's "./os/kernel" lookup is namespace-EXACT: with a
-# default xmlns it returns None and the rewrite would fail on a perfectly
-# good domain. (Serialization re-declares any namespaces it finds, in
-# whatever prefix form — virsh define accepts both.)
+# a default xmlns (libvirt keeps what the define XML declared), and
+# ElementTree's "./os/kernel" lookup is namespace-EXACT: with a default
+# xmlns it returns None and the rewrite would fail on a perfectly good
+# domain. (Serialization re-declares any namespaces it finds; virsh define
+# accepts both.)
 def local(tag):
     return tag.rsplit("}", 1)[-1]
 t = ET.parse(src)
@@ -425,20 +369,18 @@ EOF
   if (( autostart )); then
     # warn, don't fail: the swap itself is done (the VM is about to start);
     # a lost flag is a boot-behavior gap, not a swap failure — but it must
-    # not be lost SILENTLY (the unguarded call was how the capture above
-    # used to be defeated).
+    # not be lost SILENTLY.
     virsh autostart servitor \
       || echo "    WARNING: could not re-apply the autostart flag — run: virsh autostart servitor (the VM will not start on the next host boot until then)" >&2
   fi
   virsh start servitor \
     || { echo "swap: virsh start failed — the domain is defined on $name (check: virsh console servitor, journalctl -u libvirtd; re-run make update retries the swap)" >&2; return 1; }
   # every rebuilt image bakes FRESH ssh host keys (build.sh runs
-  # ssh-keygen -A in the chroot), so the swap ROTATES the guest's host key —
-  # and accept-new accepts only ABSENT entries, never CHANGED ones. Without
-  # dropping the recorded key first, the wait loop below (and every later
-  # ssh to the VM: sync, doctor, the next run's probes) would fail
-  # host-key verification against a perfectly healthy guest. Dropping it
-  # here — on every swap — covers both directions: the swap forward AND
+  # ssh-keygen -A in the chroot), so the swap ROTATES the guest's host key
+  # — and accept-new accepts only ABSENT entries, never CHANGED ones. Drop
+  # the recorded key first, or every later ssh (sync, doctor, the next
+  # run's probes) would fail host-key verification against a healthy guest.
+  # Dropping it on every swap covers both directions: the swap forward AND
   # the rollback swap-back to the old image's keys.
   ssh-keygen -R "$SERVITOR_VM_IP" >/dev/null 2>&1 || true
   echo "    waiting for the VM (ssh, then /healthz — up to 300 s each)…"
@@ -552,8 +494,7 @@ if (( PI_MOVE || EXT_MOVE || AGE_OUT )); then
   echo "    gate GREEN"
   # float the .env lines NOW (bump before apply — portcullis order): the
   # rebuild reads the .env for the pi install, and the sync's key slice
-  # carries these into the guest's 0600 env file (installed == env is
-  # doctor-asserted).
+  # carries these into the guest's 0600 env file.
   if (( PI_MOVE )); then
     float_env_line SERVITOR_PI_VERSION "$PI_TARGET"
     echo "    .env: SERVITOR_PI_VERSION -> $PI_TARGET"
@@ -575,17 +516,13 @@ NEW_IMAGE="$OLD_IMAGE"
 # image's file is never overwritten in place.
 if (( REBUILD )); then
   # retry path: a candidate from an earlier run with THIS run's exact
-  # deterministic name (build.sh: servitor-pi<pi>-<UTC day>). The
-  # manifest's active is the RUNNING image (the swap-failure exit
-  # restores it), so a same-named, manifest-listed image is a
-  # built-but-not-running candidate, never the running image's file —
-  # reuse it: the swap is what the earlier run left unfinished (a rebuild
-  # would just re-convert the same deterministic name — qemu-img convert
-  # overwrites the existing target — re-paying the ~40-min build for an
-  # image that already exists).
-  # The manifest listing is required — a kill mid-convert leaves a
-  # partial file at the final name with NO manifest entry (the build
-  # writes the manifest only after the convert).
+  # deterministic name (servitor-pi<pi>-<UTC day>). The manifest's active
+  # is the RUNNING image (the swap-failure exit restores it), so a
+  # same-named, manifest-listed image is a built-but-not-running candidate
+  # — reuse it: a rebuild would just re-convert the same deterministic name
+  # over the finished image, re-paying the ~40-min build. The manifest
+  # listing is required: a kill mid-convert leaves a partial file at the
+  # final name with NO manifest entry.
   CANDIDATE=0
   cand="servitor-pi${PI_TARGET}-$(date -u +%Y%m%d).qcow2"
   if [[ "$cand" != "$OLD_IMAGE" && -f "$IMAGES_DIR/$cand" \
@@ -610,11 +547,10 @@ if (( REBUILD )); then
     echo "    new image: $NEW_IMAGE (previous retained: $OLD_IMAGE — the rollback target)"
   fi
   if ! swap_image "$NEW_IMAGE"; then
-    # the manifest + .env must describe the world that IS running
-    # again: active back to the old image (the freshness floor measures
-    # the RUNNING image's age — see manifest_set_active) and the .env
-    # back to the pre-run selections (see restore_env_floors). Then a
-    # re-run reuses this very image and retries the swap.
+    # the manifest + .env must describe the world that IS running again:
+    # active back to the old image and the .env back to the pre-run
+    # selections. Then a re-run reuses this very image and retries the
+    # swap.
     manifest_set_active "$OLD_IMAGE" "$NEW_IMAGE" \
       || echo "    WARNING: could not restore the manifest's active to $OLD_IMAGE — fix by hand (set 'active' to $OLD_IMAGE in $MANIFEST), or the next update measures the wrong image" >&2
     restore_env_floors
@@ -646,8 +582,7 @@ if grep -q "doctor GREEN" "$SYNC_LOG"; then SYNC_GREEN=1; fi
 if grep -q "update-WAITING" "$SYNC_LOG"; then SYNC_WAITING=1; fi
 # "THIS run's sync changed (or staged) the shape" — the ONLY case the
 # rollback's shape half is legitimate (the retained previous artifacts
-# hold an EARLIER deploy's shape, not this run's, whenever this run's
-# sync deployed nothing).
+# hold an EARLIER deploy's shape, not this run's).
 if [[ "$SYNC_RC" -eq 3 ]] || grep -q "shape deployed" "$SYNC_LOG" || (( SYNC_WAITING )); then
   SYNC_DEPLOYED=1
 fi
@@ -656,8 +591,7 @@ fi
 # 3 = deploy LANDED but doctor red; 1+ = pre-deploy failure: nothing to
 # roll back when the image did NOT swap; when it did, the guest is a
 # consistent new-image + unchanged-shape state — the IMAGE rolls back
-# anyway (a healthy but not-updated VM is the safe uniform end state);
-# the shape rolls back only if THIS run's sync deployed it (above).
+# anyway; the shape rolls back only if THIS run's sync deployed it.
 ROLLBACK_NEEDED=0
 if [[ "$SYNC_RC" -eq 3 ]]; then
   ROLLBACK_NEEDED=1
@@ -671,8 +605,7 @@ elif [[ "$SYNC_RC" -ne 0 ]]; then
     # the pre-run selections so no failure path leaves the world ahead of
     # what is running (a floated .env over an unchanged guest would leak
     # into the guest's env file on the next servitor-sync — installed !=
-    # env, doctor red). A restore that changes nothing rewrites the
-    # identical lines; a failed restore warns and exits non-zero (loud).
+    # env, doctor red).
     restore_env_floors
     exit 1
   fi
@@ -681,7 +614,7 @@ fi
 # --------------------------------------------------------------------------
 FINAL_OK=1
 if [[ "$ROLLBACK_NEEDED" == "0" && "$SWAPPED" == "1" && "$SYNC_GREEN" == "0" && "$SYNC_WAITING" == "0" && "$UPDATE_DOCTOR" == "1" ]]; then
-  echo "==> [6/7] verify: doctor on the new image (the sync exited 0 without running one — after a pure swap it may have NO-OP'd: shape unchanged, nothing deployed, no doctor — the new image is certified here)"
+  echo "==> [6/7] verify: doctor on the new image (after a pure swap the sync may have NO-OP'd: shape unchanged, nothing deployed, no doctor — the new image is certified here)"
   if ! bash "$REPO/deploy/doctor.sh" --env "$ENV_FILE" --ssh "$SSH_TARGET" --deploy-key "$DEPLOY_KEY"; then
     FINAL_OK=0
   fi
@@ -694,8 +627,7 @@ rollback_all() { # $1 = 1 when the image must go back too  $2 = 1 when THIS
   # guest-side shape rollback is legitimate (the retained previous
   # artifacts hold the PREVIOUS deploy's shape; reverting them when this
   # run's sync deployed nothing would roll an earlier deploy back a
-  # generation and, via the re-stamp + floor re-injection below, leave
-  # the doctor red on a healthy world)
+  # generation and leave the doctor red on a healthy world)
   local img_back="$1" shape_back="${2:-0}"
   local what=""
   if [[ "$shape_back" == "1" ]]; then what="shape"; fi
@@ -715,11 +647,11 @@ rollback_all() { # $1 = 1 when the image must go back too  $2 = 1 when THIS
     # doctor-asserted against the install; a new stamp over a restored
     # extension would keep the rollback red)
     if test -d /opt/pi-ext/pi-web-access; then
-      # NO single quote may appear anywhere in this run_guest block: the
-      # whole thing rides inside a host-side single-quoted string, where
-      # any such character closes the host quote and the guest receives a
-      # mangled script (silently). The JS and python string literals
-      # therefore use \" — the backslash survives host-side
+      # NO single quote may appear anywhere in this run_guest block: it
+      # rides inside a host-side single-quoted string, where any such
+      # character closes the host quote and the guest receives a mangled
+      # script (silently). The JS and python string literals therefore
+      # use backslash+quote — the backslash survives host-side
       # single-quoting literally, and the GUEST double-quoting turns it
       # back into a plain quote.
       V="$(node -e "try{console.log(require(\"/opt/pi-ext/pi-web-access/package.json\").version)}catch(e){console.log(\"\")}" || true)"
@@ -759,9 +691,8 @@ r.close()"
     echo "    rolling the image back to $OLD_IMAGE (downtime)…" >&2
     swap_image "$OLD_IMAGE" || return 1
     # the manifest must describe the restored world: active = the image the
-    # domain points at again (see manifest_set_active — the restored image's
-    # retained_previous becomes the just-failed image: the pair that is
-    # actually on disk).
+    # domain points at again (the restored image's retained_previous becomes
+    # the just-failed image: the pair that is actually on disk).
     manifest_set_active "$OLD_IMAGE" "$NEW_IMAGE" \
       || { echo "    WARNING: could not restore the manifest's active image to $OLD_IMAGE — the next update would measure/keep the wrong image; fix by hand: set 'active' to $OLD_IMAGE in $MANIFEST" >&2; return 1; }
     # the shape-rollback re-stamp above ran on the NEW image: it stamped the
@@ -770,11 +701,10 @@ r.close()"
     # just restored the pre-run root disk (the old image FILE is the pre-run
     # live disk — the swap only retargets the domain, it never re-bakes — so
     # it carries the pre-run extension). Re-stamp to what is ACTUALLY
-    # installed now. Without this, a run that moved the extension floor AND
-    # the image leaves the stamp at the floated version over the pre-run
-    # extension: versions.extension red on every doctor, the next update's
-    # precheck refuses to move, and a bare servitor-sync NO-OPs (the shape
-    # looks consistent — the stamp is not in its change detection).
+    # installed now: without this, versions.extension stays red on every
+    # doctor, the next update's precheck refuses to move, and a bare
+    # servitor-sync NO-OPs (the shape looks consistent — the stamp is not in
+    # its change detection).
     run_guest '
       if test -d /opt/pi-ext/pi-web-access; then
         V="$(node -e "try{console.log(require(\"/opt/pi-ext/pi-web-access/package.json\").version)}catch(e){console.log(\"\")}" || true)"
@@ -822,9 +752,7 @@ PYEOF" || { echo "    WARNING: could not re-inject the guest env version lines �
   # the .env must describe what is actually deployed again: restore the
   # pre-run lines (a floated .env over a rolled-back guest is red on every
   # later run — the guest doctor asserts installed == env). GUARDED: this
-  # function runs in a `||` context, where set -e is suppressed — an
-  # unguarded failure here would be reported as a successful rollback with
-  # the .env still floated over a rolled-back guest.
+  # function runs in a `||` context, where set -e is suppressed.
   restore_env_floors || return 1
 }
 

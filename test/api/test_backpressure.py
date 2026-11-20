@@ -4,21 +4,17 @@ A deliberately slow consumer: the unconsumed bytes pass the cap and the
 RUN PAUSES (the driver stops draining pi's stdout — the pipe fills and
 pi blocks); the consumer catches up, the run RESUMES; the run settles
 with its complete final answer (the transcript is never truncated); the
-ring stays bounded (never more than the cap plus a streaming burst for
-a live consumer); the hub's meter records the pause episodes.
+ring stays bounded; the hub's meter records the pause episodes.
 
 Cap scaling: this test overrides ``sse_cap`` (1 MB) for its app
-instance. The pause/resume/bounded mechanism is cap-independent — it
-is the same code path at 1 MB as at 50 MB. The production default is
-pinned by a unit test (test/unit/test_sse_hub.py: the default cap is
-50 MB), and 50 MB is the right default because pi's per-delta
-message_update events bound a single context window's SSE volume well
-below it.
+instance — the mechanism is cap-independent (the same code path at
+1 MB as at 50 MB). The production default (50 MB) is pinned by
+test/unit/test_sse_hub.py.
 
 Event anatomy (measured, pi 1.5.2): each model content delta is its
-own small message_update (~250 B). A 32 KB preamble streamed as
-2048 pieces is ~2000 events ≈ 0.6 MB; 20 tool rounds ≈ 42 000 events
-≈ 12 MB total — comfortably past the 1 MB cap, drainable in ~1 min.
+own small message_update (~250 B). A 32 KB preamble streamed as 2048
+pieces is ~2000 events; 20 tool rounds ≈ 42 000 events ≈ 12 MB —
+comfortably past the 1 MB cap, drainable in ~1 min.
 """
 from __future__ import annotations
 
@@ -44,10 +40,9 @@ def test_pause_resume_bounded_no_truncation(api_env, sse_cap):
     router = api_env["router"]
 
     # 20 tool rounds; each round streams a 32 KB assistant preamble
-    # before its tool call. Note the mock's ``chunk_count`` is a PIECE
-    # COUNT (the mock splits the text into that many pieces): 2048
-    # pieces of 16 chars → pi emits one small message_update per
-    # piece. 20 rounds ≈ 42 000 events ≈ 12 MB ≫ the 1 MB cap.
+    # before its tool call. The mock's ``chunk_count`` is a PIECE count:
+    # 2048 pieces of 16 chars → one small message_update per piece.
+    # 20 rounds ≈ 42 000 events ≈ 12 MB ≫ the 1 MB cap.
     prefix = "p" * 32_768
     router.set_script(
         {
@@ -65,16 +60,12 @@ def test_pause_resume_bounded_no_truncation(api_env, sse_cap):
         d = api.prompt(sid, "stream it all")
         assert d["disposition"] == "started"
 
-        # the consumer is two parts:
-        #   * a reader THREAD drains the socket as fast as it can — the
-        #     kernel must never accumulate a deep receive backlog behind
-        #     the slow parser (on some hosts a deep backlog under
-        #     64KB-MSS loopback bursts drops packets and wedges the
-        #     connection for good); and
-        #   * the parser (this thread) is deliberately slow — it is the
-        #     "slow consumer" that lags the run past the hub cap and
-        #     triggers the backpressure pause. The pause is driven by the
-        #     hub's position (ack'd ids), not by TCP socket state.
+        # the consumer is two parts: a reader THREAD drains the socket as
+        # fast as it can (a deep receive backlog under 64KB-MSS loopback
+        # bursts can drop packets and wedge the connection), and the
+        # parser (this thread) is deliberately slow — the "slow consumer"
+        # that lags the run past the hub cap and triggers the pause (the
+        # pause is driven by the hub's position, not by TCP socket state).
         #
         # Pacing: ~0.25 s of sleep per 200 parsed frames (~150 KB/s) vs
         # the mock's ~300 KB/s stream — the consumer stays behind, the
@@ -151,11 +142,11 @@ def test_pause_resume_bounded_no_truncation(api_env, sse_cap):
 
             # the reader thread: drains the socket at line rate (above).
             # NOTE: iter_raw() WITHOUT a chunk size — with a chunk size,
-            # httpx re-chunks into FIXED-size pieces and the final partial
-            # piece (holding the tail of the stream — possibly
-            # agent_settled) is held back until more bytes arrive or the
-            # stream closes; the stream never closes (heartbeats), so the
-            # tail would never surface.
+            # httpx re-chunks into fixed-size pieces and the final partial
+            # piece (holding the tail — possibly agent_settled) is held
+            # back until more bytes arrive or the stream closes; the
+            # stream never closes (heartbeats), so the tail would never
+            # surface.
             raw_q: queue.Queue[bytes | None] = queue.Queue(maxsize=128)
             it = resp.iter_raw()
             reader_alive = [True]

@@ -10,9 +10,8 @@ is shadowed. The doctor's live-run gate relies on this contract:
   honor "handled" precisely (consumed, no run started: nothing was
   certified, and no settle was ever coming);
 - the waiter is discarded on "handled", on prompt rejection, and on
-  settle timeout — a raw asyncio.wait_for around settle_waiter() (the
-  doctor's pre-fix pattern) left the cancelled future in
-  _settled_waiters.
+  settle timeout — a raw asyncio.wait_for around settle_waiter() would
+  leave the cancelled future in _settled_waiters.
 """
 from __future__ import annotations
 

@@ -2,8 +2,8 @@
 
 ``find / -user slotN`` catches what a session dropped *outside*
 ``scratch/`` (``/tmp``, ``/var/tmp``, ``/``) and makes slot release a
-clean handover. With a shared uid, "everything this session touched"
-would be unanswerable — with a distinct slot uid it is one command.
+clean handover — with a distinct slot uid, "everything this session
+touched" is one command.
 
 The sweep is a REQUIRED step of release: a slot's uid is never handed to
 another session before it is verified clean. A slot that fails its sweep
