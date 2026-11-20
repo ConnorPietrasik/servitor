@@ -306,7 +306,7 @@ PYEOF
   rm -f /tmp/servitor-keys"
 
 # host name pinning (hairpin NAT): the model router's hostname is pinned to
-# a LAN IP in the laptop's /etc/hosts (panel-hosts block). The guest has no
+# a LAN IP in the host's /etc/hosts (panel-hosts block). The guest has no
 # such entry, so its DNS returns a public IP and traffic from the guest —
 # which exits through the host's NAT — hairpins and dies; the real-router
 # prompt then comes back with empty assistant turns. Mirror the host's
@@ -320,7 +320,7 @@ if [[ -n "$HOSTS_LINES" ]]; then
     awk '/# BEGIN servitor-hosts/,/# END servitor-hosts/{next} {print}' /etc/hosts > /tmp/hosts.clean
     {
       cat /tmp/hosts.clean
-      echo '# BEGIN servitor-hosts (mirrored from the laptop /etc/hosts)'
+      echo '# BEGIN servitor-hosts (mirrored from the host /etc/hosts)'
       cat /tmp/servitor-hosts
       echo '# END servitor-hosts'
     } > /tmp/hosts.new

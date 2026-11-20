@@ -120,7 +120,7 @@ def check_state_mount(rep: Report, root: str) -> None:
     # The state volume contract is a separate ext4 DISK. The fstype check
     # alone cannot catch a MISSING disk: the unmounted fallback dir is on
     # the 24G root disk, which is also ext4. findmnt --mountpoint (exact
-    # match), NOT -T. WARN, not FAIL: laptop dev uses a plain dir by
+    # match), NOT -T. WARN, not FAIL: unprivileged dev uses a plain dir by
     # design; on the guest it signals INSTALL.md step 5 was skipped.
     code, out = _sh(["findmnt", "--mountpoint", root, "-n", "-o", "SOURCE"])
     src = out.strip().splitlines()[0] if code == 0 and out.strip() else ""
@@ -130,7 +130,7 @@ def check_state_mount(rep: Report, root: str) -> None:
         rep.add(
             "state.mount",
             WARN,
-            "state root is NOT a separate mount point — laptop dev is fine with "
+            "state root is NOT a separate mount point — unprivileged dev is fine with "
             "this; on the guest it means the state disk is missing and all state "
             "silently lives on the 24G root disk (create + attach it, reboot)",
         )

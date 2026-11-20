@@ -1,11 +1,10 @@
 # Servitor deployment
 
-Two deployments, one system: **standalone** (dev laptop / bare
-VM — loopback behind a local reverse proxy) and **production** (the portcullis
-edge — Traefik file-provider + Authelia 2FA forward-auth). No code change
-between them: the app binds `SERVITOR_BIND` on `SERVITOR_PORT`, both from the
-0600 env file; the edge is an abstract contract (one reverse proxy routes one
-hostname to the VM ingress IP:port and is the only auth gate).
+One system, one deployment: **production** (the portcullis edge — Traefik
+file-provider + Authelia 2FA forward-auth). The app binds `SERVITOR_BIND`
+on `SERVITOR_PORT`, both from the 0600 env file; the edge is an abstract
+contract (one reverse proxy routes one hostname to the VM ingress IP:port
+and is the only auth gate). Dev runs bind loopback only, same code.
 
 Servitor never reaches into portcullis, and portcullis never reaches into
 servitor at runtime.
@@ -37,40 +36,6 @@ guest's copy lives at `/etc/servitor/servitor.env`, mode 0600, consumed by
 `servitor.service` (`EnvironmentFile=`). The sync pipeline owns the *key
 slice* of that file (re-injects `OMNISSIAH_API_KEY`/`EXA_API_KEY` on rotation;
 see Key rotation below).
-
-## Standalone (laptop dev loop)
-
-1. `cp .env.example .env`; set `SERVITOR_BIND=127.0.0.1`,
-   `SERVITOR_PORT=8787`, `SERVITOR_ROOT=<path on ext4, never overlay>`,
-   `SERVITOR_PI_VERSION`, `SERVITOR_PI_WEB_ACCESS_VERSION`, the two keys
-   (off-LAN the public router URL works; on-LAN pin `*.pietrasik.top` to
-   the host LAN IP in `/etc/hosts`, the same workaround portcullis ships).
-2. `make venv && make test` (mock router + conformance suite, no server).
-3. Run the app with root (iso/rpc need CAP_SYS_ADMIN: overlays, setuid):
-   `sudo -E set -a; . ./.env; set +a; .venv/bin/python -m app.api.main`.
-   Reach it on loopback behind a local reverse proxy (e.g.
-   `python -m http.server` is not enough — use any proxy with
-   `proxy_buffering off` for SSE).
-
-### Laptop host prerequisites (re-create after a host reimage)
-
-Not in the repo — host firewall + host `.env`:
-
-- **ufw** (the laptop default-drops routed and incoming traffic):
-  ```bash
-  sudo ufw route allow from 10.42.0.0/24   # guest egress NAT
-  sudo ufw allow in from 10.42.0.0/24 to any port 48700:48799 proto tcp
-  ```
-  Rule 2 admits the test mock router: it binds the host's bridge IP and
-  allocates ports from that range so the guest can reach it.
-- **`/tmp` is a small tmpfs on the laptop** — run the guest/api suites with
-  a disk-backed basetemp (`--basetemp=~/.cache/servitor-pytest/<name>`); a
-  full /tmp also breaks `make check`.
-- **`/etc/hosts`**: the panel-hosts block pins `*.pietrasik.top` to the
-  server's LAN IP (managed by portcullis's `tools/panel-hosts.sh`);
-  `sync.sh` mirrors those pins into the guest (hairpin-NAT workaround).
-- Multi-word `.env` values (e.g. `SERVITOR_DNS_UPSTREAM`) must be QUOTED —
-  `sync.sh` sources the whole file.
 
 ## Production (portcullis)
 

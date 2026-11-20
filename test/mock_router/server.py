@@ -195,12 +195,11 @@ class MockRouter:
                     chunks = _run_chunks(s, model=script_model)
                 self._send_sse(chunks)
 
-        # find a free port on the requested host (loopback by default; the
-        # guest drills bind the host's bridge address so the guest can
-        # reach the mock). The host firewall default-drops inbound from
-        # the servitor edge subnet EXCEPT the test-mock range 48700:48799
-        # (one-time host ufw setup) — prefer that range so a guest-bound
-        # mock is actually reachable from the guest.
+        # find a free port on the requested host (loopback by default;
+        # a non-loopback host is accepted for suites that need the mock
+        # reachable from elsewhere). Prefer a high port range so the
+        # allocation never collides with common dev ports (or the app's
+        # own port).
         import socket
 
         self._port = 0

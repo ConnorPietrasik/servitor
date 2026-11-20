@@ -73,7 +73,7 @@ fi
 : "${SERVITOR_DNS_UPSTREAM:?SERVITOR_DNS_UPSTREAM missing in $ENV_FILE (public DNS upstreams for the guest systemd-resolved; no DHCP on the edge bridge)}"
 # the guest's static edge config, derived from the .env (no literals here)
 GUEST_ADDR="${SERVITOR_VM_IP}/${SERVITOR_EDGE_SUBNET##*/}"
-# gateway = the subnet's .1 (the host bridge IP — harness invariant). NOT
+# gateway = the subnet's .1 (the host bridge IP — the edge gateway). NOT
 # "${SUBNET%%/*}.1": for a /24's zero-address base that yields a 5-octet
 # invalid string which systemd-networkd silently drops — the guest then
 # boots with no default route and every live-router gate dies.
@@ -337,8 +337,8 @@ swap-size = 100%
 CONF
 # the zram generator runs at boot whenever the config file exists (no
 # enable step): systemd-zram-setup@0 starts from it
-# static edge address (no DHCP on the laptop bridge): the harness owns
-# the edge subnet with the host at its .1; the guest is SERVITOR_VM_IP
+# static edge address (no DHCP on the edge bridge): the host owns
+# the edge subnet with itself at its .1; the guest is SERVITOR_VM_IP
 cat > /etc/systemd/network/10-servitor.network <<NET
 [Match]
 Name=en* eth*
@@ -367,9 +367,9 @@ cp "$WORK/chroot-systemd.sh" "$WORK/disk/chroot-systemd.sh"
 chroot "$WORK/disk" /usr/bin/env GUEST_ADDR="$GUEST_ADDR" GUEST_GW="$GUEST_GW" /usr/bin/bash /chroot-systemd.sh
 rm -f "$WORK/disk/chroot-systemd.sh"
 
-# fstab: root by UUID + the state disk by label (the harness labels it
-# servitor-state; nofail so boot tolerates its absence — doctor fails
-# loudly when it is missing)
+# fstab: root by UUID + the state disk by label (the operator labels it
+# servitor-state at VM creation, INSTALL.md §5; nofail so boot tolerates
+# its absence — doctor fails loudly when it is missing)
 cat > "$WORK/disk/etc/fstab" <<EOF
 # / etc/fstab
 UUID=$ROOT_UUID  /  ext4  defaults  0 1
@@ -390,8 +390,8 @@ PI_VERSION="$(cat "$WORK/disk/tmp/pi-version.txt")"
 NODE_VERSION="$(cat "$WORK/disk/tmp/node-version.txt")"
 BUILD_DATE="$(date -u +%Y%m%d)"
 IMAGE_NAME="servitor-pi${PI_VERSION}-${BUILD_DATE}.qcow2"
-# the harness boots with -kernel/-initrd (no bootloader in the image on
-# purpose): ship the boot files alongside the qcow2
+# the libvirt domain boots with <kernel>/<initrd> (no bootloader in the
+# image on purpose): ship the boot files alongside the qcow2
 STEM="${IMAGE_NAME%.qcow2}"
 cp "$WORK/disk/boot/vmlinuz-linux" "$IMAGES_DIR/${STEM}.vmlinuz"
 cp "$WORK/disk/boot/initramfs-linux.img" "$IMAGES_DIR/${STEM}.initramfs.img"

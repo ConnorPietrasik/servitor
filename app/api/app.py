@@ -4,7 +4,7 @@ One published port (the container's loopback ingress, edge-only; the
 Portcullis panel is the only public front). The front door over the same
 Lifecycle the stdio protocol used — lifecycle semantics unchanged.
 
-Contract surface (versioned in test/.scratch/api-contract.json):
+Routes:
 
     GET    /healthz
     GET    /api/v1/sessions

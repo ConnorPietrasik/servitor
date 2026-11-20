@@ -36,8 +36,8 @@ sudo docker network inspect edge -f '{{(index .IPAM.Config 0).Gateway}}'
 ip -4 addr show
 ```
 
-Pick `SERVITOR_VM_IP`: an unused address inside the edge subnet (the laptop
-convention is `.15`; the gateway is the subnet's `.1` by build convention).
+Pick `SERVITOR_VM_IP`: an unused address inside the edge subnet (the
+gateway is the subnet's `.1` by build convention).
 
 ## 1. Host packages
 
@@ -62,7 +62,7 @@ sudo systemctl enable --now libvirtd
 ```bash
 sudo git clone git@github.com:ConnorPietrasik/servitor.git /opt/servitor-repo
 cd /opt/servitor-repo
-# VM root ssh: single-purpose key (NOT your laptop agent key). build.sh
+# VM root ssh: single-purpose key (NOT your workstation agent key). build.sh
 # bakes the PUBLIC half into the image's /root/.ssh/authorized_keys.
 #
 # The keypair lives in ROOT's home (/root/.srv): the panel-do actions run
@@ -86,7 +86,7 @@ sudo chmod 600 /opt/servitor-repo/.env
 Set (everything else may stay at defaults):
 
 ```bash
-# secrets (from the laptop .env or the secret store)
+# secrets (from the secret store)
 OMNISSIAH_API_KEY=<router bearer key>
 EXA_API_KEY=<exa key>
 
@@ -138,7 +138,8 @@ target — is retained, older images are pruned).
 
 ## 5. The state disk (the contract: ext4, LABEL=servitor-state)
 
-Loop-free, exactly like the test harness:
+Loop-free (a raw file directly, no loop device — loop churn correlates
+with host flakiness):
 
 ```bash
 sudo mkdir -p /opt/servitor-disk
@@ -204,8 +205,7 @@ Expected: the VM has `SERVITOR_VM_IP` up on its interface, a default route via
 the subnet `.1`, and `servitor` active. (The service runs pre-provisioning:
 it serves, but has no keys/extension yet — that is the design, not a defect.)
 
-**Egress (the proven laptop lesson — the NAT masquerade alone is not enough
-when ufw is enabled):**
+**Egress (the NAT masquerade alone is not enough when ufw is enabled):**
 
 ```bash
 sudo ufw route allow from <SERVITOR_VM_IP>/32 comment 'servitor VM egress'

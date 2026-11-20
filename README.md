@@ -24,8 +24,8 @@ steer or abort at any point.
   by owner.
 - **Edge contract**: one reverse proxy routes one hostname to the VM's
   ingress port and is the only auth gate. Production: the owner's portcullis
-  (Traefik file-provider + Authelia 2FA). Standalone (laptop, tests, bare
-  VM): loopback behind a local reverse proxy. No code change between them.
+  (Traefik file-provider + Authelia 2FA). Dev runs bind loopback only,
+  same code.
 - **Config** (`agent-config/`) and the library (`lib/`) are synced one-way
   from this repo to the guest — versioned, doctor-gated, swap-based with
   rollback.
@@ -57,7 +57,7 @@ root). Code and deploy comments cite these by number (`invariant N`).
    count, scratch usage, outbox size) + human `steer()`/`abort()`.
 3. **The API authenticates nobody.** Anything that can reach the socket
    can drive the agent; reachability is the control. Bind the ingress
-   interface, admit the port from the edge subnet only; standalone binds
+   interface, admit the port from the edge subnet only; dev binds
    loopback.
 4. **The producer never awaits a client.** Dropped phone connections
    never cancel, slow, or stall a run. Delivery is a separate concern
@@ -97,29 +97,31 @@ root). Code and deploy comments cite these by number (`invariant N`).
 | `agent-config/` | agent system prompt, model config, skills — synced read-only |
 | `lib/` | durable human-curated library — synced read-only to the agent |
 | `deploy/` | guest image build, systemd units, firewall, sync/update/doctor, portcullis install |
-| `test/` | the gate stack: contract lint, unit, conformance, smoke, guest |
+| `test/` | the gate stack: contract lint, unit, conformance, stage2, sandbox-smoke |
 | `compose/` | interface contract (linted by `make check`, not a runtime container) |
 
-## Dev loop (laptop, root)
+## Dev loop
+
+Dev happens in a plain checkout (no root needed):
 
 ```bash
 cp .env.example .env   # fill in per deploy/README.md
 make venv
-make check             # contract lint (no root)
-make test              # unit + conformance vs the mock router (no root)
-sudo make test-stage2  # lifecycle drills over the stdio app (root)
-sudo make test-api     # HTTP/SSE + delivery, real subprocess app (root)
-sudo make sandbox-smoke && sudo make vm-smoke   # isolation halves (root)
-sudo make guest        # build the guest image (root)
-sudo make test-guest   # full guest suite: boots the built VM (~12 min, root)
+make check             # contract lint
+make test              # unit + conformance vs the mock router
+                       # (conformance loud-skips without root)
 ```
 
-The guest suite additionally needs the laptop host prerequisites in
-`deploy/README.md` (ufw rules, disk-backed pytest basetemp).
+The root suites run on the server (the host the VM lives on):
+
+```bash
+sudo make test-stage2   # lifecycle drills over the stdio app
+sudo make sandbox-smoke # isolation gates (overlays, sweep, protocol)
+sudo make guest         # build the guest image
+```
 
 ## Deploy
 
-- **Standalone** (laptop / bare VM): `deploy/README.md`, §Standalone.
 - **Production** (portcullis server): one-time install in
   `deploy/portcullis/INSTALL.md`; day-2 ops in `deploy/portcullis/RUNBOOK.md`.
 - **Updates**: `make update` — float pi/extension to the newest release in

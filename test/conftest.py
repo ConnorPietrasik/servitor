@@ -1,19 +1,19 @@
 """Top-level test fixtures.
 
-Laptop dev-loop layout (root required for the stack suites):
+Layout for the root stack suites (run on the server):
 
 - ``/srv/servitor-test/`` — shared, root-owned 0755 scratch ROOT: the
   resolved pi/extension installs (session-scoped, reused) and per-test run
   dirs. On the root filesystem (a real fs, never overlay — asserted
   on the state volume itself).
 - ``/home/<slot>/servitor-test/<run>/state`` — the per-test STATE ROOT,
-  under the slot's own home (ext4 on the laptop): the slot uid trivially
+  under the slot's own home (ext4 on the host): the slot uid trivially
   traverses its own home, root (the app) writes it, and ext4 supports the
   chattr +i sweep-failure injection the quarantine test needs.
 
 Slot allocation across suites (no parallel suites in the plan; this keeps
 them disjoint if ever run concurrently):
-  conformance -> slot1 · sandbox-smoke -> slot2 · vm-smoke -> slot3 (+slot4)
+  conformance -> slot1 · sandbox-smoke -> slot2
 """
 from __future__ import annotations
 

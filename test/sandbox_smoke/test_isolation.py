@@ -1,4 +1,4 @@
-"""Sandbox-smoke: the isolation gates runnable on laptop/CI root.
+"""Sandbox-smoke: the isolation gates runnable as root (server or CI).
 
 Overlay lower+upper/work on one fs; writes land in upper; whiteouts;
 EROFS on the RO binds incl. models.json unlink-EBUSY; mount-before-spawn

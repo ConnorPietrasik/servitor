@@ -11,7 +11,7 @@ Asserts the interface contract before any runtime code exists:
    ``app/env.py`` (AST scan).
 2. **Nothing hardcodes an address/port/path** — no IPv4 literals
    anywhere in ``app/`` or ``deploy/`` code; no loopback/any-address
-   literal in ``app/`` (the bind comes from env even for standalone);
+   literal in ``app/`` (the bind comes from env even for loopback dev);
    the compose contract publishes exactly one port, referenced as
    ``${SERVITOR_PORT}``; the route file references the VM via
    placeholders, no literal port.

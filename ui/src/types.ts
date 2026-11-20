@@ -1,5 +1,4 @@
-// Shared API types (mirrors the versioned contract, test/.scratch/
-// api-contract.json — response shapes are asserted in the API tests).
+// Shared API types.
 
 export interface SessionRow {
   id: string;

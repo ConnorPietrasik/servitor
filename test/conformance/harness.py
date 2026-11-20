@@ -51,7 +51,7 @@ class LiveSession:
 
 @dataclass
 class Harness:
-    root: Path  # scratch state tree (under test/.state/...)
+    root: Path  # scratch state tree (per-run, under the slot's test home)
     pi: object  # PiInstall
     slot_name: str
     config_key: str = "mock-key-0001112223"
@@ -331,14 +331,15 @@ class _FakeHooks:
 def require_root() -> None:
     if os.geteuid() != 0:
         raise HarnessError(
-            "this test needs root (mounts/setuid/sweep). Run under the "
-            "sandbox-smoke/vm-smoke targets as root — never silently skipped."
+            "this test needs root (mounts/setuid/sweep). Run under the root"
+            " make targets as root (sudo make <target>) — never silently"
+            " skipped."
         )
 
 
 def require_root_or_skip(what: str) -> None:
     """Loud-skip seam for fixtures (the suite names what it could not run;
-    the make target on the laptop is always run as root)."""
+    the root make targets on the server are always run as root)."""
     if hasattr(os, "geteuid") and os.geteuid() == 0:
         return
     import pytest

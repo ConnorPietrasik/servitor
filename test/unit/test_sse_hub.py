@@ -1,11 +1,10 @@
 """Unit tests for the SSE hub (app/api/sse.py).
 
-The production default cap is pinned here: 50 MB per session. The
-backpressure GATE (test/api/test_backpressure.py) runs the
-same code path at a scaled cap — pi's cumulative message_update
-semantics (each update carries the whole accumulated message) bound a
-single context window's SSE volume far below 50 MB, so exercising the
-mechanism end-to-end at 50 MB in one run is impossible by construction.
+The production default cap is pinned here: 50 MB per session. pi's
+cumulative message_update semantics (each update carries the whole
+accumulated message) bound a single context window's SSE volume far
+below 50 MB, so exercising the mechanism end-to-end at 50 MB in one
+run is impossible by construction.
 """
 from __future__ import annotations
 

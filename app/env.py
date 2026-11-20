@@ -73,8 +73,8 @@ class Config:
     # network contract
     bind: str  # ingress address; no default — env-only
     port: int  # the one published port; no default — env-only
-    edge_subnet: str | None  # None = standalone (loopback behind a local proxy)
-    ops_subnet: str | None  # None = standalone
+    edge_subnet: str | None  # None = dev loopback
+    ops_subnet: str | None  # None = dev loopback
     browser_origin: str | None  # the one browser origin (CORS allow-list); None = API-only
     # state volume
     root: str  # real ext4 path; no default — env-only
@@ -149,7 +149,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         raise ConfigError(f"SERVITOR_PORT out of range: {port}")
 
     # INVARIANT: the app runs privileged (root on the guest); the agent
-    # never is. Laptop dev may run unprivileged for pure-protocol work,
+    # never is. Dev may run unprivileged for pure-protocol work,
     # but any iso/rpc spawn path re-asserts root before setuid/mount work.
     if hasattr(os, "geteuid") and os.geteuid() != 0:
         pass

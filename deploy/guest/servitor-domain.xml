@@ -2,10 +2,9 @@
   Servitor guest — libvirt domain template (portcullis server, RUNBOOK §Provisioning).
 
   The image ships NO bootloader on purpose (build.sh extracts the boot files
-  alongside the qcow2 and the test harness boots with -kernel/-initrd).
-  libvirt does the same via <os><kernel><initrd><cmdline> — a guest-initiated
-  reboot (virsh reboot, panel-do servitor-vm-restart) re-enters this same
-  kernel line, so no bootloader is ever needed.
+  alongside the qcow2). libvirt boots via <os><kernel><initrd><cmdline> — a
+  guest-initiated reboot (virsh reboot, panel-do servitor-vm-restart)
+  re-enters this same kernel line, so no bootloader is ever needed.
 
   Substitutions ({{...}}):
     {{ROOT_QCOW2}}   e.g. /opt/servitor-disk/servitor-pi1.5.2-20261116.qcow2
@@ -28,7 +27,7 @@
     {{RAM_CURRENT}}  initial RAM in GiB — default 16
 
   Sizing: defaults are 24 vCPU no quota, RAM ceiling 30 GB, no GPU. The
-  proven minimum (test harness) is 4 vCPU / 8 GB — scale
+  proven minimum is 4 vCPU / 8 GB — scale
   {{VCPU}}/{{RAM_MAX}}/{{RAM_CURRENT}} down for a weaker box.
 
   free-page-reporting: enable it on the host's libvirt if it is supported
