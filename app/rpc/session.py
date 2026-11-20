@@ -117,7 +117,6 @@ class PiSession:
         self._exit_code: int | None = None
         self._run_active = False  # a run is in flight (not yet settled)
         self._stderr_tail = deque[str](maxlen=4096)
-        self._stderr_bytes = 0
         self._stdin_open = False
         self._pending_dialogs: dict[str, dict[str, Any]] = {}
         self._tasks: list[asyncio.Task] = []
@@ -239,10 +238,6 @@ class PiSession:
             text = chunk.decode("utf-8", "replace")
             for line in text.splitlines():
                 self._stderr_tail.append(line + "\n")
-            self._stderr_bytes += len(chunk)
-            if self._stderr_bytes > 512 * 1024:
-                # keep the ring bounded; diagnostics only
-                pass
 
     async def _exit_task(self) -> None:
         assert self._proc is not None
@@ -380,7 +375,6 @@ class PiSession:
     # ------------------------------------------------------------------ #
 
     def _next_id(self) -> str:
-        self._id_gen = self._id_gen  # keep the linter honest
         n = next(self._id_gen)
         return f"sv-{uuid.uuid4().hex[:8]}-{n}"
 

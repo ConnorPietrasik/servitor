@@ -147,9 +147,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
 
     # INVARIANT: the app runs privileged (root on the guest); the agent
     # never is. Dev may run unprivileged for pure-protocol work,
-    # but any iso/rpc spawn path re-asserts root before setuid/mount work.
-    if hasattr(os, "geteuid") and os.geteuid() != 0:
-        pass
+    # but any iso/rpc spawn path re-asserts root before setuid/mount work
+    # (enforced in spawn_setuid, not here).
 
     return Config(
         bind=_require(env, "SERVITOR_BIND"),
