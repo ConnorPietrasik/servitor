@@ -1,7 +1,7 @@
 # Servitor — gates.
 #
 # Gate vocabulary:
-#   check          contract lint (stdlib-fast, no venv needed)
+#   check          contract lint (fast once the venv exists; needs venv)
 #   test           unit + conformance vs mock router (conformance
 #                  loud-skips without root; on the server it is also the
 #                  update gate)
@@ -15,6 +15,13 @@
 
 PY := .venv/bin/python
 PY_BOOT := python3
+# venv is file-backed (stamped), not .PHONY: rebuild happens only when the
+# interpreter version or the declared deps change. Keeps `make check` fast
+# and offline-capable once the venv has been built once (first build needs
+# network for pip). The stamp lives inside .venv so wiping the venv forces
+# a rebuild.
+PYVER := $(shell $(PY_BOOT) -V 2>/dev/null | tr ' ' '_')
+VENV_STAMP := .venv/.stamp_$(PYVER)
 
 # The suites parameterize on the .env version selections (env-only, no
 # default — a missing selection fails loud inside the suite). Source the
@@ -25,10 +32,13 @@ ENV_LOAD := if [ -f .env ]; then set -a; grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ./.e
 
 .PHONY: venv check test test-stage2 sandbox-smoke guest sync update doctor deploy
 
-venv:
+$(VENV_STAMP): pyproject.toml
 	$(PY_BOOT) -m venv .venv
 	$(PY) -m pip install --upgrade pip
 	$(PY) -m pip install -e '.[dev]'
+	@true > $(VENV_STAMP)
+
+venv: $(VENV_STAMP)
 
 ## contract lint (env names, no hardcoded address/port/path,
 ## route parse, agent-config sanity)
