@@ -66,6 +66,7 @@ from app.delivery.service import Delivery
 from app.delivery.store import DeliveryError, FileNotDelivered, sniff_mime
 from app.iso.spawn import slot_identity
 from app.lifecycle import PROBES, Lifecycle, SessionNotResumable
+from app.iso.slots import SlotOutsidePool
 from app.registry import Registry, SessionRow
 from app.rpc.session import PromptRejected, SpawnFailure
 
@@ -244,6 +245,16 @@ def build_app(app_state, cfg) -> FastAPI:
         # with the session's state, not an upstream failure — the
         # client stops, it does not retry into a session that is gone
         log.info("respawn refused for %s (state %s)", exc.session_id, exc.state)
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    @app.exception_handler(SlotOutsidePool)
+    async def _slot_outside_pool(_request: Request, exc: SlotOutsidePool):
+        # the row's slot name is not in the pool (--slots shrunk/renamed
+        # under it): a config-vs-registry conflict the operator resolves
+        # by restoring the slot name or hand-editing the registry — a
+        # conflict, not a server fault: 409 with the remedy, not the
+        # pre-fix 500 KeyError from pool.get
+        log.info("release refused: %s", exc)
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     if cfg.browser_origin:

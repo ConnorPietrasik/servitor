@@ -18,7 +18,7 @@ from app.env import optional_env
 from app.iso.configswap import active_dir as config_active_dir
 from app.iso.configswap import require_active_dir
 from app.iso.layout import SessionMountPaths, StatePaths
-from app.iso.slots import NoFreeSlot, SlotPool
+from app.iso.slots import NoFreeSlot, SlotOutsidePool, SlotPool
 from app.iso.spawn import slot_identity
 from app.iso.sweep import kill_strays_by_uid
 from app.iso.release import release_session
@@ -1032,12 +1032,21 @@ class Lifecycle:
         if self.shutting_down:
             return []
         released: list[str] = []
+        # pool-ownership guard shared by both release passes below: a row
+        # on a slot outside --slots (shrunk/renamed under it) is never
+        # releasable from here — Lifecycle.release refuses it with
+        # SlotOutsidePool, which would raise out of gc_tick and skip the
+        # disk-pressure section on every tick (the volume's automatic
+        # protection, lost until the row is hand-fixed)
+        owned = set(self.cfg.pool.slots)
         # orphan sweep first: the reclaimed space may be the headroom
         await self.gc_orphaned_files()
         # idle GC
         cutoff = time.time() - self.cfg.gc_idle_days * 86400
         for row in self.cfg.registry.list_sessions():
             if row.state != LIVE or row.stable:
+                continue
+            if row.slot not in owned:
                 continue
             if self._is_running(row.id):
                 continue
@@ -1047,7 +1056,6 @@ class Lifecycle:
             if res.released:
                 released.append(row.id)
         # disk pressure (same pool-ownership guard as slot pressure)
-        owned = set(self.cfg.pool.slots)
         if await asyncio.to_thread(self._disk_near_full):
             for row in sorted(
                 (r for r in self.cfg.registry.list_sessions()
@@ -1358,6 +1366,14 @@ class Lifecycle:
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
+        if row.slot not in self.cfg.pool.slots:
+            # --slots was shrunk/renamed under an existing row: pool.get
+            # would KeyError out of EVERY release path (idle GC tick,
+            # POST /release, panel action — 500s, gc_tick aborted forever).
+            # Refuse with the typed error the API maps to 4xx instead; the
+            # row is only fixable by restoring the slot name or editing the
+            # registry (doctor: slots.off_pool_rows flags it).
+            raise SlotOutsidePool(session_id, row.slot)
         live = self.live.get(session_id)
         slot = self.cfg.pool.get(row.slot)
         # a session with a live run is never released by pressure/GC —

@@ -24,6 +24,24 @@ class SlotQuarantined(RuntimeError):
     the panel, retryable, NEVER reused until clean."""
 
 
+class SlotOutsidePool(RuntimeError):
+    """A registry row points at a slot name this app's pool no longer
+    holds (--slots was shrunk or renamed under it). The slot user's state
+    cannot be resolved here, so release is refused with a typed error the
+    API maps to 4xx — the bare pool.get KeyError that pre-fix escaped
+    every release path (idle GC tick, POST /release, panel action) as a
+    500, and permanently aborted gc_tick's disk-pressure section.
+    Operator remedy: restore the slot name in --slots, or hand-edit the
+    registry (doctor: slots.off_pool_rows)."""
+
+    def __init__(self, session_id: str, slot: str) -> None:
+        super().__init__(
+            f"session {session_id} sits on slot {slot!r}, which is not in this "
+            "app's pool (--slots) — release refused: restore the slot name in "
+            "--slots or hand-edit the registry, then retry"
+        )
+
+
 @dataclass
 class Slot:
     name: str

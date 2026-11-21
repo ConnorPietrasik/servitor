@@ -286,6 +286,37 @@ def check_quarantined_slots(rep: Report, args: argparse.Namespace, registry) -> 
         rep.add("slots.quarantined", PASS, "no quarantined slots")
 
 
+def check_off_pool_rows(rep: Report, args: argparse.Namespace, registry) -> None:
+    """The pool's keyset is the --slots flag; the registry's rows are what
+    survived. Shrink or rename --slots and an old ACTIVE row can point at
+    a slot name the pool no longer holds: every release path resolves the
+    row's slot through the pool (lifecycle._release), so the row is
+    UNRELEASEABLE — idle GC skips it, and the operator's POST /release /
+    panel release 409s (release is refused, the slot's uid can't be
+    resolved). This check is the registry-side view of
+    check_quarantined_slots (which walks pool -> rows; this one walks
+    rows -> pool). WARN, not FAIL: the app runs fine without the row
+    (nothing respawns it, the process is gone) — but it is stuck until an
+    operator restores the slot name or edits the registry, and it must be
+    visible in the gate report, not only in the release 409."""
+    pool_names = set(args.slots)
+    stuck = [
+        f"{row.slot} (row {row.id[:8]}, state {row.state})"
+        for row in registry.list_sessions()
+        if row.is_running_or_awaiting_release() and row.slot not in pool_names
+    ]
+    if stuck:
+        rep.add(
+            "slots.off_pool_rows",
+            WARN,
+            f"row(s) on slot(s) outside --slots: {stuck} — unreleaseable "
+            "via API/panel (release is refused); restore the slot name(s) "
+            "in --slots or hand-edit the registry",
+        )
+    else:
+        rep.add("slots.off_pool_rows", PASS, "no rows on slots outside --slots")
+
+
 def check_versions(rep: Report, args: argparse.Namespace, registry) -> None:
     # installed pi version == the env selection
     env_pi = optional_env("SERVITOR_PI_VERSION") or ""
@@ -976,6 +1007,7 @@ async def main(argv: list[str]) -> int:
     registry = Registry(args.registry or f"{args.state}/registry.db")
     check_versions(rep, args, registry)
     check_quarantined_slots(rep, args, registry)
+    check_off_pool_rows(rep, args, registry)
     check_firewall_rules(rep)
     check_ui(rep)
     check_disk(rep, args.state)

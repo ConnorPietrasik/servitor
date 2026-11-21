@@ -59,8 +59,13 @@ SLOT = "slot1"
 
 
 class FakePool:
-    def __init__(self):
-        self.slots = {}
+    """Permissive pool: any slot name resolves. The keyset carries the
+    names the fixture OWNS — lifecycle._release's pool-membership guard
+    (the F43 off-pool refusal) reads it, as gc_tick's two release passes
+    do in production."""
+
+    def __init__(self, names=("slot1",)):
+        self.slots = {n: SimpleNamespace(name=n) for n in names}
 
     def get(self, name):
         return SimpleNamespace(name=name)
@@ -133,7 +138,7 @@ def _make_lc(tmp_path, monkeypatch, idle_kill_sec=3600.0) -> Lifecycle:
     monkeypatch.setattr(lcmod, "release_session", fake_release_session)
     cfg = LifecycleConfig(
         state=state_paths(str(tmp_path)),
-        pool=FakePool(),
+        pool=FakePool((SLOT,)),
         registry=reg,
         pi=PiInstall(node_bin="/usr/bin/node", cli_js="/x/cli.js", ext_path=None),
         api_key="k",
