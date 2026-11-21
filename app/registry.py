@@ -14,8 +14,10 @@ unswept slot):
       state-machine convenience the release path uses).
 
 The `free` row is a DEAD row: slot released, transcript areas deleted.
-It stays in the table (the panel shows closed sessions) until a registry
-GC deletes it.
+The API treats released sessions as gone (the list excludes them, the
+detail 404s) — the row lingers only so operators/doctor can see what
+recently ran on a slot — until a registry GC deletes it
+(Lifecycle.gc_tick → delete_released, after the retention window).
 """
 from __future__ import annotations
 

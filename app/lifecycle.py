@@ -52,6 +52,12 @@ ORPHAN_IDLE_GRACE_SEC = 86_400.0
 #: disk pressure: release oldest non-stable until usage is below this
 DISK_PRESSURE_FRACTION = 0.90
 
+#: FREE-row retention: a released row is GONE to the API (list excludes
+# it, detail 404s) — it lingers only so operators/doctor can see what
+# recently ran on a slot. After this, registry GC drops it (registry
+# docstring: the row stays "until a registry GC deletes it").
+FREE_ROW_RETENTION_SEC = 7 * 86_400.0
+
 
 @dataclass
 class PiInstall:
@@ -1118,7 +1124,8 @@ class Lifecycle:
         """Release sessions idle > gc_idle_days (not stable, not
         running); sweep abandoned fork transcripts past the orphan
         grace; disk pressure releases the oldest non-stable until
-        headroom. Slot pressure is handled at allocation."""
+        headroom; registry GC drops FREE rows past the retention.
+        Slot pressure is handled at allocation."""
         if self.shutting_down:
             return []
         released: list[str] = []
@@ -1157,6 +1164,17 @@ class Lifecycle:
                 res = await self.release(row.id, reason="disk pressure")
                 if res.released:
                     released.append(row.id)
+        # registry GC: FREE rows are dead rows (slot released, transcript
+        # areas deleted) — the docstring promises they are deleted here.
+        # Without this call they accumulate forever and are rescanned by
+        # every pass above on every tick. Synchronous, like the rest of
+        # the registry access in this tick (the connection is thread-
+        # bound); one DELETE on a small table is microseconds.
+        dropped = self.cfg.registry.delete_released(
+            time.time() - FREE_ROW_RETENTION_SEC
+        )
+        if dropped:
+            log.info("registry GC: dropped %d released row(s) past retention", dropped)
         return released
 
     def _is_running(self, session_id: str) -> bool:
