@@ -5,8 +5,9 @@ hardcodes an address/port/path. This module is the one place env vars are
 read; app code goes through :class:`Config` and never touches
 ``os.environ`` directly (the gate AST-scans for violations).
 
-Addresses, ports, subnets, and the state-volume root have no defaults:
-they come from the env file, full stop.
+Addresses, ports, and subnets have no defaults: they come from the env
+file, full stop. The state-volume root is NOT env: the guest unit passes
+it as the --state flag (a literal in deploy/guest/servitor.service).
 """
 from __future__ import annotations
 
@@ -27,8 +28,6 @@ ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_EDGE_SUBNET",
     "SERVITOR_OPS_SUBNET",
     "SERVITOR_BROWSER_ORIGIN",  # the one origin allowed to use the API from a browser (CORS)
-    # --- state volume ---
-    "SERVITOR_ROOT",
     # --- lifecycle / delivery (ops parameters, never capability caps) ---
     "SERVITOR_GC_IDLE_DAYS",
     "SERVITOR_DRAIN_GRACE_SECS",
@@ -89,7 +88,7 @@ class Config:
     ops_subnet: str | None  # None = dev loopback
     browser_origin: str | None  # the one browser origin (CORS allow-list); None = API-only
     # state volume
-    root: str  # state volume root (local, non-overlay fs); no default — env-only
+    root: str  # state volume root (local, non-overlay fs); from the --state flag
     # lifecycle / delivery (settled defaults — ops, not caps)
     gc_idle_days: int = 14
     heartbeat_secs: int = 15
@@ -104,8 +103,8 @@ def _require(env: Mapping[str, str], name: str) -> str:
     value = env.get(name, "").strip()
     if not value:
         raise ConfigError(
-            f"{name} is required (see .env.example). No default: addresses, "
-            f"ports, and paths come from the env file only."
+            f"{name} is required (see .env.example). No default: addresses "
+            f"and ports come from the env file only."
         )
     return value
 

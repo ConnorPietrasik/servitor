@@ -7,8 +7,8 @@ Two distinct kinds of path live here, and only here:
    the session tree roots must stay free of AGENTS.md/SYSTEM.md/.pi
    context files (they are overlay lowers / cwd ancestors of every
    session).
-2. **State-volume areas** — relative to ``SERVITOR_ROOT`` (the only
-   env-supplied path). Computed by :func:`state_paths`; never hardcoded
+2. **State-volume areas** — relative to the state-volume root (the
+   CLI's ``--state``). Computed by :func:`state_paths`; never hardcoded
    elsewhere.
 
 Nothing in this module is an address or a port.
@@ -55,7 +55,7 @@ PROBE_SLOT = "slot0"
 
 # --- state volume -----------------------------------------------------------
 
-#: Area names under SERVITOR_ROOT, in the order they are created.
+#: Area names under the state-volume root, in the order they are created.
 STATE_AREAS: tuple[str, ...] = ("config", "lib", "inbox", "scratch", "sessions")
 
 #: Context-file names that must never exist under the session tree root's
@@ -66,7 +66,7 @@ CONTEXT_FILE_NAMES: tuple[str, ...] = ("AGENTS.md", "CLAUDE.md", ".pi")
 
 @dataclass(frozen=True)
 class StatePaths:
-    """Absolute state-volume paths derived from SERVITOR_ROOT."""
+    """Absolute state-volume paths derived from the state-volume root."""
 
     root: str
     config: str  # versioned dirs config/v<N>/ + active pointer

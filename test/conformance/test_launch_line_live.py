@@ -72,7 +72,5 @@ async def test_executed_env_is_the_closed_allowlist(harness):
     argv = " ".join(live.driver.launched_argv)
     assert harness.config_key not in argv
     assert harness.exa_key not in argv
-    # never the app's environment: no servitor app vars leaked
-    assert "SERVITOR_ROOT" not in env
     assert "PATH" in env and harness.config_key not in env["PATH"]
     await harness.release(live)

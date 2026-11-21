@@ -285,8 +285,6 @@ SERVITOR_PORT=$SERVITOR_PORT
 # address so the host/proxy reach it at SERVITOR_VM_IP:SERVITOR_PORT. The
 # firewall admits the port from the edge subnet only.
 SERVITOR_BIND=$SERVITOR_VM_IP
-# state-volume root (the state disk mounts here; matches the unit's --state)
-SERVITOR_ROOT=/var/lib/servitor
 SERVITOR_EDGE_SUBNET=$SERVITOR_EDGE_SUBNET
 SERVITOR_HOST_BRIDGE_IP=$SERVITOR_HOST_BRIDGE_IP
 SERVITOR_OPS_SUBNET=$SERVITOR_OPS_SUBNET
