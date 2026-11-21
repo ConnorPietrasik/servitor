@@ -134,6 +134,32 @@ class LifecycleHooks:
         self.events.add(session_id, "released", detail)
 
 
+class _AbortStartHooks:
+    """ReleaseHooks for the failed-start rollback: the registry
+    transitions still run (a crash mid-abort must leave the same
+    DRAINING signature as a crashed release), but the FEED takes no
+    release shape — the session never existed, so release_start/released
+    items for its id are ghosts the panel cannot resolve (the row is
+    deleted on the clean path). The quarantine event IS kept: there the
+    row STAYS, and the feed is where the stuck slot is seen."""
+
+    def __init__(self, reg: Registry, events: "EventFeed"):
+        self.reg = reg
+        self.events = events
+
+    def mark_draining(self, session_id: str, reason: str) -> None:
+        # no release_start event: nothing was released, no session existed
+        self.reg.set_state(session_id, DRAINING, cause=f"release: {reason}")
+
+    def mark_released(self, session_id: str, *, quarantined: bool, detail: str) -> None:
+        if quarantined:
+            # row stays DRAINING: panel/doctor visibility, as on release
+            self.events.add(session_id, "slot_quarantined", detail)
+            return
+        # no CLEANING/FREE churn and no event: the abort deletes the row —
+        # a failed start was never a session to be released
+
+
 class EventFeed:
     """Bounded in-memory event feed; app events are also published to the
     session's SseHub, the single per-session event source."""
@@ -471,9 +497,12 @@ class Lifecycle:
 
         # Everything from here on is under the abort guard: a failure at
         # ANY step (config missing, dir creation, mount — the tamper gate
-        # included — spawn) must release the slot and delete the row, never
-        # leak them. A leaked ALLOCATED row pins its slot for the life of
-        # the process (boot reconciliation only runs at boot).
+        # included — spawn) rolls back through release_session (the
+        # SINGLE cleanup path: the spawned child, strays, mounts, the
+        # uid's files, the state areas, and a sweep-verified slot) and
+        # deletes the row — never a second, smaller cleanup (F44). A
+        # leaked ALLOCATED row pins its slot for the life of the process
+        # (boot reconciliation only runs at boot).
         sp = SessionMountPaths.for_session(session_id, str(self.cfg.state.scratch))
         live = Live(
             session_id=session_id, sp=sp, mount_ops=[], driver=None,
@@ -492,10 +521,14 @@ class Lifecycle:
             self._record_extensions(session_id, sp)
             driver = self._make_driver(session_id, None, live)
             await driver.start()
+            # retained the moment the child exists: any LATER failure
+            # (get_state, the transcript handoff, ...) must reach the
+            # abort's shutdown — a started-but-unretained driver would be
+            # orphaned: no row, no hub, no slot-uid reaper (F44)
+            live.driver = driver
             st = await driver.get_state()
             session_file = st.get("sessionFile")
             self.cfg.registry.set_session_file(session_id, session_file)
-            live.driver = driver
             self.cfg.registry.set_state(session_id, LIVE, cause="spawn ok")
             self.cfg.registry.touch(session_id)
             self.events.add(session_id, "started", f"slot={slot.name} config={version}")
@@ -506,21 +539,78 @@ class Lifecycle:
             raise
 
     async def _abort_start(self, session_id: str, live: Live, slot) -> None:
+        """Failed-start rollback: the SINGLE cleanup path
+        (release_session), not a second, smaller one. The row still
+        exists (upserted ALLOCATED before any side effect), so release's
+        steps run in order: the ladder on the spawned child, strays
+        killed for the uid, the mounts down (a failure is reported and
+        the sweep re-checks, never discarded), the uid's files swept,
+        the three state areas deleted wholesale, and the slot freed ONLY
+        when the sweep verified clean (invariant 8) — a failed sweep
+        quarantines, exactly as a release does. After: the live entry
+        and hub go, and the row goes too — a failed start produced no
+        transcript, it was never a session. EXCEPT on quarantine: the
+        DRAINING row STAYS, as on a quarantined release, so the panel
+        and doctor see the stuck slot and an operator can re-run
+        release (the RUNBOOK retry path). A crash mid-abort leaves that
+        same DRAINING row for boot reconciliation, the way a crashed
+        release does. The feed sees no release-shaped events for the
+        ghost session (_AbortStartHooks) — only slot_quarantined, where
+        the row stays to be seen."""
+        quarantined = False
+        try:
+            outcome = await release_session(
+                session_id=session_id,
+                slot=slot,
+                state=self.cfg.state,
+                pool=self.cfg.pool,
+                hooks=_AbortStartHooks(self.cfg.registry, self.events),
+                driver=live.driver,
+                mount_ops=live.mount_ops,
+                reason="start aborted",
+            )
+            quarantined = outcome.quarantined
+            if quarantined:
+                log.error(
+                    "start %s aborted: slot %s QUARANTINED (sweep not "
+                    "verified clean): %s",
+                    session_id, slot.name, "; ".join(outcome.errors),
+                )
+            elif outcome.errors:
+                log.warning(
+                    "start %s aborted: slot %s freed with errors: %s",
+                    session_id, slot.name, "; ".join(outcome.errors),
+                )
+        except Exception:
+            # release_session collects its own errors in the outcome; an
+            # escape here (a pool/registry bug) must not leak the slot:
+            # fail closed — quarantine, never hand out (invariant 8)
+            log.exception("start %s aborted: release_session raised", session_id)
+            quarantined = True
+            try:
+                self.cfg.pool.quarantine(
+                    session_id, "abort: release_session raised")
+            except Exception:
+                pass
+            # if the quarantine landed, surface the stuck slot (the row
+            # stays DRAINING), as the hooks do on the ordinary quarantine
+            # path; if it could not (e.g. the slot was already freed by
+            # the escape), there is nothing stuck to report
+            if slot.state == "quarantined":
+                self.events.add(session_id, "slot_quarantined",
+                                "abort: release_session raised")
         if live.driver is not None:
             try:
-                await live.driver.shutdown(eof_grace=1, term_grace=1)
                 await live.driver.close()
             except Exception:
                 pass
-        try:
-            await M.aunmount_all_safe(live.mount_ops)
-        except Exception:
-            pass
         self.live.pop(session_id, None)
         self._drop_session_state(session_id)
-        self.cfg.pool.release_slot_if_owned(session_id, slot)
-        # no transcript was produced: not a session, the row goes
-        self.cfg.registry.delete(session_id)
+        if not quarantined:
+            # no transcript was produced: not a session, the row goes
+            self.cfg.registry.delete(session_id)
+        # quarantined: the DRAINING row stays — panel/doctor visibility
+        # and the re-release retry, exactly as on a stuck release
 
     async def prompt(self, session_id: str, text: str) -> str:
         """Steer/prompt with respawn-on-pickup. A transcript-less row is

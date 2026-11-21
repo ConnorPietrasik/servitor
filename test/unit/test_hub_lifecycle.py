@@ -70,9 +70,6 @@ class FakePool:
     def get(self, name):
         return SimpleNamespace(name=name)
 
-    def release_slot_if_owned(self, session_id, slot):
-        pass
-
 
 class FakeDriver:
     """Process-shaped fake: state/shutdown/close, no real child."""

@@ -139,15 +139,6 @@ class SlotPool:
         s.stable = False
         return s
 
-    def release_slot_if_owned(self, session_id: str, slot: "Slot") -> None:
-        """Return a slot whose session's START failed (allocated, never
-        live): the allocation is rolled back. A LIVE or DRAINING session
-        never loses its slot here."""
-        if slot.session_id == session_id and slot.state == "allocated":
-            slot.state = "free"
-            slot.session_id = None
-            slot.stable = False
-
     def quarantine(self, session_id: str, reason: str) -> Slot:
         s = self.by_session(session_id)
         if s is None:

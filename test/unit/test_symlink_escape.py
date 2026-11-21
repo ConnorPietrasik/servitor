@@ -344,14 +344,18 @@ def test_list_outbox_skips_planted_links(tmp_path):
 
 async def test_start_failure_releases_slot_and_row(tmp_path, monkeypatch):
     """A failure at ANY start step (config missing, dir creation, mount —
-    the tamper gate included — spawn) must release the slot and delete
-    the row: a leaked ALLOCATED row pins its slot for the life of the
-    process (boot reconciliation only runs at boot)."""
+    the tamper gate included — spawn) rolls back through release_session
+    (the single cleanup path) and deletes the row: a leaked ALLOCATED row
+    pins its slot for the life of the process (boot reconciliation only
+    runs at boot). The sweep primitives are faked (a real sweep would
+    `find /` on the host, non-hermetically)."""
     from types import SimpleNamespace
 
+    from app.iso import release as release_mod
     from app.lifecycle import Lifecycle, LifecycleConfig, PiInstall
     from app.iso.layout import state_paths
     from app.iso.slots import SlotPool
+    from app.iso.sweep import SweepResult
     from app.registry import Registry
 
     monkeypatch.setattr(
@@ -377,6 +381,15 @@ async def test_start_failure_releases_slot_and_row(tmp_path, monkeypatch):
     )
     lc = Lifecycle(cfg)
 
+    kill_calls = []
+    monkeypatch.setattr(
+        release_mod, "kill_strays_by_uid",
+        lambda uid: kill_calls.append(uid) or [],
+    )
+    monkeypatch.setattr(
+        release_mod, "sweep_by_owner",
+        lambda uid, excludes=(), **k: SweepResult(uid=uid, verified_clean=True),
+    )
     monkeypatch.setattr(M, "ensure_session_dirs", lambda sp, st: None)
 
     def boom(*a, **k):
@@ -387,8 +400,10 @@ async def test_start_failure_releases_slot_and_row(tmp_path, monkeypatch):
     with pytest.raises(M.MountError):
         await lc.start_session()
 
-    # no leak: slot back to free, row gone, no live entry
+    # no leak: slot back to free (sweep-verified, via verify_free),
+    # row gone, no live entry, strays killed for the slot uid
     assert lc.live == {}
     assert pool.get("slot1").state == "free"
     assert pool.get("slot1").session_id is None
     assert reg.list_sessions() == []
+    assert kill_calls == [9001]
