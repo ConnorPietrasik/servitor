@@ -15,6 +15,8 @@ function fmtAgo(ts: number | null | undefined): string {
 function stateChip(s: SessionRow): { label: string; cls: string } {
   if ((s.dialogs_pending ?? 0) > 0)
     return { label: `awaiting reply (${s.dialogs_pending})`, cls: "chip warn" };
+  // busy ⇒ live_process, so "running" refines the "live" state below
+  if (s.busy) return { label: "running", cls: "chip live" };
   if (s.live_process) return { label: "live", cls: "chip live" };
   if (s.interrupted) return { label: "interrupted", cls: "chip warn" };
   if (s.state === "draining") return { label: "draining", cls: "chip warn" };

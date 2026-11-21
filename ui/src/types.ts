@@ -5,6 +5,7 @@ export interface SessionRow {
   display_name: string | null;
   slot: string; // the static slot this session pins
   state: string; // allocated | live | draining | cleaning | free
+  busy: boolean; // a run is in flight (server: driver.run_active)
   stable: boolean;
   interrupted: boolean;
   session_file: string | null;

@@ -233,7 +233,9 @@ export default function Chat() {
 
   const refreshRow = useCallback(async (s: string) => {
     try {
-      setRow(await api.getSession(s));
+      const r = await api.getSession(s);
+      if (idRef.current !== s) return; // navigated away during fetch
+      setRow(r);
     } catch {
       /* session gone */
     }
@@ -280,8 +282,14 @@ export default function Chat() {
       const m = await api.getMessages(s);
       if (idRef.current !== s) return; // navigated away
       setMsgs(m.messages);
-      setRunning(false);
-      setRow(await api.getSession(s));
+      const r = await api.getSession(s);
+      if (idRef.current !== s) return; // navigated away during fetch
+      setRow(r);
+      // seed run state from the server: the agent_start/agent_settled
+      // events for a run already in flight fired before our cursor and
+      // will not be redelivered, so a reattach (page load, gap re-sync)
+      // must learn the run is live from the row, not the stream tail
+      setRunning(r.busy);
       // a returning client is re-offered any still-pending dialog
       void refreshDialogs();
       unsubRef.current = api.subscribeEvents(
@@ -318,6 +326,24 @@ export default function Chat() {
       setComposerPrefill(null);
     }
   }, [composerPrefill]);
+
+  // navigated to a different session: every state here is session-scoped
+  // and must not survive the transition. `running` in particular gates
+  // send() (steer vs prompt) — a stale true would steer a session with
+  // no run in flight; the row/msgs reset avoids showing the previous
+  // session's data during the fetch window (attach reseeds everything)
+  useEffect(() => {
+    setRow(null);
+    setMsgs([]);
+    setTools([]);
+    setRunning(false);
+    setDialogs([]);
+    setUploads([]);
+    setBanner(null);
+    setText("");
+    setClosing(false);
+    setComposerPrefill(null);
+  }, [sid]);
 
   async function send(mode: "auto" | "followup") {
     if (!sid || !text.trim()) return;
@@ -406,8 +432,12 @@ export default function Chat() {
       setComposerPrefill(m.text); // "edit that message": prefilled
       setBanner(null);
       // the fork switches the process to a new session file: re-attach
-      // for the fresh (empty-so-far) transcript
-      window.setTimeout(() => void attach(), 500);
+      // for the fresh (empty-so-far) transcript — only if still on this
+      // session (a nav away already switched targets; that session's
+      // own param effect attaches it)
+      window.setTimeout(() => {
+        if (idRef.current === sid) void attach();
+      }, 500);
     } catch (e) {
       setBanner(String(e));
     }
