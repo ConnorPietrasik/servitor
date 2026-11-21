@@ -21,6 +21,7 @@ import stat
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,7 +94,15 @@ class Staging:
 # ---------------------------------------------------------------------- #
 
 _sha_lock = threading.Lock()
-_SHA_CACHE: dict[tuple, str] = {}
+_SHA_CACHE: OrderedDict[tuple, str] = OrderedDict()
+# Bounded: the key includes (size, mtime), so every file VERSION ever hashed
+# gets its own entry and a superseded entry is never read again — nothing
+# is ever evicted on rewrite or delete. Uncapped, a long-running process
+# watching a growing artifact leaks ~300 B per version (the outbox view
+# polls every 4 s). FIFO is the right order: the oldest version is the one
+# no live listing will ever request again; if a live file is evicted, the
+# next listing re-hashes it once (CPU, not correctness).
+_SHA_CACHE_MAX = 4096  # ≈1.3 MB worst case
 _SHA_PENDING: set[tuple] = set()
 
 
@@ -106,6 +115,8 @@ def _hash_outbox_file(key: tuple, path: str) -> None:
                 h.update(chunk)
         with _sha_lock:
             _SHA_CACHE[key] = h.hexdigest()
+            if len(_SHA_CACHE) > _SHA_CACHE_MAX:
+                _SHA_CACHE.popitem(last=False)  # FIFO: oldest version first
     except OSError:
         pass  # file gone mid-hash: the next listing re-checks
     finally:
