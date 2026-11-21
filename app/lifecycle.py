@@ -73,6 +73,20 @@ class Live:
     config_lower: Optional[str] = None  # the version this session booted from
 
 
+class SessionNotResumable(RuntimeError):
+    """The row is in a terminal state (release phases DRAINING/CLEANING,
+    FREE, or a stuck quarantine): no route re-opens it, so respawn/
+    pickup is refused before any side effect (stray kill, mounts,
+    process). The API maps it to 409."""
+
+    def __init__(self, session_id: str, state: str) -> None:
+        self.session_id = session_id
+        self.state = state
+        super().__init__(
+            f"{session_id}: state {state} is terminal — no route re-opens it"
+        )
+
+
 @dataclass
 class LifecycleConfig:
     state: StatePaths
@@ -161,12 +175,35 @@ class Lifecycle:
         self._gc_task: Optional[asyncio.Task] = None
         self._update_task: Optional[asyncio.Task] = None
 
-    def hub(self, session_id: str) -> "SseHub":
-        """The session's SSE hub (created on first use; respawns re-attach)."""
+    def hub(self, session_id: str) -> "SseHub | None":
+        """The session's SSE hub (created on first use; respawns re-attach).
+
+        Creation is refused for every non-ALLOCATED/LIVE row (release
+        phases DRAINING/CLEANING, FREE, unknown): re-openable by no
+        route, so a hub made for it would live for the process's life
+        holding up to sse_ring_bytes. The DRAINING refusal matters for
+        the quarantine case — a failed sweep leaves the row DRAINING
+        forever, and a reconnecting client would otherwise mint a fresh
+        50 MB hub that no drop site ever reaches. A session with no hub
+        has no subscribers, so refusing loses nothing: release events of
+        a never-spawned session land in the feed (the panel), and the
+        client 404s on connect and stops. release() and _abort_start()
+        are the drop sites; idle-kill never drops — respawn re-attaches
+        to the same hub (Last-Event-ID resume). Lookup is first, so an
+        existing hub is returned whatever the row says (in-flight
+        releases keep delivering on their hub). ``"*"`` (broadcast app
+        events) gets no hub either: no client can subscribe to an id that
+        is not a registry row."""
         h = self._hubs.get(session_id)
-        if h is None:
-            h = SseHub(session_id, cap_bytes=self.cfg.sse_ring_bytes)
-            self._hubs[session_id] = h
+        if h is not None:
+            return h
+        if session_id == "*":
+            return None
+        row = self.cfg.registry.get(session_id)
+        if row is None or row.state not in (ALLOCATED, LIVE):
+            return None
+        h = SseHub(session_id, cap_bytes=self.cfg.sse_ring_bytes)
+        self._hubs[session_id] = h
         return h
 
     def close_streams(self) -> None:
@@ -294,6 +331,14 @@ class Lifecycle:
         # event stream is the SSE hub; delivery never feeds back into the
         # run (invariant 4 — the hub evicts + gaps, it never blocks)
         hub = self.hub(session_id)
+        if hub is None:
+            # a spawn invariant violation: the row is ALLOCATED/LIVE here
+            # by construction (start_session upserts it ALLOCATED,
+            # _respawn refuses terminal rows) — refuse loudly rather than
+            # spawn a process whose events go nowhere
+            raise RuntimeError(
+                f"{session_id}: no event hub at spawn (row missing or "
+                f"not allocated/live)")
         driver.on_event = hub.on_event
         # extension dialogs park in the driver (the child blocks until a
         # human answers or aborts): surface them — feed + SSE stream
@@ -416,6 +461,7 @@ class Lifecycle:
         except Exception:
             pass
         self.live.pop(session_id, None)
+        self._drop_session_state(session_id)
         self.cfg.pool.release_slot_if_owned(session_id, slot)
         # no transcript was produced: not a session, the row goes
         self.cfg.registry.delete(session_id)
@@ -449,6 +495,12 @@ class Lifecycle:
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
+        if row.state not in (ALLOCATED, LIVE):
+            # terminal row (release phase, stuck quarantine): no route
+            # re-opens it, and hub() refuses to mint its event hub —
+            # refuse BEFORE any side effect (stray kill, mounts,
+            # process); the API maps this to 409
+            raise SessionNotResumable(session_id, row.state)
         if not row.session_file:
             raise ValueError(f"{session_id}: no transcript to respawn from")
         live = self.live.get(session_id)
@@ -535,7 +587,12 @@ class Lifecycle:
         self._probe_locks[key] = fut
         try:
             result = await self._run_probe(session_id, which, row)
-            self._probe_cache[key] = (time.time(), result)
+            # a terminal row (release phase, stuck quarantine) is never
+            # dropped again by release(): caching for it would keep the
+            # result to the process's life — nothing else evicts
+            # _probe_cache
+            if row.state in (ALLOCATED, LIVE):
+                self._probe_cache[key] = (time.time(), result)
             fut.set_result(result)
             return result
         except Exception as e:
@@ -1005,8 +1062,10 @@ class Lifecycle:
         # cursor FIRST: it is the hub position before the (awaiting)
         # entries read; a concurrent event in between duplicates an entry
         # the snapshot already contains (the client dedupes by id), while
-        # the reverse order would silently skip the tail.
-        cursor = self.hub(session_id).latest_id
+        # the reverse order would silently skip the tail. A session with
+        # no hub (never spawned, or already released) has no ring: 0.
+        hub = self.hub(session_id)
+        cursor = hub.latest_id if hub is not None else 0
         if driver is not None:
             try:
                 await self._live_sync_file(session_id, driver)
@@ -1031,9 +1090,10 @@ class Lifecycle:
                 "messages": self._branch_messages(list(reversed(chain))),
             }
         branch = active_branch(self._transcript_entries(session_id))
+        hub = self.hub(session_id)
         return {
             "leaf_id": branch[-1]["id"] if branch else None,
-            "cursor": self.hub(session_id).latest_id,
+            "cursor": hub.latest_id if hub is not None else 0,
             "messages": self._branch_messages(branch),
         }
 
@@ -1178,6 +1238,23 @@ class Lifecycle:
     # release                                                             #
     # ------------------------------------------------------------------ #
 
+    def _drop_session_state(self, session_id: str) -> None:
+        """Drop the session's in-memory state at a TERMINAL transition
+        (release, aborted start). The hub's ring can hold up to
+        sse_ring_bytes (default 50 MB) and _probe_cache holds probe
+        results — without this, _hubs grows one entry per session for
+        the life of the process: the 50 MB cap is per-LIVE-session, not
+        per-session-since-boot. The hub is closed, not just popped, so
+        in-flight streams end now (the client re-fetches, gets 404, and
+        stops retrying) and close_streams' SIGTERM contract still holds.
+        Never call this from idle-kill: the row survives, pickup
+        respawns, and clients re-attach to the same hub."""
+        hub = self._hubs.pop(session_id, None)
+        if hub is not None:
+            hub.close()
+        for which in PROBES:
+            self._probe_cache.pop((session_id, which), None)
+
     async def release(self, session_id: str, *, reason: str = "user close") -> Any:
         row = self.cfg.registry.get(session_id)
         if row is None:
@@ -1204,6 +1281,9 @@ class Lifecycle:
                 except Exception:
                     pass
             self.live.pop(session_id, None)
+        # after release_session's events (release_start, released) have
+        # landed in the ring: dropping the hub is the terminal move
+        self._drop_session_state(session_id)
         return outcome
 
 

@@ -61,11 +61,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.api.sse import HEARTBEAT, SseHub, stream_events
+from app.api.sse import HEARTBEAT, stream_events
 from app.delivery.service import Delivery
 from app.delivery.store import DeliveryError, FileNotDelivered, sniff_mime
 from app.iso.spawn import slot_identity
-from app.lifecycle import PROBES, Lifecycle
+from app.lifecycle import PROBES, Lifecycle, SessionNotResumable
 from app.registry import Registry, SessionRow
 from app.rpc.session import PromptRejected, SpawnFailure
 
@@ -237,6 +237,15 @@ def build_app(app_state, cfg) -> FastAPI:
             content={"error": f"{type(exc).__name__}: {exc}"},
         )
 
+    @app.exception_handler(SessionNotResumable)
+    async def _not_resumable(_request: Request, exc: SessionNotResumable):
+        # a respawn-on-pickup route (prompt, panel start, fork) met a
+        # terminal row (release phase / stuck quarantine): a conflict
+        # with the session's state, not an upstream failure — the
+        # client stops, it does not retry into a session that is gone
+        log.info("respawn refused for %s (state %s)", exc.session_id, exc.state)
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
     if cfg.browser_origin:
         app.add_middleware(
             CORSMiddleware,
@@ -374,6 +383,10 @@ def build_app(app_state, cfg) -> FastAPI:
             out = await app_state.lc.fork(sid, body.entry_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="no such session")
+        except SessionNotResumable:
+            raise  # terminal row: the app-level handler maps it to 409,
+            # NOT the 503 below (a retryable upstream failure) — without
+            # this the blanket RuntimeError catch would shadow it
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
         except Exception as e:
@@ -414,7 +427,14 @@ def build_app(app_state, cfg) -> FastAPI:
             # already ran at SIGTERM). The client's EventSource backs off
             # and retries against the new instance once the restart lands.
             raise HTTPException(status_code=503, detail="shutting down")
-        hub: SseHub = app_state.lc.hub(sid)
+        hub = app_state.lc.hub(sid)
+        if hub is None:
+            # no hub: the row is released, or stuck mid-release
+            # (quarantine). Terminal either way — hub() never mints one
+            # for a non-allocated/live row, so every further request
+            # 404s too: the client should stop, not retry into a session
+            # that is gone (EventSource closes permanently on non-200)
+            raise HTTPException(status_code=404, detail="no such session")
         if hub.closed:
             # per-hub terminal (defense-in-depth: shutting_down always
             # precedes close_streams, so this only fires if a hub is

@@ -46,8 +46,12 @@ DIALOG = {
 
 
 def _lc_with_feed():
+    class _Registry:
+        def get(self, sid):
+            return SimpleNamespace(state="live") if sid == SID else None
+
     lc = Lifecycle.__new__(Lifecycle)
-    lc.cfg = SimpleNamespace(registry=None, state=None, sse_ring_bytes=None)
+    lc.cfg = SimpleNamespace(registry=_Registry(), state=None, sse_ring_bytes=None)
     lc.live = {}
     lc._hubs = {}
     lc.events = EventFeed(hub_getter=lc.hub)
