@@ -61,6 +61,19 @@ HOST_DEPLOY_ENV_NAMES: tuple[str, ...] = (
     "SHUTDOWN_TIMEOUT",
 )
 
+# Test-scoped names — read ONLY by the conformance/stage2/unit suites. Never
+# the app, never the host .env, never in .env.example: they carry suite state
+# (scratch roots, the parent test's selection into the netns child, the mock
+# server port). check_contract.py AST-scans test/ and asserts every name read
+# there is contracted or in this tuple (and that this tuple stays disjoint
+# from the contracted set).
+TEST_SCOPED_ENV_NAMES: tuple[str, ...] = (
+    "SERVITOR_TEST_ROOT",  # suite scratch root (conftest.py)
+    "PI_PREFIX",  # conformance scratch pi prefix (parent test -> netns child)
+    "EXT_PREFIX",  # conformance scratch extension prefix (ditto)
+    "PORT",  # mock HTTP server port (unit tests, parent -> child)
+)
+
 
 class ConfigError(RuntimeError):
     """A required env var is missing or malformed (fail closed)."""

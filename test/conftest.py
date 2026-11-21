@@ -81,5 +81,7 @@ def pi_install(test_root):
         test_root / "pi-install",
         os.environ.get("SERVITOR_PI_VERSION"),
         os.environ.get("SERVITOR_PI_WEB_ACCESS_VERSION"),
-        node_bin=os.environ.get("SERVITOR_NODE_BIN", "/usr/bin/node"),
+        # `or`-semantics: a blank .env line (SERVITOR_PI_NODE_BIN=) is exported
+        # EMPTY by the Makefile ENV_LOAD and must not defeat the default
+        node_bin=os.environ.get("SERVITOR_PI_NODE_BIN") or "/usr/bin/node",
     )

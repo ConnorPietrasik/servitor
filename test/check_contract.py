@@ -8,7 +8,10 @@ Asserts the interface contract before any runtime code exists:
    so its name set equals ``app.env.ENV_NAMES`` plus
    ``HOST_DEPLOY_ENV_NAMES`` (host deploy scripts + image build —
    never the app; asserted disjoint). App code reads env only through
-   ``app/env.py`` (AST scan).
+   ``app/env.py`` (AST scan). Test code reads only contracted names
+   plus ``app.env.TEST_SCOPED_ENV_NAMES`` (suite-internal state; asserted
+   disjoint from the contracted set) — AST scan, so an off-contract
+   read in ``test/`` (e.g. a renamed ghost name) goes RED, not silent.
 2. **Nothing hardcodes an address/port/path** — no IPv4 literals
    anywhere in ``app/`` or ``deploy/`` code; no loopback/any-address
    literal in ``app/`` (the bind comes from env even for loopback dev);
@@ -69,11 +72,20 @@ def env_example_names() -> list[str]:
     return names
 
 
-def env_reads_in_app() -> set[str]:
-    """AST-scan app/ for env var reads; return the set of names read."""
+def env_read_sites(paths: list[Path]) -> tuple[set[str], dict[str, list[str]]]:
+    """AST-scan ``paths`` for env var reads; return (names, name -> locations).
+
+    Catches ``os.environ["X"]``, ``os.getenv("X")``, ``os.environ.get("X")``
+    with a constant name. (Non-constant reads are invisible — none exist.)
+    """
     names: set[str] = set()
-    direct_env_files: list[str] = []
-    for path in sorted((REPO / "app").rglob("*.py")):
+    sites: dict[str, list[str]] = {}
+
+    def add(name: str, path: Path, lineno: int) -> None:
+        names.add(name)
+        sites.setdefault(name, []).append(f"{path.relative_to(REPO)}:{lineno}")
+
+    for path in paths:
         tree = ast.parse(path.read_text(), filename=str(path))
         for node in ast.walk(tree):
             if isinstance(node, ast.Subscript):
@@ -86,9 +98,7 @@ def env_reads_in_app() -> set[str]:
                     and v.value.id == "os"
                     and isinstance(node.slice, ast.Constant)
                 ):
-                    if path != REPO / "app" / "env.py":
-                        direct_env_files.append(f"{path}:{node.lineno}")
-                    names.add(str(node.slice.value))
+                    add(str(node.slice.value), path, node.lineno)
             elif isinstance(node, ast.Call):
                 func = node.func
                 # os.getenv("X") / os.environ.get("X")
@@ -107,14 +117,25 @@ def env_reads_in_app() -> set[str]:
                 ):
                     target = True
                 if target and node.args and isinstance(node.args[0], ast.Constant):
-                    if path != REPO / "app" / "env.py":
-                        direct_env_files.append(f"{path}:{node.lineno}")
-                    names.add(str(node.args[0].value))
-        if direct_env_files:
-            fail(
-                "no env reads outside app/env.py",
-                "found in " + ", ".join(direct_env_files),
-            )
+                    add(str(node.args[0].value), path, node.lineno)
+    return names, sites
+
+
+def env_reads_in_app() -> set[str]:
+    """AST-scan app/ for env var reads; return the set of names read."""
+    names, sites = env_read_sites(sorted((REPO / "app").rglob("*.py")))
+    # app/env.py is the one sanctioned reader; anywhere else is a violation
+    direct_env_files = sorted(
+        site
+        for site_list in sites.values()
+        for site in site_list
+        if not site.startswith("app/env.py:")
+    )
+    if direct_env_files:
+        fail(
+            "no env reads outside app/env.py",
+            "found in " + ", ".join(direct_env_files),
+        )
     return names
 
 
@@ -141,7 +162,11 @@ def main() -> int:
     dupes = {n for n in example_names if example_names.count(n) > 1}
     check(not dupes, "no duplicate names in .env.example", str(sorted(dupes)))
 
-    from app.env import ENV_NAMES, HOST_DEPLOY_ENV_NAMES  # noqa: E402
+    from app.env import (  # noqa: E402
+        ENV_NAMES,
+        HOST_DEPLOY_ENV_NAMES,
+        TEST_SCOPED_ENV_NAMES,
+    )
 
     deploy_only = set(HOST_DEPLOY_ENV_NAMES)
     check(
@@ -162,6 +187,27 @@ def main() -> int:
         read_names <= set(ENV_NAMES),
         "every env var read in app/ is in the contract",
         str(sorted(read_names - set(ENV_NAMES))),
+    )
+
+    # test/ may read contracted names plus the suite-scoped set — anything
+    # else is an off-contract (ghost) name: a renamed .env line would be
+    # silently ignored by the suites, exactly like a renamed app read would
+    test_scoped = set(TEST_SCOPED_ENV_NAMES)
+    check(
+        test_scoped & (set(ENV_NAMES) | deploy_only) == set(),
+        "app.env.TEST_SCOPED_ENV_NAMES is disjoint from the contracted set",
+        str(sorted(test_scoped & (set(ENV_NAMES) | deploy_only))),
+    )
+    test_read_names, test_read_sites = env_read_sites(
+        sorted((REPO / "test").rglob("*.py"))
+    )
+    ghost = test_read_names - contracted - test_scoped
+    check(
+        not ghost,
+        "every env var read in test/ is contracted or test-scoped",
+        "; ".join(
+            f"{n} ({', '.join(test_read_sites[n][:3])})" for n in sorted(ghost)
+        ),
     )
 
     # --- 2. no hardcoded address/port/path --------------------------------

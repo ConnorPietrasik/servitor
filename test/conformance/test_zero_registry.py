@@ -32,7 +32,7 @@ def test_zero_registry_contact_in_netns(pi_install):
         # stale pin
         "SERVITOR_PI_VERSION": pi_install.version,
         "SERVITOR_PI_WEB_ACCESS_VERSION": pi_install.ext_version,
-        "SERVITOR_NODE_BIN": pi_install.node_bin,
+        "SERVITOR_PI_NODE_BIN": pi_install.node_bin,
         "PI_PREFIX": str(pi_install.prefix),
         "EXT_PREFIX": str(pi_install.ext_prefix),
     }

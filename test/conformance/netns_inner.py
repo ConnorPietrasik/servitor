@@ -44,7 +44,7 @@ async def main() -> int:
             / "dist"
             / "bundle"
             / "cli.js",
-            node_bin=os.environ["SERVITOR_NODE_BIN"],
+            node_bin=os.environ["SERVITOR_PI_NODE_BIN"],
             ext_requested=f"pi-web-access@{os.environ['SERVITOR_PI_WEB_ACCESS_VERSION']}",
             ext_version=os.environ["SERVITOR_PI_WEB_ACCESS_VERSION"],
             ext_path=Path(os.environ["EXT_PREFIX"]) / "node_modules" / "pi-web-access",

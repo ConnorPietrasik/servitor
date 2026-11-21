@@ -101,7 +101,7 @@ def resolve_pi(
             "extension version selection missing: pass ext_version or set "
             "SERVITOR_PI_WEB_ACCESS_VERSION (env-only — no default)"
         )
-    node_bin = node_bin or os.environ.get("SERVITOR_NODE_BIN") or "node"
+    node_bin = node_bin or os.environ.get("SERVITOR_PI_NODE_BIN") or "node"
 
     pi_prefix = scratch / "pi"
     ext_prefix = scratch / "ext"
