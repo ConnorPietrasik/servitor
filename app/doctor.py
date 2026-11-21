@@ -428,7 +428,10 @@ def check_keys_absent(rep: Report, args: argparse.Namespace, root: str) -> None:
     else:
         rep.add("keys.absent", PASS, "key values absent from config/lib/sessions/logs")
     # auth.json / models-store.json: only per-session scratch uppers
-    code, out = _sh(["find", root, "-name", "auth.json", "-o", "-name", "models-store.json", "-print"])
+    # the ( ) grouping is load-bearing: unparenthesized, find parses the
+    # -print as part of the models-store branch only, and a stored
+    # auth.json outside the scratch uppers passes silently
+    code, out = _sh(["find", root, "(", "-name", "auth.json", "-o", "-name", "models-store.json", ")", "-print"])
     bad = []
     for line in out.strip().splitlines():
         line = line.strip()
