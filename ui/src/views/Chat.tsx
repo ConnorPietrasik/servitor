@@ -465,18 +465,6 @@ export default function Chat() {
         </div>
         <div className="actions">
           <button
-            className="btn ghost"
-            onClick={() => setSettings((s0) => {
-              const n = { ...s0 };
-              try { localStorage.setItem("servitor.settings", JSON.stringify(n)); } catch { /* private mode */ }
-              return n;
-            })}
-            title="settings"
-            style={{ display: "none" }}
-          >
-            ⚙
-          </button>
-          <button
             className={`btn ${row?.stable ? "primary" : "ghost"}`}
             onClick={async () => {
               try {
