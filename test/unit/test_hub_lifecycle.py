@@ -361,6 +361,31 @@ def test_idle_kill_keeps_hub_for_respawn_reattach(tmp_path, monkeypatch):
     assert sid in lc.live
 
 
+def test_idle_kill_never_kills_a_watched_session(tmp_path, monkeypatch):
+    """The dead guard: Live.subscribers was never incremented, so the
+    "a human is watching: never idle-kill" check could never fire. The
+    real watcher count is the hub's live SSE consumers (one EventSource
+    per open chat tab) — a watched-but-idle session survives the tick,
+    and once the tab closes the next tick may kill."""
+    lc = _make_lc(tmp_path, monkeypatch)
+    sid = "s-watched"
+    _add_row(lc, sid, state=LIVE, session_file=str(tmp_path / "t.jsonl"))
+    hub = lc.hub(sid)
+    driver = FakeDriver()
+    live = Live(session_id=sid, sp=SimpleNamespace(), mount_ops=[], driver=driver,
+                config_version="v1")
+    live.last_settled = time.time() - 2 * 3600  # settled past the threshold
+    lc.live[sid] = live
+
+    sub, _, _ = hub.subscribe(after_id=0)  # the open chat tab
+    assert _run(lc.idle_kill_tick()) == []
+    assert driver.shutdown_calls == 0
+
+    hub.unsubscribe(sub)  # the tab closed
+    assert _run(lc.idle_kill_tick()) == [sid]
+    assert driver.shutdown_calls == 1
+
+
 # ---------------------------------------------------------------------- #
 # fetch_messages: no hub creation on a released session                   #
 # ---------------------------------------------------------------------- #

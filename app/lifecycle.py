@@ -70,7 +70,6 @@ class Live:
     driver: Optional[PiSession]
     config_version: str
     last_settled: Optional[float] = None
-    subscribers: int = 0
     config_lower: Optional[str] = None  # the version this session booted from
 
 
@@ -676,7 +675,8 @@ class Lifecycle:
             d = live.driver
             if d is None or d.exited or d.exit_code is not None:
                 continue
-            if live.subscribers > 0:
+            hub = self._hubs.get(session_id)
+            if hub is not None and hub.consumer_count > 0:
                 continue  # a human is watching: never idle-kill
             try:
                 st = await d.get_state()

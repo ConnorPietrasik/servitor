@@ -45,6 +45,21 @@ def test_ids_are_monotonic_and_gap_detected():
     assert gap2 is True, "a position evicted from the ring must be a gap"
 
 
+def test_consumer_count_tracks_live_consumers():
+    """The idle-kill guard reads this ("a human is watching") — it
+    counts only live subscriptions and returns to zero as they drop."""
+    hub = SseHub("s1")
+    assert hub.consumer_count == 0
+    sub, _, _ = hub.subscribe(after_id=0)
+    assert hub.consumer_count == 1
+    sub2, _, _ = hub.subscribe(after_id=0)
+    assert hub.consumer_count == 2
+    hub.unsubscribe(sub)
+    assert hub.consumer_count == 1
+    hub.unsubscribe(sub2)
+    assert hub.consumer_count == 0
+
+
 def test_slow_consumer_is_evicted_and_gets_a_gap():
     """A live consumer that falls behind by more than the cap is evicted
     (the ring stays bounded) — never does the hub (or the run) wait for

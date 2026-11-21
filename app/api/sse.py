@@ -213,6 +213,12 @@ class SseHub:
     def buffered_bytes(self) -> int:
         return self._bytes
 
+    @property
+    def consumer_count(self) -> int:
+        """Live SSE consumers (open chat tabs). The idle-kill guard
+        ("a human is watching: never idle-kill") reads this."""
+        return len(self._consumers)
+
     # ------------------------------------------------------------------ #
     # diagnostics
     # ------------------------------------------------------------------ #
