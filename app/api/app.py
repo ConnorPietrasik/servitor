@@ -28,7 +28,10 @@ Routes:
     POST   /panel/sessions/{id}/action             (whitelist)
 
 Rules: authz is per session (released/unknown ⇒ 404, other sessions
-never leaked; file paths cannot escape the session dirs). The LLM key is
+never leaked; file paths cannot escape the session dirs). The static UI
+fallback only serves files that RESOLVE inside ui/dist (the app runs as
+root; a percent-decoded ``..`` or an escaping symlink must not walk
+out). The LLM key is
 env-only (invariant 5) — never in any request or response. SSE: monotonic integer
 ids per session; replay from the bounded ring via Last-Event-ID/?after=;
 a position past the ring edge is a ``gap`` event (client re-syncs via
@@ -203,6 +206,12 @@ def _install_http_stop_handler(app_state) -> None:
         server.should_exit = True
 
     signal.signal(signal.SIGTERM, _on_term)
+
+
+def _ui_dist() -> Path:
+    """The built static UI (ui/dist) at the repo root. Indirected so a
+    test can point the SPA fallback at a scratch dist."""
+    return Path(__file__).resolve().parents[2] / "ui" / "dist"
 
 
 def build_app(app_state, cfg) -> FastAPI:
@@ -590,8 +599,9 @@ def build_app(app_state, cfg) -> FastAPI:
     # static UI (served by the app, same port). Built to ui/dist; absent
     # in dev checkouts — the API alone keeps working.
     # ------------------------------------------------------------------ #
-    ui_dist = Path(__file__).resolve().parents[2] / "ui" / "dist"
+    ui_dist = _ui_dist()
     if ui_dist.is_dir() and (ui_dist / "index.html").is_file():
+        ui_root = ui_dist.resolve()
         assets = ui_dist / "assets"
         if assets.is_dir():
             from fastapi.staticfiles import StaticFiles
@@ -607,7 +617,16 @@ def build_app(app_state, cfg) -> FastAPI:
                 raise HTTPException(status_code=404, detail="not found")
             candidate = (ui_dist / path) if path else ui_dist / "index.html"
             try:
-                if path and candidate.is_file():
+                # The path arrives percent-decoded (%2f == /), so a name
+                # that is lexically inside ui/dist can still walk out via
+                # ..; the app runs as root, so only serve files that
+                # RESOLVE inside ui/dist (an escaping symlink fails the
+                # check too). Anything else falls back to the SPA index.
+                if (
+                    path
+                    and candidate.is_file()
+                    and candidate.resolve().is_relative_to(ui_root)
+                ):
                     return FileResponse(str(candidate))
             except OSError:
                 pass
