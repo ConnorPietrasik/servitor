@@ -78,8 +78,12 @@ class Delivery:
                 os.fsync(f.fileno())
             digest = sha.hexdigest()
             mime = sniff_mime(str(part))
-            await asyncio.to_thread(session_files.deliver, part, name)
-            delivered = DeliveredFile(name=name, sha256=digest, size=size, mime=mime, ts=time.time())
+            # deliver() returns the name the file landed under (leading
+            # dots stripped): the manifest must record THAT name, or the
+            # entry never matches os.listdir(inbox) and GET /files drops
+            # it forever (a .env upload would land on disk as env).
+            landed = await asyncio.to_thread(session_files.deliver, part, name)
+            delivered = DeliveredFile(name=landed, sha256=digest, size=size, mime=mime, ts=time.time())
             session_files.register_upload(delivered)
             return delivered
         finally:

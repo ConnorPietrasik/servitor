@@ -489,15 +489,7 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/files")
     async def list_files(sid: str):
         row, sfiles = _session_files(sid)
-        uploads = sfiles.read_manifest().get("uploads", [])
-        present = set()
-        try:
-            import os
-
-            present = set(os.listdir(sfiles.inbox))
-        except OSError:
-            pass
-        uploads = [u for u in uploads if u["name"] in present]
+        uploads = await asyncio.to_thread(sfiles.list_uploads)
         return {
             "outbox": await asyncio.to_thread(sfiles.list_outbox),
             "uploads": uploads,

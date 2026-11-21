@@ -248,13 +248,20 @@ class SessionFiles:
 
     # --- delivery -------------------------------------------------------- #
 
-    def deliver(self, part: Path, name: str) -> None:
+    def deliver(self, part: Path, name: str) -> str:
         """Hand the verified staged file to the inbox: chown to the slot,
         then atomic rename. Staging and inbox share the state volume's
         filesystem, so the final name appears whole and slot-owned in one
         step — the agent never sees a root-owned or partially-written
         file, and a crash before the rename leaves the part in staging
-        for the boot GC, never a half file under the real name."""
+        for the boot GC, never a half file under the real name.
+
+        Returns the name the file actually landed under (``_safe_name``
+        of the requested name — a leading-dot upload like ``.env``
+        lands as ``env``): the caller must record THAT name in the
+        manifest, or the entry can never match ``os.listdir(inbox)``
+        and the upload is invisible in GET /files forever.
+        """
         safe = _safe_name(name)
         dest = self.inbox / safe
         self._chown(part)
@@ -264,6 +271,7 @@ class SessionFiles:
         except OSError:
             pass
         self._chown(dest)
+        return safe
 
     # --- listing / reads -------------------------------------------------- #
 
@@ -313,6 +321,28 @@ class SessionFiles:
                 )
         return out
 
+    def list_uploads(self) -> list[dict]:
+        """Manifest entries that still resolve to a file in the inbox.
+
+        Entries are recorded under the name the file LANDED under
+        (_safe_name). Match through _safe_name so legacy manifests
+        written before that fix (raw .env) still resolve, and a
+        tampered entry (the manifest lives in a slot-owned dir) that
+        does not resolve to an inbox file is dropped, not raised.
+        """
+        try:
+            present = set(os.listdir(self.inbox))
+        except OSError:
+            return []
+
+        def on_disk(name: str) -> bool:
+            try:
+                return _safe_name(name) in present
+            except DeliveryError:
+                return name in present
+
+        return [u for u in self.read_manifest().get("uploads", []) if on_disk(u["name"])]
+
     def outbox_path(self, rel: str) -> Path:
         """Resolve a requested outbox path; escape => FileNotDelivered.
 
@@ -325,7 +355,14 @@ class SessionFiles:
         return p
 
     def upload_path(self, name: str) -> Path:
-        p = (self.inbox / _safe_name(name)).resolve()
+        try:
+            safe = _safe_name(name)
+        except DeliveryError:
+            # a name _safe_name rejects (all dots, empty) is "no such
+            # file" to the caller — FileNotDelivered (404), not an
+            # unhandled DeliveryError (500)
+            raise FileNotDelivered(name) from None
+        p = (self.inbox / safe).resolve()
         if not p.is_relative_to(self.inbox.resolve()) or not p.is_file():
             raise FileNotDelivered(name)
         return p
