@@ -228,22 +228,32 @@ class Lifecycle:
         spawn/respawn. Crash signatures: (1) a live slot-uid process —
         killed via the ladder; (2) no process but the transcript's last
         run never settled. Transcripts and slots survive either way;
-        the expectation is a respawn on pickup, not a release."""
+        the expectation is a respawn on pickup, not a release. A third
+        signature is the RELEASE itself: a DRAINING/CLEANING row means
+        a release was interrupted by the crash — no respawn ever comes
+        for it, so its slot is quarantined, never handed out
+        (invariant 8)."""
         out: list[dict] = []
         for slot in self.cfg.pool.slots.values():
             row = self.cfg.registry.session_for_slot(slot.name)
-            if row is None or row.state not in (ALLOCATED, LIVE):
+            if row is None or row.state == FREE:
                 continue
+            # a draining/cleaning row: its session is being released and
+            # nothing will ever respawn it — a slot-uid process is an
+            # orphan either way (the run-level 'interrupted' flag belongs
+            # to respawnable rows only; the quarantine records this one)
+            quarantining = row.state in (DRAINING, CLEANING)
             pids = self._pids_of_uid(slot.uid)
             killed = kill_strays_by_uid(slot.uid) if pids else []
             interrupted = False
             detail = ""
-            if killed:
-                interrupted = True
-                detail = f"orphan killed by boot reconciliation: {killed}"
-            elif row.session_file and transcript_unsettled(row.session_file):
-                interrupted = True
-                detail = "crash signature: last run never settled (process died mid-run)"
+            if not quarantining:
+                if killed:
+                    interrupted = True
+                    detail = f"orphan killed by boot reconciliation: {killed}"
+                elif row.session_file and transcript_unsettled(row.session_file):
+                    interrupted = True
+                    detail = "crash signature: last run never settled (process died mid-run)"
             if interrupted:
                 self.cfg.registry.mark_interrupted(row.id)
                 self.events.add(row.id, "interrupted", detail)
@@ -252,7 +262,12 @@ class Lifecycle:
             # slot, never hand it out
             self._rebuild_pool_slot(slot, row)
             out.append({"slot": slot.name, "uid": slot.uid, "killed": killed, "session": row.id})
-            if killed or interrupted:
+            if quarantining:
+                log.warning(
+                    "boot reconcile: slot %s session %s: release interrupted at boot (state %s) — slot quarantined%s",
+                    slot.name, row.id, row.state,
+                    f"; orphan killed: {killed}" if killed else "")
+            elif killed or interrupted:
                 log.warning("boot reconcile: slot %s session %s: %s", slot.name, row.id, detail or "killed")
         # any surviving staging dir is an interrupted upload
         if self.cfg.delivery is not None:
@@ -268,11 +283,23 @@ class Lifecycle:
                 slot.session_id = row.id
                 slot.stable = row.stable
         elif row.state in (DRAINING, CLEANING):
-            try:
-                self.cfg.pool.quarantine(row.id, "release interrupted by app crash at boot")
+            # a release was interrupted by the crash: quarantine the slot,
+            # never hand it out (invariant 8). The pool is rebuilt from
+            # scratch at boot — every slot still has session_id None, so
+            # pool.quarantine(row.id) could never find it via
+            # by_session(): the session is re-attached here directly, the
+            # way the allocated branch above re-attaches its row. The
+            # fields mirror SlotPool.quarantine(): state quarantined,
+            # stable False, session_id kept so the panel shows whose junk
+            # is stuck where (the sweep's deletion list is the audit
+            # trail). The row stays DRAINING/CLEANING; the human re-runs
+            # release (quarantined -> cleaning is the RUNBOOK retry path,
+            # and mark_cleaning accepts quarantined slots by design).
+            if slot.state != "quarantined":
+                slot.state = "quarantined"
+                slot.session_id = row.id
+                slot.stable = False
                 self.events.add(row.id, "slot_quarantined", "release interrupted at boot")
-            except Exception:
-                log.exception("boot reconcile: could not quarantine %s", slot.name)
 
     @staticmethod
     def _pids_of_uid(uid: int) -> list[int]:
