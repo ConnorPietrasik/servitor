@@ -172,6 +172,7 @@ class Lifecycle:
         self.hooks = LifecycleHooks(cfg.registry, cfg.pool, self.events)
         self._probe_locks: dict[str, asyncio.Future] = {}
         self._probe_cache: dict[tuple[str, str], tuple[float, Any]] = {}
+        self._release_tasks: dict[str, asyncio.Task] = {}
         self.shutting_down = False
         self._gc_task: Optional[asyncio.Task] = None
         self._update_task: Optional[asyncio.Task] = None
@@ -1290,6 +1291,48 @@ class Lifecycle:
             self._probe_cache.pop((session_id, which), None)
 
     async def release(self, session_id: str, *, reason: str = "user close") -> Any:
+        """Concurrent-release idempotency in front of the single cleanup
+        path: a second release for a session whose release is already in
+        flight (a panel double-tap, a user close racing gc_tick or the
+        slot/disk pressure release — all on one loop) does NOT re-enter
+        release_session; it shares the in-flight task and gets the same
+        outcome. Pre-fix the re-entry ran release_session's first step,
+        pool.mark_cleaning, on a slot already 'cleaning' (release_session
+        marks it before suspending at its first await) and raised
+        SlotQuarantined, which propagated through Lifecycle.release and
+        the /release and /panel action routes (neither catches it) to the
+        500 handler: a spurious error banner on a normal double-tap. The
+        shared task is shielded: one caller disconnecting — or a GC tick
+        being cancelled — never cancels the cleanup the other callers
+        are waiting for."""
+        task = self._release_tasks.get(session_id)
+        if task is not None and not task.done():
+            return await asyncio.shield(task)
+        task = asyncio.get_running_loop().create_task(
+            self._release(session_id, reason=reason)
+        )
+        self._release_tasks[session_id] = task
+        task.add_done_callback(lambda t: self._release_task_done(session_id, t))
+        return await asyncio.shield(task)
+
+    def _release_task_done(self, session_id: str, task: "asyncio.Task") -> None:
+        """Drop a finished in-flight release entry. The identity check
+        matters: a FRESH release may have registered a newer task before
+        this callback ran (the old task finished between its last await
+        and this loop iteration). A failed task whose callers are all
+        gone would otherwise surface only as 'exception was never
+        retrieved' at GC — log it here instead; the slot is left
+        'cleaning' and the row DRAINING, which boot reconciliation and
+        the quarantine retry own."""
+        if self._release_tasks.get(session_id) is task:
+            del self._release_tasks[session_id]
+        if not task.cancelled():
+            exc = task.exception()
+            if exc is not None:
+                log.error("release %s failed with no waiting caller: %r",
+                          session_id, exc)
+
+    async def _release(self, session_id: str, *, reason: str = "user close") -> Any:
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
