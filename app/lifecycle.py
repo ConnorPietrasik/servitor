@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import os
+import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -419,20 +420,26 @@ class Lifecycle:
             state=ALLOCATED,
         )
 
+        # Everything from here on is under the abort guard: a failure at
+        # ANY step (config missing, dir creation, mount — the tamper gate
+        # included — spawn) must release the slot and delete the row, never
+        # leak them. A leaked ALLOCATED row pins its slot for the life of
+        # the process (boot reconciliation only runs at boot).
         sp = SessionMountPaths.for_session(session_id, str(self.cfg.state.scratch))
-        lower = require_active_dir(str(self.cfg.state.config))
-        version = _config_version_of(lower)
-
-        await asyncio.to_thread(M.ensure_session_dirs, sp, self.cfg.state)
-        ops = await asyncio.to_thread(
-            M.mount_session, sp, lower, self.cfg.state, slot.uid, slot.gid, self.cfg.toolkit_dir
-        )
         live = Live(
-            session_id=session_id, sp=sp, mount_ops=ops, driver=None,
-            config_version=version, config_lower=lower,
+            session_id=session_id, sp=sp, mount_ops=[], driver=None,
+            config_version="", config_lower="",
         )
         self.live[session_id] = live
         try:
+            lower = require_active_dir(str(self.cfg.state.config))
+            version = _config_version_of(lower)
+            live.config_version = version
+            live.config_lower = lower
+            await asyncio.to_thread(M.ensure_session_dirs, sp, self.cfg.state)
+            live.mount_ops = await asyncio.to_thread(
+                M.mount_session, sp, lower, self.cfg.state, slot.uid, slot.gid, self.cfg.toolkit_dir
+            )
             self._record_extensions(session_id, sp)
             driver = self._make_driver(session_id, None, live)
             await driver.start()
@@ -1327,6 +1334,12 @@ def transcript_unsettled(path: str) -> bool:
 
     last_message: dict | None = None
     try:
+        # the session dir is slot-owned: a planted link must not make the
+        # root app read a root-readable target at boot. A tampered
+        # transcript is judged UNSETTLED: the session gets marked
+        # interrupted and lands in the operator's view.
+        if stat.S_ISLNK(os.lstat(path).st_mode):
+            return True
         with open(path) as f:
             for line in f:
                 line = line.strip()

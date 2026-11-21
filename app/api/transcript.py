@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from typing import Any
 
 __all__ = [
@@ -31,6 +32,15 @@ def read_entries(path: str) -> list[dict[str, Any]]:
     still render what exists."""
     out: list[dict[str, Any]] = []
     if not os.path.isfile(path):
+        return out
+    try:
+        # the session dir is slot-owned: a planted link here would make the
+        # root app read a root-readable target and serve it in the
+        # transcript UI. Never follow it — a tampered transcript is
+        # unreadable, same as a missing one (fail closed).
+        if stat.S_ISLNK(os.lstat(path).st_mode):
+            return out
+    except OSError:
         return out
     with open(path) as f:
         for line in f:

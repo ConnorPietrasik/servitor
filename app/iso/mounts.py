@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import stat
 import subprocess
 from dataclasses import dataclass
 
@@ -93,19 +94,41 @@ def ensure_session_dirs(sp: SessionMountPaths, state: StatePaths) -> None:
         os.makedirs(d, exist_ok=True)
 
 
+def _assert_real_dir(path: str) -> None:
+    """Refuse to chown or mount a path that is not a REAL directory.
+
+    ``os.makedirs(exist_ok=True)`` succeeds silently when the final path is
+    a symlink to an existing directory, and both mount(2) and chown(2) follow
+    a final-component symlink: a slot-planted link (the scratch tree is
+    slot-owned and survives a reboot) would otherwise make the app chown the
+    TARGET — or overlay-mount it. A symlink at a canonical name is tampering:
+    fail closed (MountError), never absorb it.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError:
+        raise MountError(f"{path} vanished before mount (tampered?)") from None
+    if not stat.S_ISDIR(st.st_mode):
+        raise MountError(
+            f"{path} is not a real directory (tampered?); refusing to mount"
+        )
+
+
 def _chown_tree(path: str, uid: int, gid: int) -> None:
-    os.chown(path, uid, gid)
+    """Hand the tree to the slot uid.
+
+    Entries are chown'd with ``lchown`` (never follow a link): these trees
+    are slot-writable, so a planted link to a root-owned file must not make
+    the app chown the target. Symlink entries become slot-owned links —
+    harmless, they are the slot's own. The caller guarantees ``path`` itself
+    is a real directory (``_assert_real_dir``).
+    """
+    os.chown(path, uid, gid)  # real dir, guaranteed by the caller
     for dirpath, dirnames, filenames in os.walk(path):
-        for d in dirnames:
-            p = os.path.join(dirpath, d)
+        for name in list(dirnames) + list(filenames):
+            p = os.path.join(dirpath, name)
             try:
-                os.chown(p, uid, gid)
-            except OSError:
-                pass
-        for f in filenames:
-            p = os.path.join(dirpath, f)
-            try:
-                os.chown(p, uid, gid)
+                os.lchown(p, uid, gid)
             except OSError:
                 pass
 
@@ -129,6 +152,10 @@ def mount_session(
     slot uid). The outbox dir (the workdir convention, SYSTEM.md) is
     likewise chowned once it exists in the merged view.
     """
+    # scratch/<s>/ is slot-owned and survives a reboot: on a re-mount the
+    # agent may have replaced a canonical path (upper, work, ...) with a
+    # symlink. A plain chown or mount(2) would follow it: gate EVERY
+    # canonical name before anything touches it.
     for d in (
         sp.scratch,
         sp.upper,
@@ -141,20 +168,45 @@ def mount_session(
         state.inbox_for(sp.session_id),
         state.sessions_for(sp.session_id),
     ):
-        _chown_tree(d, slot_uid, slot_gid)
+        _assert_real_dir(d)
+    # Hand the trees to the slot: one walk per TOP-LEVEL root — every
+    # per-session scratch child (upper, work, workdir, agent_*, web_cache)
+    # already sits under sp.scratch, so per-child chowns would re-walk the
+    # same entries (8 walks instead of 3, and web_cache grows).
+    for root in (
+        sp.scratch,
+        state.inbox_for(sp.session_id),
+        state.sessions_for(sp.session_id),
+    ):
+        _chown_tree(root, slot_uid, slot_gid)
     ops = plan_session_mounts(sp, config_lower, state, toolkit_dir, agent_dir_ro)
     # 1: workdir overlay
     ops[0].mount()
-    # the inbox bind target, created post-overlay and handed to the slot
-    inbox_target = f"{sp.workdir}/inbox"
-    os.makedirs(inbox_target, exist_ok=True)
-    os.chown(inbox_target, slot_uid, slot_gid)
-    # 2-4: agent-dir overlay, inbox bind, models.json RO bind
-    outbox = f"{sp.workdir}/outbox"  # the workdir convention (SYSTEM.md)
-    os.makedirs(outbox, exist_ok=True)
-    os.chown(outbox, slot_uid, slot_gid)
-    for op in ops[1:]:
-        op.mount()
+    try:
+        # the inbox bind target, created post-overlay and handed to the slot;
+        # a planted upper/inbox link would surface here in the merged view
+        inbox_target = f"{sp.workdir}/inbox"
+        os.makedirs(inbox_target, exist_ok=True)
+        _assert_real_dir(inbox_target)
+        os.chown(inbox_target, slot_uid, slot_gid)
+        # 2-4: agent-dir overlay, inbox bind, models.json RO bind
+        outbox = f"{sp.workdir}/outbox"  # the workdir convention (SYSTEM.md)
+        os.makedirs(outbox, exist_ok=True)
+        _assert_real_dir(outbox)
+        os.chown(outbox, slot_uid, slot_gid)
+        for op in ops[1:]:
+            op.mount()
+    except Exception:
+        # tamper gate or a later mount failure: never leave a partial mount
+        # behind (a surviving workdir overlay would mask the next remount's
+        # gates). Roll back in reverse, best effort; the original error
+        # propagates (the caller aborts/quarantines).
+        for op in reversed(ops):
+            try:
+                op.unmount()
+            except MountError:
+                pass
+        raise
     return ops
 
 

@@ -18,7 +18,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.iso import configswap, mounts as M
-from app.iso.handoff import chown_to
 from app.iso.layout import SessionMountPaths, state_paths
 from app.iso.release import release_session
 from app.iso.slots import SlotPool

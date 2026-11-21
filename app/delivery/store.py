@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import shutil
+import stat
 import threading
 import time
 import uuid
@@ -112,6 +113,31 @@ def _hash_outbox_file(key: tuple, path: str) -> None:
             _SHA_PENDING.discard(key)
 
 
+# ---------------------------------------------------------------------- #
+# manifest write lock: one per manifest path, process-wide               #
+# ---------------------------------------------------------------------- #
+
+_manifest_lock_guard = threading.Lock()
+_manifest_locks: dict[str, threading.Lock] = {}
+
+
+def _manifest_lock(manifest_path: Path) -> threading.Lock:
+    """The read-modify-write lock for one manifest file.
+
+    Module-level, not on SessionFiles: every request builds a fresh
+    SessionFiles, so an instance attribute would serialize nothing.
+    One entry per manifest path ever seen — bounded by the session
+    count for the process's life (the update path restarts the app).
+    """
+    key = str(manifest_path)
+    with _manifest_lock_guard:
+        lock = _manifest_locks.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _manifest_locks[key] = lock
+        return lock
+
+
 class SessionFiles:
     """One session's delivery state.
 
@@ -154,20 +180,71 @@ class SessionFiles:
 
     def read_manifest(self) -> dict:
         try:
+            # the slot owns this dir: a symlinked manifest would let it forge
+            # the upload list served to the human (and the root app would read
+            # a root-readable target). Never follow it; register_upload's
+            # atomic replace self-heals a tampered name on the next upload.
+            if stat.S_ISLNK(os.lstat(self.manifest_path).st_mode):
+                return {"uploads": []}
             return json.loads(self.manifest_path.read_text())
         except (OSError, json.JSONDecodeError):
             return {"uploads": []}
 
     def register_upload(self, f: DeliveredFile) -> None:
-        man = self.read_manifest()
-        man["uploads"] = [u for u in man.get("uploads", []) if u["name"] != f.name]
-        man["uploads"].append(
-            {"name": f.name, "sha256": f.sha256, "size": f.size, "mime": f.mime, "ts": f.ts}
-        )
-        tmp = self.manifest_path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(man, indent=1))
-        os.replace(tmp, self.manifest_path)
-        self._chown(self.manifest_path)
+        # The read-modify-write is serialized on the process-wide lock
+        # (see _manifest_lock): every request builds a fresh SessionFiles,
+        # so without it two concurrent uploads to the same session would
+        # both read the manifest and the last write wins — the earlier
+        # upload lands in the inbox but never in the manifest, so it is
+        # invisible in the UI.
+        with _manifest_lock(self.manifest_path):
+            man = self.read_manifest()
+            man["uploads"] = [u for u in man.get("uploads", []) if u["name"] != f.name]
+            man["uploads"].append(
+                {"name": f.name, "sha256": f.sha256, "size": f.size, "mime": f.mime, "ts": f.ts}
+            )
+            # The slot owns this directory and the app runs as root: the temp
+            # name is FIXED, so a planted ``files.json.tmp`` symlink must never
+            # be written through (that truncates/overwrites the target as root).
+            # O_EXCL|O_NOFOLLOW fails closed on any pre-existing name, symlink
+            # or otherwise; only a stale REGULAR file (a crash between open and
+            # replace) is recovered — unlink it and retry once. os.replace below
+            # swaps the name itself, never follows the manifest.
+            tmp = self.manifest_path.with_suffix(".json.tmp")
+            try:
+                fd = os.open(
+                    tmp,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                    0o600,
+                )
+            except FileExistsError:
+                # name already exists: only a stale REGULAR file (a crash
+                # between open and replace) is recoverable; anything else
+                # (a planted link) fails closed
+                st = os.lstat(tmp)
+                if not stat.S_ISREG(st.st_mode):
+                    raise DeliveryError(
+                        f"manifest temp {tmp} is not a regular file — "
+                        "refusing to write (planted symlink?)"
+                    ) from None
+                os.unlink(tmp)
+                try:
+                    fd = os.open(
+                        tmp,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                        0o600,
+                    )
+                except OSError:
+                    # the name re-appeared between unlink and open (race):
+                    # refuse rather than write through whatever it is now
+                    raise DeliveryError(
+                        f"manifest temp {tmp} could not be (re)created — "
+                        "refusing to write"
+                    ) from None
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps(man, indent=1))
+            os.replace(tmp, self.manifest_path)
+            self._chown(self.manifest_path)
 
     # --- delivery -------------------------------------------------------- #
 
@@ -204,8 +281,15 @@ class SessionFiles:
                 p = Path(dirpath) / name
                 rel = p.relative_to(self.outbox).as_posix()
                 try:
-                    st = p.stat()
+                    st = p.lstat()
                 except OSError:
+                    continue
+                # the outbox is slot-owned: a planted link must not be
+                # root-read (the lazy hash and the mime sniff would open
+                # the target) or advertised in the listing (a link to a
+                # root file would expose its existence/size in the UI).
+                # Symlinked artifacts are not a documented feature: skip.
+                if stat.S_ISLNK(st.st_mode):
                     continue
                 key = (sid, rel, st.st_size, st.st_mtime)
                 sha = _SHA_CACHE.get(key)
@@ -230,15 +314,19 @@ class SessionFiles:
         return out
 
     def outbox_path(self, rel: str) -> Path:
-        """Resolve a requested outbox path; escape => FileNotDelivered."""
+        """Resolve a requested outbox path; escape => FileNotDelivered.
+
+        ``is_relative_to`` (path-wise, not a string prefix) — a resolved
+        target must stay under the outbox, sibling dirs included.
+        """
         p = (self.outbox / rel).resolve()
-        if not str(p).startswith(str(self.outbox.resolve())) or not p.is_file():
+        if not p.is_relative_to(self.outbox.resolve()) or not p.is_file():
             raise FileNotDelivered(rel)
         return p
 
     def upload_path(self, name: str) -> Path:
         p = (self.inbox / _safe_name(name)).resolve()
-        if not str(p).startswith(str(self.inbox.resolve())) or not p.is_file():
+        if not p.is_relative_to(self.inbox.resolve()) or not p.is_file():
             raise FileNotDelivered(name)
         return p
 
