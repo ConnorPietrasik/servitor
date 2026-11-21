@@ -355,7 +355,11 @@ class Lifecycle:
         slot_name = self.cfg.registry.get(session_id).slot
         ident = slot_identity(slot_name)
         driver = PiSession(launch, ident, cwd=live.sp.workdir)
-        driver.on_settled = lambda *a, **k: self._on_settled(session_id)
+        # the second argument is the run's aborted flag: an ABORTED
+        # settle must not clear the interrupted flag (the drain's mark
+        # is owed to the operator — see _on_settled)
+        driver.on_settled = (
+            lambda _s, aborted, **k: self._on_settled(session_id, aborted))
         # event stream is the SSE hub; delivery never feeds back into the
         # run (invariant 4 — the hub evicts + gaps, it never blocks)
         hub = self.hub(session_id)
@@ -403,10 +407,28 @@ class Lifecycle:
             session_id, len(rids), rids,
         )
 
-    def _on_settled(self, session_id: str) -> None:
+    def _on_settled(self, session_id: str, aborted: bool = False) -> None:
         live = self.live.get(session_id)
         if live is not None:
             live.last_settled = time.time()
+        if not aborted:
+            row = self.cfg.registry.get(session_id)
+            if row is not None and row.interrupted:
+                # the flag means "the last run never COMPLETED" — a clean
+                # settle refutes it, so clear it (the tests:
+                # test/unit/test_settle_clears_interrupted.py). An ABORTED
+                # settle must not clear it: the shutdown drain aborts a
+                # live run and marks the session interrupted (the mark is
+                # owed to the operator — the Sessions chip is the only
+                # meter for a parked session, invariant 2), and the
+                # child's agent_settled {aborted: true} then lands here —
+                # clearing on it would race the drain's mark and lose
+                # the flag. Without a clear at all it sticks for the
+                # session's whole life: mark_interrupted is only ever
+                # called with the default True (boot reconcile, shutdown
+                # drain) — it would read 'interrupted' forever, past
+                # respawns and clean runs.
+                self.cfg.registry.mark_interrupted(session_id, False)
         self.cfg.registry.touch(session_id)
 
     # ------------------------------------------------------------------ #

@@ -49,6 +49,7 @@ class FakeDriver:
         exit_on_term: bool | float = True,
         exit_on_kill: bool | float = True,
         die_on_get_state: bool = False,
+        settle_on_abort: bool = False,
     ) -> None:
         self._exited = asyncio.Event()
         self._exit_code: int | None = None
@@ -59,6 +60,8 @@ class FakeDriver:
         self._exit_on_term = exit_on_term
         self._exit_on_kill = exit_on_kill
         self._die_on_get_state = die_on_get_state
+        self._settle_on_abort = settle_on_abort
+        self.on_settled = None  # wired per test, as _make_driver does
         self.calls: list[str] = []
 
     @property
@@ -83,6 +86,17 @@ class FakeDriver:
 
     async def abort(self) -> None:
         self.calls.append("abort")
+        if self._settle_on_abort and self.on_settled is not None:
+            # the real child: the abort RPC returns once the run has
+            # settled ABORTED, and the child's agent_settled
+            # notification then arrives on the stream — delivered on the
+            # event loop a tick after the drain's mark_interrupted (the
+            # ordering that raced the unconditional clear).
+            async def _deliver() -> None:
+                await asyncio.sleep(0)
+                self.on_settled(self, True)
+
+            asyncio.get_running_loop().create_task(_deliver())
 
     async def close_stdin(self) -> None:
         self.calls.append("close_stdin")
@@ -317,6 +331,27 @@ def test_probe_failure_falls_back_to_the_local_flag(tmp_path):
     asyncio.run(lc.shutdown(cause="test stop"))
     assert "abort" in d.calls, "the local flag must carry the abort decision"
     assert _row(tmp_path, "s1").interrupted is True
+
+
+def test_aborted_settle_cannot_unmark_the_drain(tmp_path):
+    """The drain's own abort settles the child ABORTED: its
+    agent_settled lands on the event loop a tick after the drain's
+    mark_interrupted. The settle must not clear the mark — the run was
+    interrupted on purpose, and the flag is the only meter a parked
+    session has (F36)."""
+    d = FakeDriver(run_active=True, get_state={"isStreaming": True},
+                   settle_on_abort=True)
+    lc = _lc(tmp_path, grace=1.0)
+    _add(lc, "s1", d)
+    # the wiring _make_driver does for every real driver
+    d.on_settled = lambda _s, aborted: lc._on_settled("s1", aborted)
+    lc.cfg.registry.upsert_session("s1", slot="slot1", state=LIVE)
+    asyncio.run(lc.shutdown(cause="test stop"))
+    assert "abort" in d.calls
+    assert lc.live["s1"].last_settled is not None, \
+        "the child's aborted settle must have been delivered"
+    assert _row(tmp_path, "s1").interrupted is True, \
+        "the drain's mark must survive the child's aborted settle"
 
 
 def test_child_that_dies_during_notify_still_drains(tmp_path):
