@@ -275,6 +275,11 @@ class App:
         # the SSE ring cap is a per-hub memory policy (default 50 MB):
         # wire it before any session hub is created (hubs are lazy)
         self.lc.cfg.sse_ring_bytes = cfg.sse_ring_bytes
+        # the idle-GC horizon rides the env file (SERVITOR_GC_IDLE_DAYS):
+        # the guest unit passes only --state/--config-src, so without this
+        # the --gc-idle-days CLI default (14.0) would silently win and an
+        # operator override would be a no-op
+        self.lc.cfg.gc_idle_days = cfg.gc_idle_days
         # start_update_tick is idempotent; the ASGI lifespan starts the GC
         self.lc.start_update_tick()
         asgi = build_app(self, cfg)
