@@ -1,11 +1,11 @@
 """The update-pending flag.
 
 Host-side ``sync.sh`` / ``update.sh`` write this file when a deployed
-shape change (config / extension / keys / image) needs a service
-restart and/or a doctor run. The app's in-process tick consumes it: a run
-active -> defer (the flag survives, sessions get ``update_waiting``, the
-tick retries); no run active -> apply the restart (the doctor runs on the
-new instance's first idle tick, or inline for a doctor-only flag). A
+shape change (config / extension / keys / image) needs a service restart
+and/or a doctor run. The app's in-process tick consumes it: a run active
+-> defer (the flag survives, sessions get ``update_waiting``, the tick
+retries); no run active -> apply the restart (the doctor runs on the new
+instance's first idle tick, or inline for a doctor-only flag). A
 doctor-only flag is cleared ONLY when the doctor passes: "file gone" is
 the fact sync's post-clear edge probe trusts.
 

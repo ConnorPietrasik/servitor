@@ -1,4 +1,4 @@
-"""F36: `interrupted` must not outlive the run that was interrupted.
+"""`interrupted` must not outlive the run that was interrupted.
 
 mark_interrupted is only ever called with the default True (boot
 reconcile, shutdown drain) and nothing else writes the column — so the
@@ -8,9 +8,9 @@ the session interrupted, and the child's agent_settled {aborted: true}
 lands on _on_settled right after the mark — clearing on it would race
 the drain's mark and lose the flag. The Sessions list uses the flag as
 its state chip when no process is live (ui/src/views/Sessions.tsx),
-the only meter a human has for a parked session (invariant 2): if a
-clean settle does not clear it, one aborted restart labels the session
-'interrupted' for the rest of its life, past respawns and clean runs."""
+the only meter a human has for a parked session: if a clean settle does
+not clear it, one aborted restart labels the session 'interrupted' for
+the rest of its life, past respawns and clean runs."""
 from __future__ import annotations
 
 from types import SimpleNamespace

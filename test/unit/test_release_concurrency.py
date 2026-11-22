@@ -1,23 +1,21 @@
-"""F17: a second release while one is in flight is idempotent, not a 500.
+"""A second release while one is in flight is idempotent, not a 500.
 
 release_session's first step is pool.mark_cleaning (synchronous, before
 any await — the slot is 'cleaning' the moment the release suspends at
 its first await, driver.shutdown / the uid sweep). A second release of
 the same session on the same loop (a panel double-tap; a user close
 racing _release_oldest_for_pressure or gc_tick, which can both pick the
-same row) re-entered release_session pre-fix, hit mark_cleaning on the
-already-'cleaning' slot, and raised SlotQuarantined. Nothing on the
-path caught it — Lifecycle.release, the /release route, the /panel
-action route — so it reached the app-level 500 handler: a spurious
-error banner on a normal double-tap. State was never corrupted (the
-guard held); the cost was the 500.
+same row) must not re-enter release_session: hitting mark_cleaning on
+the already-'cleaning' slot raises SlotQuarantined, and nothing on the
+path (Lifecycle.release, the /release route, the /panel action route)
+catches it — it would reach the app-level 500 handler.
 
 Mechanism, in-suite:
     pool.allocate('s1'); pool.mark_cleaning('s1'); pool.mark_cleaning('s1')
     -> SlotQuarantined: slot slot1 is cleaning — cannot mark cleaning
        (double release?)
 
-The fix sits at the funnel every trigger already shares:
+The contract sits at the funnel every trigger already shares:
 Lifecycle.release dedupes per session — a second caller shares the
 in-flight task and gets the same outcome; release_session (the single
 cleanup path) runs exactly once. The shared task is shielded: one
@@ -130,11 +128,10 @@ def _run(coro):
 
 
 def test_second_mark_cleaning_raises_the_double_release_guard(tmp_path, monkeypatch):
-    """The finding's mechanism run, pinned in-suite: mark_cleaning on an
-    already-'cleaning' slot raises SlotQuarantined. Pre-fix this
-    exception was the whole story — it propagated to the 500 handler;
-    post-fix the dedup means release_session never runs a second time,
-    so the guard only fires for true state corruption."""
+    """The mechanism run, pinned in-suite: mark_cleaning on an
+    already-'cleaning' slot raises SlotQuarantined. With the funnel
+    dedup, release_session never runs a second time, so the guard only
+    fires for true state corruption."""
     pool = _real_pool(monkeypatch)
     pool.allocate("s1")
     pool.mark_cleaning("s1")
@@ -214,9 +211,7 @@ def test_double_release_across_both_routes_returns_200_not_500(tmp_path, monkeyp
     """End-to-end on one loop (httpx ASGITransport: both requests run
     in the test's loop, so the window is real): the first POST /release
     is in flight when the panel double-tap arrives via /panel action.
-    Pre-fix the second hit the catch-all handler:
-    500 {"error": "SlotQuarantined: slot slot1 is cleaning — ..."}.
-    Post-fix both get the release body of the ONE cleanup run."""
+    Both requests get the release body of the ONE cleanup run."""
     lc = _make_lc(tmp_path, monkeypatch)
     lc.cfg.registry.upsert_session("s1", slot=SLOT, state=LIVE)
     lc.cfg.pool.allocate("s1")
@@ -250,7 +245,7 @@ def test_double_release_across_both_routes_returns_200_not_500(tmp_path, monkeyp
 
     r1, r2 = _run(scenario())
     assert r1.status_code == 200, r1.text
-    assert r2.status_code == 200, r2.text  # pre-fix: 500 SlotQuarantined
+    assert r2.status_code == 200, r2.text  # not a 500 SlotQuarantined
     assert r1.json() == {"released": True, "quarantined": False, "errors": []}
     assert r2.json() == r1.json()  # idempotent: same outcome, no re-run
     assert holder.calls == [("s1", "user close")]

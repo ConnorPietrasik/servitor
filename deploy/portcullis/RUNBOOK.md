@@ -31,7 +31,7 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 4. Guest: the image ships with slots 1-16, the toolkit, the app, the chat UI
    dist, nftables applied (8787 from the edge subnet only, 22 from the host
    edge-bridge IP /32 + the ops subnet, default deny), the baked edge key
-   (the app 403s every keyless request from first boot — invariant 3),
+   (the app 403s every keyless request from first boot),
    systemd-resolved with a
    public upstream, and 4 G zram swap (zram-generator).
 5. Host: `sudo deploy/sync.sh` — provisioning (config + keys + extension +
@@ -39,7 +39,7 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 6. Portcullis: commit the route (this repo's
    `deploy/portcullis/traefik-dynamic/servitor.yml`, VM IP + 8787 substituted)
    into the portcullis clone's `compose/traefik/dynamic/`; its second
-   middleware (`servitor-edge`, the edge credential — invariant 3) lives in
+   middleware (`servitor-edge`, the edge credential) lives in
    the portcullis repo's `middlewares.yml`, value = `SERVITOR_EDGE_KEY` in
    the portcullis `.env` (MUST equal the servitor `.env`'s — INSTALL.md §3,
    portcullis `make doctor` cross-checks); `make panel-do`
@@ -57,7 +57,7 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 | rotate keys | host `.env` → `sudo deploy/sync.sh` (re-injects the key slice into the guest's 0600 env file, sets the restart flag) — the portcullis stack's copy of the key floats with its own `make update` as usual. The edge key (`SERVITOR_EDGE_KEY`) rotates on BOTH sides (portcullis `.env` + this `.env`, same value) + portcullis `make update` + a sync — the doctor's keyed/keyless probes certify it (deploy/README → Key rotation) |
 | ssh into the VM | from the server: `sudo ssh -i /root/.srv/deploy_key root@$SERVITOR_VM_IP` (the source is the host's edge-bridge IP — the guest firewall admits 22 from exactly that /32 for this reason). From a LAN workstation additionally needs a host forward rule (`sudo ufw route allow from <LAN subnet> to $SERVITOR_VM_IP port 22`) — not added by default; the designed flows (panel + server) don't need it |
 | release a session | UI close, GC timer (idle >14 d, non-stable), slot/disk pressure — all through the single `release()` (sweep by owner before the slot is reused; sweep-fail ⇒ quarantined, visible, retryable) |
-| back up `lib/` | host-side git pull (no git credentials in the VM, invariant 12) |
+| back up `lib/` | host-side git pull (no git credentials in the VM) |
 
 ## Drills
 

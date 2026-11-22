@@ -1,10 +1,9 @@
-"""Unit: F16 — the manifest must record the name the file LANDED under.
+"""Unit: the manifest must record the name the file LANDED under.
 
 ``deliver()`` renames through ``_safe_name`` (leading dots stripped: an
-``.env`` upload lands on disk as ``env``). Registering the RAW name in
-the manifest made the entry unmatchable — ``list_files`` filters on
-``name in os.listdir(inbox)`` — so dotfile uploads (plausible for a
-coding tool: .env, .gitignore) returned 201 but were omitted from
+``.env`` upload lands on disk as ``env``). The manifest must store the
+landed name — ``list_files`` filters on ``name in os.listdir(inbox)``,
+so a raw dot-name entry is unmatchable and the upload is omitted from
 GET /files forever, even though downloadable.
 
 Pinned here:
@@ -12,8 +11,8 @@ Pinned here:
 - the upload endpoint reports the landed name in the 201 body;
 - GET /files lists dotfile uploads (and the file is still served under
   BOTH the raw and the landed name);
-- legacy manifests written before the fix (raw dot-name entries) are
-  still listed — the state volume survives app updates;
+- legacy manifests with raw dot-name entries are still listed — the
+  state volume survives app updates;
 - a re-upload of the same landed name dedupes to one entry (a ``.env``
   then ``env`` upload overwrite the same on-disk file);
 - a tampered manifest entry is dropped, not raised (the manifest lives
@@ -143,7 +142,7 @@ def test_upload_dotfile_is_listed_and_downloadable(tmp_path):
     assert (inbox / "env").is_file()
     assert not (inbox / ".env").exists()
 
-    # GET /files lists it (pre-fix: 201 + manifest entry, listing dropped it):
+    # GET /files lists it (the 201 reported the landed name):
     r = c.get("/api/v1/sessions/s1/files")
     assert r.status_code == 200
     assert [u["name"] for u in r.json()["uploads"]] == ["env"]
@@ -178,8 +177,8 @@ def test_upload_path_rejects_unsafe_name_as_not_delivered(tmp_path):
 
 
 def test_download_unsafe_name_is_404_not_500(tmp_path):
-    """Pre-fix, a download whose name _safe_name rejects (all dots)
-    escaped as an unhandled DeliveryError — a client-triggerable 500."""
+    """A download whose name _safe_name rejects (all dots) is a 404,
+    not an unhandled DeliveryError (a client-triggerable 500)."""
     c, _ = _client(tmp_path)
     r = c.get("/api/v1/sessions/s1/files/uploads/...")
     assert r.status_code == 404

@@ -1,23 +1,21 @@
 """The session registry — SQLite, the ONLY source of session truth.
-The session list reads this table only — O(1), zero pi processes.
 
 State machine (validated — a crash mid-release must not hand out an
 unswept slot):
 
     allocated ── spawn ok ──▶ live ── release step 1 ──▶ draining
-    live ──────────────────────────────────────────────▶ cleaning*
+    live ─────────────────────────────────────────────────▶ cleaning*
     draining ──────────────────────────────────────────▶ cleaning
     cleaning ── sweep verified empty ──▶ free
     cleaning ── sweep failed ──▶ (slot quarantined; row stays draining)
 
-    * live→cleaning: release of a never-spawned allocated row (a
-      state-machine convenience the release path uses).
+    * live→cleaning: release of a never-spawned allocated row.
 
 The `free` row is a DEAD row: slot released, transcript areas deleted.
 The API treats released sessions as gone (the list excludes them, the
 detail 404s) — the row lingers only so operators/doctor can see what
-recently ran on a slot — until a registry GC deletes it
-(Lifecycle.gc_tick → delete_released, after the retention window).
+recently ran on a slot — until a registry GC deletes it (Lifecycle.gc_tick
+→ delete_released, after the retention window).
 """
 from __future__ import annotations
 
@@ -69,9 +67,9 @@ class SessionRow:
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
-    update_waiting: bool = False   # deferred restart requested while it ran
+    update_waiting: bool = False
     loaded_extensions: tuple[str, ...] = ()
-    new_extensions: tuple[str, ...] = ()  # new-extension warnings: loaded, not in baseline
+    new_extensions: tuple[str, ...] = ()
 
     def is_running_or_awaiting_release(self) -> bool:
         """'16 slots = 16 live sessions (running OR awaiting release)'."""
@@ -188,8 +186,8 @@ class Registry:
                 ),
             )
         else:
-            # a release (free) row is never re-allocated: same id = new
-            # incarnation is impossible — session ids are uuids, minted once
+            # a released row is never re-allocated: session ids are uuids,
+            # minted once
             if existing.state == FREE:
                 raise RegistryError(f"session {session_id} is released; mint a new id")
             self.db.execute(
@@ -207,7 +205,6 @@ class Registry:
         return self._row_to_session(r) if r else None
 
     def list_sessions(self, *, include_released: bool = True) -> list[SessionRow]:
-        """The session list: REGISTRY ONLY — O(1), zero pi processes."""
         q = "SELECT * FROM sessions"
         if not include_released:
             q += f" WHERE state != '{FREE}'"
@@ -233,7 +230,7 @@ class Registry:
         if state not in _STATES:
             raise RegistryError(f"unknown state {state}")
         if row.state == state:
-            return row  # idempotent (a retried release re-enters draining)
+            return row  # idempotent
         if (row.state, state) not in _ALLOWED:
             raise InvalidTransition(f"{session_id}: {row.state} -> {state} ({cause})")
         self.db.execute(
@@ -244,7 +241,7 @@ class Registry:
         return self.get(session_id)  # type: ignore[return-value]
 
     def touch(self, session_id: str) -> None:
-        """Activity bump (prompt/steer/follow_up/settle)."""
+        """Activity bump."""
         self.db.execute(
             "UPDATE sessions SET last_activity=?, updated_at=? WHERE id=?",
             (time.time(), time.time(), session_id),

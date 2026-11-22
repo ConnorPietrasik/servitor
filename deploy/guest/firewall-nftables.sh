@@ -29,7 +29,7 @@ table inet servitor {
 		iif "lo" accept
 		ct state established,related accept
 		ct state invalid drop
-		ip saddr { $SERVITOR_EDGE_SUBNET } tcp dport $SERVITOR_PORT accept comment "servitor api — edge subnet only (invariant 3)"
+		ip saddr { $SERVITOR_EDGE_SUBNET } tcp dport $SERVITOR_PORT accept comment "servitor api — edge subnet only"
 		# ops ssh from the host bridge IP AND the ops subnet: the host's
 		# own ssh to the VM sources the host's EDGE BRIDGE IP (the kernel
 		# picks the output-interface address for the connected route) —

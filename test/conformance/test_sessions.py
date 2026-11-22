@@ -1,5 +1,4 @@
-"""Conformance: sessions — first spawn, transcript, respawn, identity
-(invariant 6/7).
+"""Conformance: sessions — first spawn, transcript, respawn, identity.
 
 - First spawn `--session-id <minted uuid>`; the transcript path comes
   from `get_state.sessionFile`, captured VERBATIM.

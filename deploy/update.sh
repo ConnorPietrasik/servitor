@@ -113,7 +113,7 @@ PI_FLOOR_ORIG="$SERVITOR_PI_VERSION"
 EXT_FLOOR_ORIG="$SERVITOR_PI_WEB_ACCESS_VERSION"
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
 : "${SERVITOR_PORT:=8787}"
-# the edge credential (invariant 3): the post-swap /healthz wait carries it
+# the edge credential: the post-swap /healthz wait carries it
 # (the app 403s keyless requests — an unkeyed wait would time out on a
 # perfectly healthy VM). It rides a quoted curl-config line on stdin
 # (curl -K -), not argv: /proc/<pid>/cmdline is world-readable (unlike
@@ -121,7 +121,7 @@ EXT_FLOOR_ORIG="$SERVITOR_PI_WEB_ACCESS_VERSION"
 # of the wait — the same contract as portcullis's panel-do probe. The
 # contract value is hex (openssl rand -hex 32); a quote, backslash or
 # newline is a mis-set secret the config line can't carry — fail fast.
-: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential, invariant 3)}"
+: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential)}"
 case "$SERVITOR_EDGE_KEY" in
   *\"*|*\\*|*$'\n'*) echo "SERVITOR_EDGE_KEY is not a plain value (quote/backslash/newline) — the curl config line can't carry it" >&2; exit 1 ;;
 esac
@@ -296,7 +296,7 @@ swap_image() { # $1 = image name (manifest name, includes .qcow2)
   case "$state0" in
     "shut off") : ;;
     unknown|"")
-      echo "swap: no 'servitor' domain (virsh domstate: ${state0:-empty}) — nothing to swap (define it first: RUNBOOK → Servitor)" >&2
+      echo "swap: no 'servitor' domain (virsh domstate: ${state0:-empty}) — nothing to swap (define it first)" >&2
       return 1
       ;;
     crashed)
@@ -567,7 +567,7 @@ if (( REBUILD )); then
     manifest_set_active "$OLD_IMAGE" "$NEW_IMAGE" \
       || echo "    WARNING: could not restore the manifest's active to $OLD_IMAGE — fix by hand (set 'active' to $OLD_IMAGE in $MANIFEST), or the next update measures the wrong image" >&2
     restore_env_floors
-    echo "IMAGE SWAP FAILED — the old image is intact at $IMAGES_DIR/$OLD_IMAGE (the manifest's active + the .env are restored to it). Re-run make update: it reuses the built image and retries the swap; if the VM will not come up: virsh console servitor (RUNBOOK → Servitor)." >&2
+    echo "IMAGE SWAP FAILED — the old image is intact at $IMAGES_DIR/$OLD_IMAGE (the manifest's active + the .env are restored to it). Re-run make update: it reuses the built image and retries the swap; if the VM will not come up: virsh console servitor." >&2
     exit 1
   fi
   if (( CANDIDATE )); then

@@ -34,10 +34,9 @@ def read_entries(path: str) -> list[dict[str, Any]]:
     if not os.path.isfile(path):
         return out
     try:
-        # the session dir is slot-owned: a planted link here would make the
-        # root app read a root-readable target and serve it in the
-        # transcript UI. Never follow it — a tampered transcript is
-        # unreadable, same as a missing one (fail closed).
+        # a planted link would make the root app read a root-readable target
+        # and serve it in the transcript UI: never follow it (fail closed,
+        # same as a missing transcript)
         if stat.S_ISLNK(os.lstat(path).st_mode):
             return out
     except OSError:
@@ -75,14 +74,8 @@ def active_branch(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def entry_to_message(entry: dict[str, Any]) -> dict[str, Any] | None:
-    """Map a transcript entry to the UI message shape. Non-message
-    entries (compaction, labels) return None.
-
-    UI shape (fidelity-preserving; the client renders per its mode):
-    {id, parent_id, timestamp, role, text, thinking, thinking_signature,
-     tool_calls: [{id, name, arguments}], tool_call_id, tool_name,
-     is_error, result, model, usage}
-    """
+    """Map a transcript entry to the UI message shape. Non-message entries
+    (compaction, labels) return None."""
     if entry.get("type") != "message":
         return None
     msg = entry.get("message") or {}

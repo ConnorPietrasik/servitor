@@ -1,29 +1,13 @@
-"""F43: a registry row on a slot outside --slots must not take down gc_tick
-or 500 the operator's release attempt.
+"""A registry row on a slot outside --slots must not take down gc_tick or
+500 the operator's release attempt.
 
-Shrink or rename --slots and an old ACTIVE row can point at a slot name the
-pool no longer holds. Pre-fix, three consequences compounded:
-
-1. gc_tick's idle pass had no pool-ownership guard (the disk-pressure and
-   slot-pressure passes both filter `row.slot in owned`): the orphan row,
-   idle past the cutoff, raised KeyError from Lifecycle._release's bare
-   `pool.get(row.slot)` out of gc_tick on EVERY tick. The exception is
-   caught by _gc_loop's bare except (logged, swallowed), so the disk-
-   pressure section BELOW the idle pass was never reached again — the
-   volume lost its automatic protection permanently.
-
-2. The orphan row was unreleaseable through the API: POST /release and the
-   panel release action call the same pool.get and 500'd via the catch-all
-   handler. The operator's only remedy was hand-editing the registry.
-
-3. Nothing surfaced the condition: doctor walked pool -> rows
-   (check_quarantined_slots), never rows -> pool.
-
-Post-fix: the idle pass carries the same `owned` guard as its siblings;
-release() refuses an off-pool row with SlotOutsidePool (mapped to 409, not
-the 500 KeyError); doctor reports the stuck row (slots.off_pool_rows,
-WARN — the operator restores the slot name in --slots or edits the
-registry).
+Shrink or rename --slots and an old ACTIVE row can point at a slot name
+the pool no longer holds. The contract: the idle GC pass carries the same
+pool-ownership guard as its siblings (an orphan row must not raise out of
+gc_tick and skip the disk-pressure section); release() refuses an off-pool
+row with SlotOutsidePool (mapped to 409, not a 500 KeyError); doctor
+reports the stuck row (slots.off_pool_rows, WARN — the operator restores
+the slot name in --slots or edits the registry).
 
 Root-free: real registry (sqlite in tmp_path), real SlotPool keyset, real
 Lifecycle, real routes; release_session's process/fs work is faked behind
@@ -147,8 +131,8 @@ def _add_orphan_row(lc: Lifecycle, sid: str = "s9", slot: str = "slot9") -> None
 
 
 def test_pool_get_off_pool_name_is_the_keyerror(tmp_path, monkeypatch):
-    """The finding's mechanism: a bare dict lookup on the --slots keyset.
-    This is what pre-fix escaped every release path."""
+    """The mechanism a release path can hit: a bare dict lookup on the
+    --slots keyset."""
     pool = _real_pool(monkeypatch, ("slot1", "slot2"))
     with pytest.raises(KeyError):
         pool.get("slot9")
@@ -161,25 +145,22 @@ def test_pool_get_off_pool_name_is_the_keyerror(tmp_path, monkeypatch):
 
 def test_gc_tick_off_pool_row_does_not_abort_disk_pressure(tmp_path, monkeypatch):
     """THE regression: an idle orphan row on a slot outside the pool must
-    not raise out of gc_tick and skip the disk-pressure section. Pre-fix
-    the KeyError killed the tick every interval; the owned idle-free row
-    below it was NEVER released, permanently — the volume lost its
-    automatic protection after the first failure. Post-fix the idle pass
-    skips the orphan (same guard as its two siblings) and the disk-
-    pressure pass releases the owned row."""
+    not raise out of gc_tick and skip the disk-pressure section. The
+    owned idle-free row below it must still be released, and the orphan
+    itself survives unharmed."""
     lc = _make_lc(tmp_path, monkeypatch, ("slot1", "slot2"))
-    _add_orphan_row(lc)  # LIVE, slot9, 30 days idle: the pre-fix killer
+    _add_orphan_row(lc)  # LIVE, slot9, 30 days idle: the would-be killer
     lc.cfg.registry.upsert_session("s1", slot="slot1", state=LIVE)
     lc.cfg.pool.allocate("s1")
     # s1 is NOT an idle candidate (fresh last_activity): only the disk-
-    # pressure pass may release it — the pass pre-fix never reached
+    # pressure pass may release it
     monkeypatch.setattr(lc, "_disk_near_full", lambda: True)
     holder = _holder()
     _install_fake_release(monkeypatch, holder)
 
     released = _run(lc.gc_tick())
 
-    assert released == ["s1"]  # pre-fix: KeyError('slot9'), nothing released
+    assert released == ["s1"]  # no KeyError('slot9'): the branch is reached
     assert holder.calls == [("s1", "disk pressure")]  # the branch WAS reached
     assert lc.cfg.registry.get("s9").state == LIVE  # orphan survives, unharmed
     assert lc.cfg.registry.get("s1").state == FREE
@@ -212,8 +193,7 @@ def test_gc_tick_idle_gc_still_releases_owned_idle_rows(tmp_path, monkeypatch):
 def test_release_off_pool_row_refused_typed(tmp_path, monkeypatch):
     """Every release path funnels through _release: the off-pool row is
     refused with SlotOutsidePool (a typed RuntimeError the API maps to
-    4xx), never the bare KeyError that pre-fix 500'd both routes and
-    aborted gc_tick."""
+    4xx), never a bare KeyError out of the funnel."""
     lc = _make_lc(tmp_path, monkeypatch, ("slot1",))
     _add_orphan_row(lc)
     holder = _holder()
@@ -243,10 +223,8 @@ def test_release_off_pool_row_refused_typed(tmp_path, monkeypatch):
 def test_release_routes_off_pool_row_409_not_500(
     tmp_path, monkeypatch, url, body
 ):
-    """The operator's own close attempt pre-fix: 500 {"error": "KeyError:
-    'slot9'"} from the catch-all handler — a server fault for what is a
-    config-vs-registry conflict. Post-fix: 409 with the remedy, on both
-    routes."""
+    """The operator's own close attempt: a config-vs-registry conflict
+    must 409 with the remedy, on both routes — never a server fault."""
     lc = _make_lc(tmp_path, monkeypatch, ("slot1",))
     _add_orphan_row(lc)
     holder = _holder()
@@ -263,7 +241,7 @@ def test_release_routes_off_pool_row_409_not_500(
 
     resp = _run(scenario())
 
-    assert resp.status_code == 409, resp.text  # pre-fix: 500 KeyError
+    assert resp.status_code == 409, resp.text  # not a 500 KeyError
     detail = resp.json()["detail"]
     assert "slot9" in detail and "--slots" in detail  # the remedy, not a raw type
     assert holder.calls == []  # nothing was half-released
@@ -275,9 +253,9 @@ def test_release_routes_off_pool_row_409_not_500(
 
 
 def test_doctor_flags_rows_on_slots_outside_the_pool(tmp_path, monkeypatch):
-    """The condition that pre-fix had no visible surface: doctor walks
-    pool -> rows (quarantined slots), never rows -> pool. Post-fix an
-    ACTIVE row on a slot outside --slots is a WARN with the remedy."""
+    """doctor walks rows -> pool: an ACTIVE row on a slot outside --slots
+    is a WARN with the remedy (check_quarantined_slots is the pool -> rows
+    view)."""
     reg = Registry(str(tmp_path / "registry.db"))
     reg.upsert_session("s9", slot="slot9", state=LIVE)      # off-pool, active
     reg.upsert_session("s1", slot="slot1", state=LIVE)      # on-pool: clean

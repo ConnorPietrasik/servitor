@@ -1,31 +1,13 @@
-"""F44: the failed-start path is the single cleanup path.
+"""The failed-start path is the single cleanup path.
 
-Pre-fix ``_abort_start`` was a second, smaller cleanup: it freed the
-slot straight back to the pool (``release_slot_if_owned`` — no sweep,
-no stray kill, the still-mounted result discarded) and deleted the
-registry row without deleting the per-session state trees. Consequences:
-
-* the next session on that uid inherited the half-lived child's /tmp and
-  /home litter — invariant 8 (a slot is never handed out before its
-  sweep verifies clean) and "release is the only cleanup path" were
-  both false on the failed-start path;
-* the inbox/scratch/sessions trees survived forever with no row to
-  point at them — ``gc_orphaned_files`` and ``gc_tick`` walk rows,
-  ``release()`` needs a row — so disk pressure saw the space as used
-  with nothing releasable;
-* on the ``get_state`` trigger the spawned child was never shut down at
-  all: ``live.driver`` was assigned only AFTER ``get_state`` returned,
-  so the abort skipped the driver shutdown and the child was orphaned
-  (no row, no hub, no slot-uid reaper until process GC).
-
-The fix routes the abort through ``release_session``: the spawned child
-is shut down (retained the moment ``start()`` succeeds), strays are
-killed for the uid, the mounts go down with failures REPORTED (a
-still-mounted target surfaces through the sweep), the uid's files are
-swept, the state areas are deleted wholesale, and the slot is freed
-only when the sweep verified clean — a failed sweep quarantines, and
-the DRAINING row stays (panel/doctor visibility, re-release retry — the
-RUNBOOK path), exactly as on a stuck release.
+A start that fails partway (spawn, get_state) must route its abort
+through ``release_session`` rather than a second, smaller cleanup: the
+spawned child is shut down, strays are killed for the uid, the mounts
+go down with failures reported, the uid's files are swept, the state
+areas are deleted wholesale, and the slot is freed only when the sweep
+verified clean. A failed sweep quarantines (never hands the uid back),
+and the DRAINING row stays for panel/doctor visibility and a re-release
+retry — exactly as on a stuck release.
 
 Root-free: real registry + real SlotPool + real release_session; the
 process-shaped bits (stray kill, owner sweep, driver, mounts) are
@@ -202,8 +184,7 @@ async def test_failed_start_after_spawn_cleans_and_frees(tmp_path, monkeypatch):
     assert uid == UID
     assert excludes == _areas(state)
     assert kw == {"keep_dir": pool.get(SLOT).home_path}
-    # the state areas are GONE (pre-fix: leaked forever, no row to point
-    # at them)
+    # the state areas are GONE (deleted wholesale, not just the row)
     for area in _areas(state):
         assert not os.path.lexists(area)
     # slot back to the pool — via verify_free, i.e. sweep-verified
@@ -252,11 +233,12 @@ async def test_failed_start_before_spawn_still_sweeps_and_deletes(tmp_path,
 
 async def test_failed_start_dirty_sweep_quarantines_and_retry_releases(
         tmp_path, monkeypatch):
-    """A sweep that cannot verify clean never frees the slot
-    (invariant 8): the slot is quarantined — visible, retryable, never
-    reused — and the DRAINING row STAYS (unlike the clean path), so the
-    panel/doctor see it and an operator re-runs release (the RUNBOOK
-    retry path: quarantined -> cleaning is accepted by mark_cleaning)."""
+    """A sweep that cannot verify clean never frees the slot (a slot is
+    never handed out before its sweep verifies clean): the slot is
+    quarantined — visible, retryable, never reused — and the DRAINING row
+    STAYS (unlike the clean path), so the panel/doctor see it and an
+    operator re-runs release (quarantined -> cleaning is accepted by
+    mark_cleaning)."""
     lc, state, pool, reg, calls = _make_lc(tmp_path, monkeypatch)
     calls["clean"] = False
 
@@ -289,7 +271,7 @@ async def test_failed_start_dirty_sweep_quarantines_and_retry_releases(
     assert "released" not in kinds
     assert "slot_quarantined" in kinds
 
-    # the RUNBOOK retry: clear the blocker, re-run release
+    # the retry: clear the blocker, re-run release
     calls["clean"] = True
     outcome = await lc.release(SID)
     assert outcome.released is True
@@ -299,8 +281,8 @@ async def test_failed_start_dirty_sweep_quarantines_and_retry_releases(
 
 
 def test_no_second_free_path_exists():
-    """Structural guard for F44: the pre-fix rollback freed the slot
-    via SlotPool.release_slot_if_owned (no sweep, no verification). That
-    path is gone — verify_free (release step 7) is the only free."""
+    """Structural guard: the only way a slot returns to the pool is
+    ``verify_free`` (release step 7, sweep-verified). The unverified
+    free path (SlotPool.release_slot_if_owned) must not exist."""
     assert not hasattr(SlotPool, "release_slot_if_owned")
     assert hasattr(SlotPool, "verify_free")

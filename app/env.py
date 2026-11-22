@@ -7,7 +7,7 @@ read; app code goes through :class:`Config` and never touches
 
 Addresses, ports, and subnets have no defaults: they come from the env
 file, full stop. The state-volume root is NOT env: the guest unit passes
-it as the --state flag (a literal in deploy/guest/servitor.service).
+it as the --state flag.
 """
 from __future__ import annotations
 
@@ -19,42 +19,40 @@ from typing import Mapping
 # once. test/check_contract.py asserts ENV_NAMES + HOST_DEPLOY_ENV_NAMES
 # (disjointly) equals the names in .env.example.
 ENV_NAMES: tuple[str, ...] = (
-    # --- machine credentials (the only secrets; invariant 5: env-only) ---
-    "OMNISSIAH_API_KEY",  # router bearer (host's LLM_API_KEY)
-    "EXA_API_KEY",  # search extension key; env-first in pi-web-access 0.48.0
-    # --- network contract (the edge is the gate; the credential is its
-    #     proof — invariant 3) ---
+    # machine credentials (the only secrets; env-only)
+    "OMNISSIAH_API_KEY",
+    "EXA_API_KEY",  # search extension key; env-first in pi-web-access
+    # network contract (the edge is the gate; the credential is its proof)
     "SERVITOR_BIND",
     "SERVITOR_PORT",
-    "SERVITOR_EDGE_KEY",  # edge credential (invariant 3): verified on every route when set; unset/empty = gate off (dev/standalone)
+    "SERVITOR_EDGE_KEY",  # unset/empty = gate off (dev/standalone)
     "SERVITOR_EDGE_SUBNET",
     "SERVITOR_OPS_SUBNET",
     "SERVITOR_BROWSER_ORIGIN",  # the one origin allowed to use the API from a browser (CORS)
-    # --- lifecycle / delivery (ops parameters, never capability caps) ---
+    # lifecycle / delivery (ops parameters, never capability caps)
     "SERVITOR_GC_IDLE_DAYS",
     "SERVITOR_DRAIN_GRACE_SECS",
     "SERVITOR_HEARTBEAT_SECS",
     "SERVITOR_SSE_RING_BYTES",  # per-session SSE delivery cap (memory bound; default 50 MB)
-    # --- version selections (version FLOORS — deploy/update.sh floats them in-major) ---
+    # version selections (version FLOORS — deploy/update.sh floats them in-major)
     "SERVITOR_PI_VERSION",
     "SERVITOR_PI_WEB_ACCESS_VERSION",
-    # --- deployment layout (absolute paths; the guest unit passes them via
-    #     the EnvironmentFile — never resolved from PATH at runtime) ---
+    # deployment layout (absolute paths; the guest unit passes them via the
+    # EnvironmentFile — never resolved from PATH at runtime)
     "SERVITOR_PI_NODE_BIN",  # absolute node binary
-    "SERVITOR_PI_CLI_JS",  # absolute pi CLI entry (never PATH resolution)
+    "SERVITOR_PI_CLI_JS",  # absolute pi CLI entry
     "SERVITOR_PI_EXT_DIR",  # absolute pi-web-access package dir (sync-owned)
     "SERVITOR_TOOLKIT_DIR",  # absolute toolkit dir (RO overlay lower)
     "SERVITOR_DOCTOR_CWD",  # cwd for the doctor command (the app tree)
 )
 
 # Host-side deploy names — read ONLY by the host deploy scripts and the
-# guest image build: never by the app, never synced into the guest. They
-# live in .env.example (the complete record of the host .env) but are
-# outside the app contract on purpose — the gate asserts they stay
-# disjoint from ENV_NAMES.
+# guest image build, never by the app. They live in .env.example (the
+# complete record of the host .env) but are outside the app contract on
+# purpose — the gate asserts they stay disjoint from ENV_NAMES.
 HOST_DEPLOY_ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_VM_IP",  # the VM's edge address (ssh target; baked into the image)
-    "SERVITOR_HOST_BRIDGE_IP",  # host edge-bridge IP; the guest firewall admits 22 from its /32 (baked in)
+    "SERVITOR_HOST_BRIDGE_IP",  # host edge-bridge IP; the guest firewall admits 22 from its /32
     "SERVITOR_DNS_UPSTREAM",  # guest public DNS upstreams (baked into the image)
     # update-run knobs (deploy/update.sh only; empty in .env = its header default):
     "UPDATE_DOCTOR",
@@ -62,17 +60,16 @@ HOST_DEPLOY_ENV_NAMES: tuple[str, ...] = (
     "SHUTDOWN_TIMEOUT",
 )
 
-# Test-scoped names — read ONLY by the conformance/stage2/unit suites. Never
-# the app, never the host .env, never in .env.example: they carry suite state
-# (scratch roots, the parent test's selection into the netns child, the mock
-# server port). check_contract.py AST-scans test/ and asserts every name read
-# there is contracted or in this tuple (and that this tuple stays disjoint
-# from the contracted set).
+# Test-scoped names — read ONLY by the test suites (scratch roots, the
+# parent test's selection into the netns child, the mock server port).
+# Never the app, never the host .env, never in .env.example; the gate
+# asserts every test/ read is contracted or in this tuple, and that this
+# tuple stays disjoint from the contracted set.
 TEST_SCOPED_ENV_NAMES: tuple[str, ...] = (
-    "SERVITOR_TEST_ROOT",  # suite scratch root (conftest.py)
-    "PI_PREFIX",  # conformance scratch pi prefix (parent test -> netns child)
-    "EXT_PREFIX",  # conformance scratch extension prefix (ditto)
-    "PORT",  # mock HTTP server port (unit tests, parent -> child)
+    "SERVITOR_TEST_ROOT",
+    "PI_PREFIX",
+    "EXT_PREFIX",
+    "PORT",
 )
 
 
@@ -86,16 +83,15 @@ class Config:
     # network contract
     bind: str  # ingress address; no default — env-only
     port: int  # the one published port; no default — env-only
-    edge_key: str | None  # edge credential (invariant 3); None/empty = gate off (dev/standalone — the bind is the control)
+    edge_key: str | None  # None/empty = gate off (dev/standalone — the bind is the control)
     edge_subnet: str | None  # None = dev loopback
     ops_subnet: str | None  # None = dev loopback
     browser_origin: str | None  # the one browser origin (CORS allow-list); None = API-only
-    # state volume
-    root: str  # state volume root (local, non-overlay fs); from the --state flag
-    # lifecycle / delivery (settled defaults — ops, not caps)
+    # state volume root (local, non-overlay fs); from the --state flag
+    root: str
     gc_idle_days: int = 14
     heartbeat_secs: int = 15
-    sse_ring_bytes: int | None = None  # per-session SSE cap; None = 50 MB default
+    sse_ring_bytes: int | None = None  # None = 50 MB default
     # machine credentials (may be absent at app boot; spawn fails closed
     # without OMNISSIAH_API_KEY — model.id == "unknown")
     omnissiah_api_key: str | None = None
@@ -147,10 +143,7 @@ def _optional_int(env: Mapping[str, str], name: str) -> int | None:
 def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Config:
     """Config for the HTTP front door: only the network contract
     (SERVITOR_BIND / SERVITOR_PORT) and the state root are required; the
-    ops parameters fall back to their documented defaults. The version
-    floors are not part of the front door at all — serving HTTP never
-    needs them (the pi install is resolved by the caller; the doctor
-    reads the env directly)."""
+    ops parameters fall back to their documented defaults."""
     if env is None:
         env = os.environ
     port_raw = _require(env, "SERVITOR_PORT")
@@ -177,7 +170,6 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
 
 
 # --- deployment layout (absolute paths; the only sanctioned reads) -------
-#
 # The guest's systemd unit passes these via the EnvironmentFile
 # (/etc/servitor/servitor.env). Everything below is env.py — the rest of
 # the app may only use these helpers (contract check).

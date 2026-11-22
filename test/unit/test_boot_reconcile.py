@@ -1,26 +1,17 @@
-"""F33: a release interrupted by an app crash must quarantine its slot.
+"""A release interrupted by an app crash must quarantine its slot.
 
 A release flips the row LIVE/ALLOCATED -> DRAINING (then CLEANING) and
 only flips the slot free once the sweep verifies clean. An app crash in
-that window leaves a DRAINING/CLEANING row across restarts. Pre-fix,
-``boot_reconcile``'s guard (``row.state not in (ALLOCATED, LIVE):
-continue``) skipped such rows BEFORE ``_rebuild_pool_slot``, so the
-quarantine branch was unreachable and the slot came up FREE:
-``allocate()`` handed the unswept uid to a new session (invariant 8 —
-a slot is never handed out before its sweep verifies clean), the old
-row was stuck draining forever (its release 500'd in ``mark_cleaning``:
-``by_session`` found the slot owned by the new session), and the doctor
-WARNed "pool shrunk" about a slot that had been reused. A second
-stacked defect: at boot every pool slot has ``session_id=None``, so
-``pool.quarantine(row.id)`` would have raised KeyError (swallowed by
-``except Exception``) even had the branch been reachable — the session
-must be re-attached to the slot directly.
+that window leaves a DRAINING/CLEANING row across restarts. The contract:
+the row's slot is quarantined at boot (state quarantined, session
+re-attached so the panel shows whose junk is stuck where, never
+allocatable), the row stays where the crash left it, the retry path
+(quarantined -> cleaning -> free) works, and a leftover slot-uid process
+is killed as an orphan.
 
-Post-fix: the DRAINING/CLEANING row's slot is quarantined at boot
-(state quarantined, session re-attached so the panel shows whose junk
-is stuck where, never allocatable), the row stays where the crash left
-it, the RUNBOOK retry (quarantined -> cleaning -> free) works, and a
-leftover slot-uid process is killed as an orphan.
+Note: at boot every pool slot has ``session_id=None``, so the session is
+re-attached to the slot directly (a ``pool.quarantine(row.id)`` call would
+raise KeyError).
 
 Root-free: real Registry (sqlite in tmp_path) + real SlotPool
 (getpwnam stood in, test_slots pattern) + real Lifecycle; the
@@ -120,7 +111,8 @@ def test_crashed_release_quarantines_the_slot(tmp_path, monkeypatch, state):
     # visible: feed event + boot report
     assert [e for e in lc.events.items() if e["kind"] == "slot_quarantined"]
     assert any(r["slot"] == "slot1" and r["session"] == OLD for r in report)
-    # invariant 8: the dirty uid is never handed out
+    # the dirty uid is never handed out (a slot is never handed out
+    # before its sweep verifies clean)
     assert slot not in lc.cfg.pool.free_slots()
     fresh = lc.cfg.pool.allocate(NEW)
     assert fresh.name == "slot2" and fresh.session_id == NEW
@@ -155,9 +147,9 @@ def test_crashed_release_with_orphan_kills_it(tmp_path, monkeypatch):
 
 
 def test_crashed_release_retry_path_works(tmp_path, monkeypatch):
-    """The RUNBOOK retry: quarantined -> cleaning -> free. Pre-fix this
-    500'd — mark_cleaning's by_session found the slot owned by the new
-    session that boot had handed the dirty uid to."""
+    """The retry path: quarantined -> cleaning -> free. After boot
+    quarantined the slot (with the session re-attached), a re-run release
+    must be able to mark it cleaning and free it."""
     lc, _ = _make_lc(tmp_path, monkeypatch)
     _add_crashed_release(lc, DRAINING)
     lc.boot_reconcile()

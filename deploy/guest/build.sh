@@ -67,11 +67,11 @@ fi
 : "${SERVITOR_OPS_SUBNET:?SERVITOR_OPS_SUBNET missing in $ENV_FILE}"
 : "${SERVITOR_HOST_BRIDGE_IP:?SERVITOR_HOST_BRIDGE_IP missing in $ENV_FILE (the host edge-bridge IP: source address of the host ssh to the VM)}"
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
-# the edge credential (invariant 3): baked into the image env file so the
+# the edge credential: baked into the image env file so the
 # FIRST boot (before any sync) is already gated — with the key set, the
 # app 403s every keyless request; rotation re-injects via the sync's key
 # slice
-: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential, invariant 3 — set it in portcullis .env too)}"
+: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential — set it in portcullis .env too)}"
 # NOTE: no apostrophes in the :? message below — a single quote inside the
 # word of ${var:?...} (even within double quotes) is a bash syntax error that
 # makes the whole script unparseable.
@@ -108,7 +108,8 @@ cleanup() {
 trap cleanup EXIT
 
 # the workdir's mounts must NOT propagate to (or be disturbed by) the host
-# mount table: private from here on (2026-11-16 umount -R failure)
+# mount table: private from here on (a mid-build crash must leave no host
+# mounts behind, and the mount churn stays out of the host mount table)
 mount --make-rprivate /srv/servitor-guest-build 2>/dev/null || true
 
 echo "==> [1/7] base userland (pinned)"
@@ -283,7 +284,7 @@ NODE_BIN="$(cat "$WORK/disk/tmp/node-bin.txt" 2>/dev/null || true)"
 # the env file (0600): the model/search key slice (OMNISSIAH_API_KEY /
 # EXA_API_KEY) is owned by the sync pipeline (rotation re-injects) and is
 # NOT in the image; the edge key (SERVITOR_EDGE_KEY) IS baked — the first
-# boot, before any sync, must already be gated (invariant 3): the build
+# boot, before any sync, must already be gated: the build
 # refuses to run without it, and the app enforces it on every route while
 # set; the rest are the non-key deploy defaults
 mkdir -p "$WORK/disk/etc/servitor"
@@ -293,7 +294,7 @@ SERVITOR_PORT=$SERVITOR_PORT
 # address so the host/proxy reach it at SERVITOR_VM_IP:SERVITOR_PORT.
 # The firewall admits the port from the edge subnet only.
 SERVITOR_BIND=$SERVITOR_VM_IP
-# edge credential (invariant 3): the app verifies X-Servitor-Edge-Key
+# edge credential: the app verifies X-Servitor-Edge-Key
 # against this on every route; must equal the portcullis middleware value
 SERVITOR_EDGE_KEY=$SERVITOR_EDGE_KEY
 SERVITOR_EDGE_SUBNET=$SERVITOR_EDGE_SUBNET

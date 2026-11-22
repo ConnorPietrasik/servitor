@@ -3,9 +3,9 @@
 A consumer that stays CONNECTED but stalls (slow phone on a bad link,
 backgrounded app) must not stop the run: the ring evicts past its
 cursor, the stream emits a ``gap`` event, and the client re-syncs via
-the API. The pre-fix path did the opposite — backpressure PAUSED THE
-RUN, so a stalled phone could park a task forever (the owner's
-long-task contract: start a task, turn the phone off, it finishes).
+the API. The run never feeds back on delivery — backpressure pauses the
+consumer, never the run, so a stalled phone cannot park a task forever
+(the long-task contract: start a task, turn the phone off, it finishes).
 
 These tests drive the extracted ``stream_events`` generator (the
 endpoint's streaming body) against the real SseHub with a small cap —

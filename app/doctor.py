@@ -228,7 +228,7 @@ def check_slots(rep: Report, slot_names: list[str]) -> None:
         rep.add("slots.users", FAIL, f"missing slot users: {missing}")
         return
     rep.add("slots.users", PASS, f"{len(slot_names)} slot users present")
-    # no root-owned files inside slot-owned trees (the sweep invariant)
+    # no root-owned files inside slot-owned trees
     code, out = _sh([
         "find", "/home",
         "-maxdepth", "1", "-type", "d", "-name", "slot*", "-user", "root",
@@ -256,17 +256,16 @@ def check_slots(rep: Report, slot_names: list[str]) -> None:
 
 def check_quarantined_slots(rep: Report, args: argparse.Namespace, registry) -> None:
     """Quarantine is fail-closed by design: a slot whose release sweep
-    failed is never handed out again until a human clears the blocker
-    and re-runs release (RUNBOOK: slot-sweep failure drill) — each one
-    shrinks the pool's capacity. This check is the GATE-level view of
-    that: a stuck release is a DRAINING/CLEANING row on a pool slot
-    (a successful release flips to FREE within seconds; a release
-    interrupted by an app crash keeps its row across restarts, so the
-    shrink persists until the retry). WARN, not FAIL: the system works
-    with fewer slots and the deploy is not at fault — but it must be
-    visible in the gate report, not only in the panel. (A release in
-    flight during the doctor's read looks identical for a few seconds;
-    a spurious WARN then clears on the next run.)"""
+    failed is never handed out again until a human clears the blocker and
+    re-runs release — each one shrinks the pool's capacity. This check is
+    the GATE-level view: a stuck release is a DRAINING/CLEANING row on a
+    pool slot (a successful release flips to FREE within seconds; a
+    release interrupted by an app crash keeps its row across restarts,
+    so the shrink persists until the retry). WARN, not FAIL: the system
+    works with fewer slots and the deploy is not at fault — but it must
+    be visible in the gate report, not only in the panel. (A release in
+    flight during the doctor's read looks identical for a few seconds; a
+    spurious WARN then clears on the next run.)"""
     from app.registry import CLEANING, DRAINING
 
     stuck = []
@@ -279,8 +278,7 @@ def check_quarantined_slots(rep: Report, args: argparse.Namespace, registry) -> 
             "slots.quarantined",
             WARN,
             f"stuck release(s) — quarantined slot(s), pool shrunk: {stuck} — "
-            "clear the blocker and re-run release for the session "
-            "(RUNBOOK: slot-sweep failure drill)",
+            "clear the blocker and re-run release for the session",
         )
     else:
         rep.add("slots.quarantined", PASS, "no quarantined slots")
@@ -292,8 +290,7 @@ def check_off_pool_rows(rep: Report, args: argparse.Namespace, registry) -> None
     a slot name the pool no longer holds: every release path resolves the
     row's slot through the pool (lifecycle._release), so the row is
     UNRELEASEABLE — idle GC skips it, and the operator's POST /release /
-    panel release 409s (release is refused, the slot's uid can't be
-    resolved). This check is the registry-side view of
+    panel release 409s. This check is the registry-side view of
     check_quarantined_slots (which walks pool -> rows; this one walks
     rows -> pool). WARN, not FAIL: the app runs fine without the row
     (nothing respawns it, the process is gone) — but it is stuck until an
@@ -383,13 +380,13 @@ def check_ui(rep: Report) -> None:
     """The chat UI is served by the app itself (static, same port): GET /
     on the app's bind address must answer 200. If ui/dist is missing
     from the deployed tree, / is a bare FastAPI 404 while the API stays
-    healthy — only this check sees it. The app key-gates EVERY route
-    (invariant 3, EdgeKeyMiddleware in app/api/app.py) while
-    SERVITOR_EDGE_KEY is set — production always: this doctor runs with
-    the guest env file sourced, so the probe presents the same value the
-    app verifies; keyless (dev/standalone) the gate is off and a bare
-    GET is right. A 403 here means the guest env's key drifted from what
-    the app holds — deploy/sync.sh re-injects it."""
+    healthy — only this check sees it. The app key-gates every route
+    (EdgeKeyMiddleware in app/api/app.py) while SERVITOR_EDGE_KEY is set
+    — production always: this doctor runs with the guest env file
+    sourced, so the probe presents the same value the app verifies;
+    keyless (dev/standalone) the gate is off and a bare GET is right. A
+    403 here means the guest env's key drifted from what the app holds —
+    deploy/sync.sh re-injects it."""
     bind = optional_env("SERVITOR_BIND") or ""
     port = optional_env("SERVITOR_PORT") or ""
     if not bind or not port:

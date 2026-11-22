@@ -44,20 +44,18 @@ package main
 // The servitor VM is a separate project (its own repo, checked out on the
 // host at /opt/servitor-repo) that portcullis hosts on the edge segment:
 // a libvirt domain on the edge bridge, reached by a plain file-provider
-// route (traefik/dynamic/servitor.yml — invariant 2 holds: the route is a
-// file, no docker.sock). The app authenticates no user: the edge auth
+// route (traefik/dynamic/servitor.yml — the route is a file, no
+// docker.sock). The app authenticates no user: the edge auth
 // chain gates the human, and the servitor-edge middleware's credential
-// (X-Servitor-Edge-Key, invariant 3 in the servitor repo) is what the app
-// re-verifies on every route — the VM's own nftables admits the port from
-// the whole edge subnet, so without it a neighbor container would drive
-// the agent unauthed.
+// (X-Servitor-Edge-Key) is what the app re-verifies on every route — the
+// VM's own nftables admits the port from the whole edge subnet, so without
+// it a neighbor container would drive the agent unauthed.
 //
 // The four actions below are thin wrappers over virsh + the servitor repo's
 // host-side deploy scripts. The scripts exec as ROOT out of an admin-editable
 // checkout, so they pass the SAME anti-swap standard as the auto-update
 // clone scripts (checkManagedScript: file + directory chain to /, owner,
 // shebang) — a writable checkout is a swapped root script, nothing less.
-// RUNBOOK → "Servitor (agent VM)".
 
 const (
 	servitorRepoPath  = "/opt/servitor-repo"
@@ -76,7 +74,7 @@ var servitorPortRe = regexp.MustCompile(`^\d{1,5}$`)
 // contract file deploy/sync.sh consumes). It never sources the file and
 // returns only the one value: the rest of it holds secrets (the API keys)
 // no action needs — the edge key (SERVITOR_EDGE_KEY) is the one exception
-// (the healthz probe presents it; invariant 3 in the servitor repo).
+// (the healthz probe presents it).
 func servitorEnvKV(key string) (string, error) {
 	data, err := os.ReadFile(servitorRepoPath + "/.env")
 	if err != nil {
@@ -97,7 +95,7 @@ func servitorEnvKV(key string) (string, error) {
 // ingress address: the target is the ONE pair of values the servitor
 // checkout's .env declares (SERVITOR_BIND/SERVITOR_PORT — the same contract
 // the sync pipeline and the doctor's open-probe use), and the request
-// carries the edge credential from the same file (invariant 3: the app 403s
+// carries the edge credential from the same file (the app 403s
 // keyless requests, so an unkeyed probe would read a healthy VM as down) —
 // on stdin (curl -K -), not argv: /proc/<pid>/cmdline is world-readable
 // (unlike environ, the reason for the reduced env files), so a secret on

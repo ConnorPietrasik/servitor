@@ -1,4 +1,4 @@
-"""Edge credential gate (invariant 3) — root-free unit tests.
+"""Edge credential gate — root-free unit tests.
 
 The EdgeKeyMiddleware is pure-ASGI and wraps the WHOLE app (route-level
 dependencies never reach the /assets mount, so the gate has to sit there
@@ -73,8 +73,8 @@ def test_keyed_request_admitted(tmp_path, monkeypatch):
 
 def test_unset_key_disables_the_gate(tmp_path, monkeypatch):
     """Dev/standalone mode: no key configured = no gate — the app
-    authenticates nobody, the bind is the control (invariant 3's gate is
-    active only when the key is set). An empty key is the same as unset."""
+    authenticates nobody, the bind is the control (the gate is active
+    only when the key is set). An empty key is the same as unset."""
     c = _client(tmp_path, monkeypatch, edge_key=None)
     assert c.get("/healthz").status_code == 200
     assert c.get("/api/v1/sessions").status_code == 200

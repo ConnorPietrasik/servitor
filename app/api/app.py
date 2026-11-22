@@ -15,9 +15,9 @@ Routes:
     POST   /api/v1/sessions/{id}/follow-up
     POST   /api/v1/sessions/{id}/abort
     GET    /api/v1/sessions/{id}/probe
-    GET    /api/v1/sessions/{id}/messages        (fetch, never replay)
+    GET    /api/v1/sessions/{id}/messages
     POST   /api/v1/sessions/{id}/fork
-    GET    /api/v1/sessions/{id}/dialogs         (pending extension dialogs)
+    GET    /api/v1/sessions/{id}/dialogs
     POST   /api/v1/sessions/{id}/dialogs/{dialog_id}/answer
     POST   /api/v1/sessions/{id}/stable
     POST   /api/v1/sessions/{id}/release
@@ -27,46 +27,41 @@ Routes:
     GET    /api/v1/sessions/{id}/files/{path}      (outbox/... | uploads/...)
     POST   /panel/sessions/{id}/action             (whitelist)
 
-Rules: authz is per session (released/unknown ⇒ 404, other sessions
-never leaked; file paths cannot escape the session dirs). The static UI
-fallback only serves files that RESOLVE inside ui/dist (the app runs as
-root; a percent-decoded ``..`` or an escaping symlink must not walk
-out). The LLM key is
-env-only (invariant 5) — never in any request or response. SSE: monotonic integer
+Rules: authz is per session (released/unknown ⇒ 404, other sessions never
+leaked; file paths cannot escape the session dirs). The static UI fallback
+only serves files that RESOLVE inside ui/dist (the app runs as root; a
+percent-decoded ``..`` or an escaping symlink must not walk out). The LLM
+key is env-only — never in any request or response. SSE: monotonic integer
 ids per session; replay from the bounded ring via Last-Event-ID/?after=;
-a position past the ring edge is a ``gap`` event (client re-syncs via
-the API — never partial data). The run NEVER feeds back on delivery: a
-slow consumer that falls behind the ring simply gets a gap — the run
-continues to completion (invariant 4). No caps: uploads/downloads stream
-to/from disk.
+a position past the ring edge is a ``gap`` event (client re-syncs via the
+API — never partial data). The run NEVER feeds back on delivery: a slow
+consumer that falls behind the ring simply gets a gap. No caps: uploads/
+downloads stream to/from disk.
 
-Admission (invariant 3): the edge credential gate is active when
-``SERVITOR_EDGE_KEY`` is set — always in production (baked into the
-image at build, re-injected by the sync's key slice, certified by the
-doctor's keyed/keyless probes); unset in dev/standalone, where the app
-authenticates nobody and the bind is the control. When active, EVERY
-request must carry ``X-Servitor-Edge-Key`` — the value the Traefik
-``servitor-edge`` middleware injects after the auth chain, overwriting
-anything a client sends. :class:`EdgeKeyMiddleware` (pure-ASGI; it wraps
-the WHOLE app, the /assets StaticFiles mount included — route-level
-dependencies never reach a mount; websocket upgrades are checked the same
-way — fail-closed, the app is never called without a valid key — and
-lifespan passes through) constant-time-verifies it before any route runs
-and answers one uniform 403 for missing vs wrong.
-Why the credential: the guest firewall admits the port from the WHOLE
-edge subnet (the proxy's source IP is indistinguishable from a
-neighbor's), and that subnet carries the public gpu fleet — a
-compromised neighbor must not drive the agent or read its files
-directly. It stops no internet attacker (Authelia 2FA + the admins-only
-rule stays the human gate) — its population is unauthenticated
-in-subnet callers.
+Admission: the edge credential gate is active when ``SERVITOR_EDGE_KEY``
+is set — always in production (baked into the image at build, re-injected
+by the sync's key slice, certified by the doctor's keyed/keyless probes);
+unset in dev/standalone, where the app authenticates nobody and the bind is
+the control. When active, EVERY request must carry
+``X-Servitor-Edge-Key`` — the value the Traefik ``servitor-edge``
+middleware injects after the auth chain, overwriting anything a client
+sends. :class:`EdgeKeyMiddleware` (pure-ASGI; wraps the whole app, the
+/assets StaticFiles mount included — route-level dependencies never reach
+a mount; websocket upgrades are checked the same way) constant-time-
+verifies it before any route runs and answers one uniform 403 for missing
+vs wrong. Why the credential: the guest firewall admits the port from the
+WHOLE edge subnet (the proxy's source IP is indistinguishable from a
+neighbor's), and that subnet carries the public gpu fleet — a compromised
+neighbor must not drive the agent or read its files directly. It stops no
+internet attacker (Authelia 2FA + the admins-only rule stays the human
+gate) — its population is unauthenticated in-subnet callers.
 
 Extension dialogs (select/confirm/input/editor) park in the session's
-process until the human answers (or aborts): the pending set is listed
-via GET .../dialogs and answered via POST .../dialogs/{id}/answer. pi
-may resolve one on its own (its timeout, or an abort); the run's
-settle sweeps the park and publishes `extension_dialog_resolved`.
-A dialog dies with its process; nothing survives a respawn.
+process until the human answers (or aborts): the pending set is listed via
+GET .../dialogs and answered via POST .../dialogs/{id}/answer. pi may
+resolve one on its own (its timeout, or an abort); the run's settle sweeps
+the park and publishes `extension_dialog_resolved`. A dialog dies with its
+process; nothing survives a respawn.
 """
 from __future__ import annotations
 
@@ -99,32 +94,29 @@ log = logging.getLogger("servitor.api")
 API_VERSION = "v1"
 PANEL_ACTIONS = ("start", "steer", "prompt", "abort", "release")
 
-# The edge credential header (invariant 3). The value is injected by
-# Traefik's `servitor-edge` headers middleware AFTER the auth chain —
-# customRequestHeaders overwrites any client-supplied value, so a
-# neighbor on the edge subnet cannot forge it without the secret.
+# The edge credential header. The value is injected by Traefik's
+# `servitor-edge` headers middleware AFTER the auth chain — customRequestHeaders
+# overwrites any client-supplied value, so a neighbor on the edge subnet
+# cannot forge it without the secret.
 EDGE_KEY_HEADER = "X-Servitor-Edge-Key"
 
 
 class EdgeKeyMiddleware:
-    """The edge credential gate (invariant 3) — active only when the
-    key is set.
+    """The edge credential gate — active only when the key is set.
 
     Configured: every request must carry the value the edge injects;
-    the app constant-time-verifies it before any route runs, one
-    uniform 403 for missing vs wrong (no oracle). Unset or empty:
-    no gate at all — dev/standalone runs authenticate nobody (the
-    bind is the control: dev binds loopback); production is ALWAYS
-    keyed (baked into the image at build, re-injected by the sync's
-    key slice, certified by the doctor's keyed/keyless probes), so a
-    keyless production boot is caught, not merely discouraged.
-    Pure-ASGI on purpose, in both directions: it must wrap the whole
-    app (the /assets mount is a separate ASGI app that FastAPI route
+    the app constant-time-verifies it before any route runs, one uniform
+    403 for missing vs wrong (no oracle). Unset or empty: no gate at all
+    (dev/standalone — the bind is the control); production is ALWAYS
+    keyed, so a keyless production boot is caught, not merely
+    discouraged.
+
+    Pure-ASGI on purpose, in both directions: it must wrap the whole app
+    (the /assets mount is a separate ASGI app that FastAPI route
     dependencies never see), and it must not buffer or intercept
     ``receive`` (BaseHTTPMiddleware breaks the SSE streaming +
-    disconnect contract this app's event stream relies on). ``lifespan``
-    passes through untouched (middleware stacks sit above the router); a
-    websocket upgrade is checked the same way — the app is only ever
+    disconnect contract). ``lifespan`` passes through untouched;
+    a websocket upgrade is checked the same way — the app is only ever
     called with a valid key, the consumed ``connect`` is re-delivered —
     and a missing/wrong key closes the upgrade without accepting, which
     the server turns into a 403.
@@ -146,23 +138,21 @@ class EdgeKeyMiddleware:
             await self.app(scope, receive, send)
             return
         if scope["type"] == "lifespan":
-            # Middleware stacks sit above the router: lifespan must reach
-            # the app untouched (a gate that swallowed it would silently
-            # kill the app's startup/shutdown).
+            # middleware stacks sit above the router: lifespan must reach
+            # the app untouched
             await self.app(scope, receive, send)
             return
-        # Websocket upgrade (the only other scope this app sees — the
-        # transport is SSE, not WS, so this path is defensive today): the
-        # gate's "EVERY request" claim must not depend on that staying
-        # true. The upgrade carries the same headers, so the same check
-        # applies; the connect message is consumed here and re-delivered
-        # once, because the app expects to receive it first.
+        # Websocket upgrade: the gate's "EVERY request" claim must not
+        # depend on the transport staying SSE. The upgrade carries the same
+        # headers, so the same check applies; the connect message is
+        # consumed here and re-delivered once, because the app expects to
+        # receive it first.
         if self.key:
             connect = await receive()
             provided = Headers(scope=scope).get(EDGE_KEY_HEADER, "").encode("latin-1")
             if not secrets.compare_digest(provided, self.key):
-                # Close WITHOUT accepting: the app is never called, and the
-                # server rejects the upgrade (uvicorn answers 403).
+                # close WITHOUT accepting: the app is never called, and the
+                # server rejects the upgrade (uvicorn answers 403)
                 await send({"type": "websocket.close"})
                 return
             delivered = False
@@ -283,11 +273,10 @@ def _sse_frame(name: str, data: str, eid: int | None = None) -> str:
 def _install_http_stop_handler(app_state) -> None:
     """Replace uvicorn's SIGTERM with the app's stop path.
 
-    Called from the ASGI lifespan startup — by then uvicorn's own
-    handler (installed via ``signal.signal`` when ``serve()`` began)
-    is in place, and ``signal.signal`` overrides it for the server's
-    life (installing before ``serve()`` would not work: uvicorn saves
-    the pre-existing handler as the "original" and masks it).
+    Called from the ASGI lifespan startup — by then uvicorn's own handler
+    is in place, and ``signal.signal`` overrides it for the server's life
+    (installing before ``serve()`` would not work: uvicorn saves the
+    pre-existing handler as the "original" and masks it).
 
     uvicorn's handler only sets ``should_exit``: in-flight SSE streams
     keep the 'waiting for connections' phase open (uvicorn does not
@@ -332,8 +321,7 @@ def build_app(app_state, cfg) -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(_request: Request, exc: Exception):
-        # log + surface the reason (a bare 500 body is not debuggable
-        # over the one published port)
+        # log + surface the reason (a bare 500 body is not debuggable over the one published port)
         log.exception("unhandled error in %s", _request.url.path)
         return JSONResponse(
             status_code=500,
@@ -343,32 +331,27 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.exception_handler(SessionNotResumable)
     async def _not_resumable(_request: Request, exc: SessionNotResumable):
         # a respawn-on-pickup route (prompt, panel start, fork) met a
-        # terminal row (release phase / stuck quarantine): a conflict
-        # with the session's state, not an upstream failure — the
-        # client stops, it does not retry into a session that is gone
+        # terminal row: a conflict with the session's state — the client
+        # stops, it does not retry into a session that is gone
         log.info("respawn refused for %s (state %s)", exc.session_id, exc.state)
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
     @app.exception_handler(SlotOutsidePool)
     async def _slot_outside_pool(_request: Request, exc: SlotOutsidePool):
-        # the row's slot name is not in the pool (--slots shrunk/renamed
-        # under it): a config-vs-registry conflict the operator resolves
-        # by restoring the slot name or hand-editing the registry — a
-        # conflict, not a server fault: 409 with the remedy, not the
-        # pre-fix 500 KeyError from pool.get
+        # the row's slot name is not in the pool: a config-vs-registry
+        # conflict — 409 with the remedy, not a server fault
         log.info("release refused: %s", exc)
         return JSONResponse(status_code=409, content={"detail": str(exc)})
 
-    # Edge credential gate (invariant 3) — registered BEFORE the CORS
-    # middleware below: last-added is outermost, and a CORS preflight
-    # (OPTIONS, no key) must reach CORSMiddleware first. The credential
-    # is injected server-side by the proxy, so the browser never sees or
-    # sends it — same-origin UI, SSE and file downloads need no client
-    # change.
+    # Edge credential gate — registered BEFORE the CORS middleware below:
+    # last-added is outermost, and a CORS preflight (OPTIONS, no key) must
+    # reach CORSMiddleware first. The credential is injected server-side by
+    # the proxy, so the browser never sees or sends it — same-origin UI,
+    # SSE and file downloads need no client change.
     # (getattr, not attribute: a cfg built outside load_http_config that
-    # lacks the key gets an EMPTY key — gate off (dev/standalone
-    # semantics) instead of build_app crashing mid-startup; `or ""`
-    # because load_http_config hands out None for an unset key.)
+    # lacks the key gets an EMPTY key — gate off (dev/standalone semantics)
+    # instead of build_app crashing mid-startup; `or ""` because
+    # load_http_config hands out None for an unset key.)
     app.add_middleware(
         EdgeKeyMiddleware,
         key=(getattr(cfg, "edge_key", "") or "").encode("latin-1"),
@@ -398,8 +381,7 @@ def build_app(app_state, cfg) -> FastAPI:
 
     @app.get(f"/api/{API_VERSION}/sessions")
     async def list_sessions():
-        # released sessions are GONE (404 everywhere); the list shows
-        # live sessions only
+        # released sessions are GONE (404 everywhere); the list shows live sessions only
         return {
             "sessions": [_row_dict(r, app_state.lc) for r in
                          app_state.registry.list_sessions(include_released=False)]
@@ -481,9 +463,9 @@ def build_app(app_state, cfg) -> FastAPI:
         try:
             result = await app_state.lc.probe(sid, which)
         except ValueError:
-            # fresh session, no transcript yet: the probe's short-lived
-            # spawn is refused by the first-touch rule; the busy state is
-            # everything a waiter polling this endpoint needs
+            # fresh session, no transcript yet: the probe's short-lived spawn
+            # is refused by the first-touch rule; the busy state is everything
+            # a waiter polling this endpoint needs
             return {"result": None, "busy": busy}
         return {"result": result, "busy": busy}
 
@@ -549,24 +531,21 @@ def build_app(app_state, cfg) -> FastAPI:
     ):
         row = _get_row(app_state, sid)
         if app_state.lc.shutting_down:
-            # the stop path is draining: gate BEFORE hub() — hub() is
-            # lazy, so a session with no hub yet would get a fresh OPEN
-            # hub that the stop path would never close (close_streams
-            # already ran at SIGTERM). The client's EventSource backs off
-            # and retries against the new instance once the restart lands.
+            # the stop path is draining: gate BEFORE hub() — hub() is lazy,
+            # so a session with no hub yet would get a fresh OPEN hub that
+            # the stop path would never close. The client's EventSource
+            # backs off and retries against the new instance once the
+            # restart lands.
             raise HTTPException(status_code=503, detail="shutting down")
         hub = app_state.lc.hub(sid)
         if hub is None:
-            # no hub: the row is released, or stuck mid-release
-            # (quarantine). Terminal either way — hub() never mints one
-            # for a non-allocated/live row, so every further request
-            # 404s too: the client should stop, not retry into a session
-            # that is gone (EventSource closes permanently on non-200)
+            # no hub: the row is released, or stuck mid-release (quarantine).
+            # Terminal either way — every further request 404s too, so the
+            # client should stop (EventSource closes permanently on non-200)
             raise HTTPException(status_code=404, detail="no such session")
         if hub.closed:
             # per-hub terminal (defense-in-depth: shutting_down always
-            # precedes close_streams, so this only fires if a hub is
-            # closed while the global flag is somehow unset)
+            # precedes close_streams)
             raise HTTPException(status_code=503, detail="shutting down")
         last_event_id = request.headers.get("last-event-id")
         if after is not None:
@@ -660,20 +639,20 @@ def build_app(app_state, cfg) -> FastAPI:
 
     @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/dialogs")
     async def list_dialogs(sid: str):
-        """Pending extension dialogs (select/confirm/input/editor). The
-        full record (title/options/prefill) is here; the SSE event is
-        only the notification. 409 when the process is dead — a dialog
-        cannot outlive its child, so an empty list is the only answer."""
+        """Pending extension dialogs (select/confirm/input/editor). The full
+        record (title/options/prefill) is here; the SSE event is only the
+        notification. 409 when the process is dead — a dialog cannot
+        outlive its child, so an empty list is the only answer."""
         _get_row(app_state, sid)
         driver = _live_driver(app_state, sid)
         return {"dialogs": list(driver.pending_dialogs.values())}
 
     @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/dialogs/{{dialog_id}}/answer")
     async def answer_dialog(sid: str, dialog_id: str, body: DialogAnswerBody):
-        """Answer a parked dialog: value (select/input/editor) or
-        confirmed (confirm) or cancelled — the child unblocks and the
-        run resumes. Unknown id ⇒ 404 (already answered, or resolved
-        by the pi-side timeout/abort and swept at the run's settle)."""
+        """Answer a parked dialog: value (select/input/editor) or confirmed
+        (confirm) or cancelled — the child unblocks and the run resumes.
+        Unknown id ⇒ 404 (already answered, or resolved by the pi-side
+        timeout/abort and swept at the run's settle)."""
         _get_row(app_state, sid)
         driver = _live_driver(app_state, sid)
         try:
@@ -750,18 +729,18 @@ def build_app(app_state, cfg) -> FastAPI:
 
         @app.get("/{path:path}", include_in_schema=False)
         async def spa(path: str):
-            # API/panel/healthz routes are registered above and win; this
-            # is the SPA fallback (client-side routing: /s/<id> is a UI
-            # route, not a server one). Unknown API-ish prefixes 404.
+            # API/panel/healthz routes are registered above and win; this is
+            # the SPA fallback (client-side routing: /s/<id> is a UI route,
+            # not a server one). Unknown API-ish prefixes 404.
             if path.startswith(("api/", "panel/", "healthz", "openapi", "docs")):
                 raise HTTPException(status_code=404, detail="not found")
             candidate = (ui_dist / path) if path else ui_dist / "index.html"
             try:
-                # The path arrives percent-decoded (%2f == /), so a name
-                # that is lexically inside ui/dist can still walk out via
-                # ..; the app runs as root, so only serve files that
-                # RESOLVE inside ui/dist (an escaping symlink fails the
-                # check too). Anything else falls back to the SPA index.
+                # the path arrives percent-decoded (%2f == /), so a name that
+                # is lexically inside ui/dist can still walk out via ..; the
+                # app runs as root, so only serve files that RESOLVE inside
+                # ui/dist (an escaping symlink fails the check too). Anything
+                # else falls back to the SPA index.
                 if (
                     path
                     and candidate.is_file()

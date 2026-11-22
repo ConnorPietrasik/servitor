@@ -4,8 +4,6 @@ One Delivery per app instance (state-volume root). Upload:
 
     stream body → staging/<id>/part (disk, 1 MB chunks, sha256 as we go)
     → verify → chown to the slot → atomic rename into inbox/<name>
-      (staging and inbox share the state volume's fs — one write of the
-      bytes, no second copy, the final name appears whole and slot-owned)
     → session manifest (files.json) → API-visible
 
 A crash at any step leaves nothing half-visible: boot GC sweeps every
@@ -80,8 +78,8 @@ class Delivery:
             mime = sniff_mime(str(part))
             # deliver() returns the name the file landed under (leading
             # dots stripped): the manifest must record THAT name, or the
-            # entry never matches os.listdir(inbox) and GET /files drops
-            # it forever (a .env upload would land on disk as env).
+            # entry never matches os.listdir(inbox) and GET /files drops it
+            # forever (a .env upload would land on disk as env).
             landed = await asyncio.to_thread(session_files.deliver, part, name)
             delivered = DeliveredFile(name=landed, sha256=digest, size=size, mime=mime, ts=time.time())
             session_files.register_upload(delivered)
@@ -94,8 +92,8 @@ class Delivery:
     # ------------------------------------------------------------------ #
 
     def gc_boot(self) -> dict:
-        """At boot: sweep every staging dir (any survivor is an
-        interrupted upload)."""
+        """At boot: sweep every staging dir (any survivor is an interrupted
+        upload)."""
         swept = self.staging.gc_unregistered(set())
         log.info("delivery boot gc: swept %d staging dirs", len(swept))
         return {"staging_swept": swept}

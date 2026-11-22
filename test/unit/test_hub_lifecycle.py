@@ -1,35 +1,28 @@
-"""F11: SseHub entries (and probe-cache entries) are freed at terminal
+"""SseHub entries (and probe-cache entries) are freed at terminal
 transitions.
 
 The per-session SSE ring is capped at sse_ring_bytes (default 50 MB) —
-a bound meant to be per-LIVE-session. Pre-fix, ``Lifecycle._hubs`` grew
-one entry per session id for the life of the process: ``hub()`` created
-a hub per spawn AND per GET /messages cursor read, ``release()`` popped
-``live`` but never ``_hubs``, and released rows (FREE) are re-openable
-by no route — so a released session's ring (up to 50 MB of event JSON)
-was retained until restart. ``events.add("*", ...)`` also created a
-hub keyed ``"*"`` that no client can ever subscribe to, and
-``_probe_cache`` entries were never evicted.
+a bound meant to be per-LIVE-session. The contract:
 
-The fix: ``hub()`` refuses to CREATE for release-phase rows
-(DRAINING/CLEANING/FREE), unknown rows, and ``"*"`` (it still returns an
-existing hub — lookup first, so in-flight releases keep delivering on
-their hub), ``release()`` and ``_abort_start()`` drop the hub +
-probe-cache entries, and idle-kill deliberately keeps them (respawn
-re-attaches to the same hub — Last-Event-ID resume). The DRAINING
-refusal closes the quarantine gap: a failed sweep leaves the row
-DRAINING forever, and a reconnecting client would otherwise mint a
-fresh sse_ring_bytes hub that no drop site ever reaches.
+* ``hub()`` refuses to CREATE for release-phase rows (DRAINING/CLEANING/
+  FREE), unknown rows, and ``"*"`` (it still returns an existing hub —
+  lookup first, so in-flight releases keep delivering on their hub);
+* ``release()`` and ``_abort_start()`` drop the hub + probe-cache
+  entries; idle-kill deliberately keeps them (respawn re-attaches to
+  the same hub — Last-Event-ID resume);
+* the DRAINING refusal closes the quarantine gap: a failed sweep leaves
+  the row DRAINING forever, and a reconnecting client must not mint a
+  fresh sse_ring_bytes hub that no drop site ever reaches.
+
+Companion contracts: ``_respawn`` refuses terminal rows up front (a
+stuck DRAINING row keeps a truthy session_file string past the sweep and
+passes _get_row — the refusal surfaces as 409 via SessionNotResumable,
+not an unmapped RuntimeError → 500), and probes of terminal rows never
+cache (release() would never drop the entry — nothing else evicts
+_probe_cache).
 
 Root-free: real registry (sqlite in tmp_path) + real Lifecycle; the
 process-shaped bits are faked, per the test_drain pattern.
-
-Companion fixes covered here too: ``_respawn`` refuses terminal rows up
-front (a stuck DRAINING row keeps a truthy session_file string past the
-sweep and passes _get_row — pre-fix the missing hub surfaced as an
-unmapped RuntimeError → 500; now 409 via SessionNotResumable), and
-probes of terminal rows never cache (release() would never drop the
-entry — nothing else evicts _probe_cache).
 """
 from __future__ import annotations
 
@@ -61,8 +54,8 @@ SLOT = "slot1"
 class FakePool:
     """Permissive pool: any slot name resolves. The keyset carries the
     names the fixture OWNS — lifecycle._release's pool-membership guard
-    (the F43 off-pool refusal) reads it, as gc_tick's two release passes
-    do in production."""
+    (the off-pool refusal) reads it, as gc_tick's two release passes do
+    in production."""
 
     def __init__(self, names=("slot1",)):
         self.slots = {n: SimpleNamespace(name=n) for n in names}
@@ -247,9 +240,8 @@ def test_release_without_live_entry_drops_hub(tmp_path, monkeypatch):
 
 
 def test_churn_does_not_grow_hubs(tmp_path, monkeypatch):
-    """The pre-fix shape: one hub per session-since-boot. Post-fix the
-    dict returns to empty after each release (50 MB cap x churn was the
-    unbounded part)."""
+    """The _hubs dict returns to empty after each release (50 MB cap x
+    churn was the unbounded part)."""
     lc = _make_lc(tmp_path, monkeypatch)
     for i in range(25):
         sid = f"s-{i}"
@@ -395,9 +387,8 @@ def test_idle_kill_never_kills_a_watched_session(tmp_path, monkeypatch):
 
 def test_fetch_messages_free_row_returns_zero_cursor_no_hub(tmp_path, monkeypatch):
     """GET /messages does not 404 on a FREE row (the route only catches
-    KeyError) — pre-fix it re-created the session's hub on the cursor
-    read. Post-fix: cursor 0 (what the dead hub's ring would have
-    replayed), no entry left behind."""
+    KeyError): it returns cursor 0 (what the dead hub's ring would have
+    replayed) and leaves no entry behind."""
     lc = _make_lc(tmp_path, monkeypatch)
     sid = "s-gone"
     _add_row(lc, sid, state=FREE)
@@ -471,12 +462,11 @@ def test_respawn_refused_for_terminal_row_before_side_effects(tmp_path, monkeypa
 
 
 def test_prompt_quarantined_row_409_end_to_end(tmp_path, monkeypatch):
-    """The 500 nit: a stuck DRAINING row passes _get_row (only FREE
-    404s) and keeps a truthy session_file string, so a prompt reaches
-    _respawn. Pre-fix: _make_driver's RuntimeError hit the generic
-    handler → 500. Post-fix: the state check raises
-    SessionNotResumable → 409, and no hub is minted for the stuck row.
-    Panel start (ensure_alive) and fork share the same path/handler."""
+    """A stuck DRAINING row passes _get_row (only FREE 404s) and keeps a
+    truthy session_file string, so a prompt reaches _respawn: the state
+    check must raise SessionNotResumable → 409 (not an unmapped
+    RuntimeError → 500), and no hub is minted for the stuck row. Panel
+    start (ensure_alive) and fork share the same path/handler."""
     lc = _make_lc(tmp_path, monkeypatch)
     sid = "s-q409"
     _add_row(lc, sid, state=LIVE, session_file=str(tmp_path / "t.jsonl"))

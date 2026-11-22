@@ -127,8 +127,7 @@ def _wait_up(port: int, proc: subprocess.Popen, deadline_sec: float) -> None:
 
 def test_sigterm_stops_cleanly_with_a_held_sse_stream(tmp_path):
     """A held-open SSE stream must not hold the stop open: SIGTERM ->
-    clean exit in seconds (the unit's stop budget is 120 s; the pre-fix
-    behavior rode it out to the SIGKILL escalation)."""
+    clean exit in seconds (the unit's stop budget is 120 s)."""
     port = _free_port()
     app_file = tmp_path / "stop_app.py"
     app_file.write_text(APP)

@@ -14,7 +14,7 @@
 # (2) the servitor-edge middleware then injects the edge credential
 # (X-Servitor-Edge-Key — its value lives in portcullis's .env as
 # SERVITOR_EDGE_KEY and MUST equal the guest's, synced by the servitor
-# key slice), which the app re-verifies on every route (invariant 3).
+# key slice), which the app re-verifies on every route.
 # Gate (2) is what stops a neighbor container on the edge subnet — the
 # firewall admits the WHOLE segment, and the proxy's source IP is
 # indistinguishable from a neighbor's — from driving the agent or reading

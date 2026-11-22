@@ -19,8 +19,7 @@ from dataclasses import dataclass, field
 #: pseudo-filesystems the owner walk never descends into.
 # /dev is deliberately NOT pruned: /dev/shm is a world-writable tmpfs a
 # slot can litter, and the walk must see it (the device nodes under /dev
-# are root-owned and match nothing; /dev/pts, /dev/mqueue and
-# /dev/hugepages are tiny and harmless to walk).
+# are root-owned and match nothing).
 PSEUDO_FS = ("/proc", "/sys", "/run", "/boot/efi")
 
 
@@ -94,10 +93,9 @@ def sweep_by_owner(
             continue  # the home dir itself: kept, contents are swept
         if path in mounted:
             # a mountpoint owned by the uid: from THIS session (should be
-            # unmounted by release already) or a STALE mount left by a
-            # dead run (app crash, killed test). A stale mount must not
-            # quarantine the slot forever — force-unmount and let the
-            # directory be swept like any other.
+            # unmounted by release already) or a STALE mount left by a dead
+            # run. A stale mount must not quarantine the slot forever —
+            # force-unmount and let the directory be swept like any other.
             try:
                 import subprocess
                 subprocess.run(["umount", "-l", path], capture_output=True, timeout=10)
@@ -115,11 +113,9 @@ def sweep_by_owner(
                 os.unlink(path)  # fifo/socket/device the session dropped
             result.deleted.append(path)
         except FileNotFoundError:
-            # vanished between the find and the unlink (the agent's
-            # exit-time cleanup, a concurrent delete): already gone —
+            # vanished between the find and the unlink: already gone —
             # exactly the outcome the sweep wants. The verification pass
-            # below is the real gate: anything still present is a
-            # leftover and fails the sweep there.
+            # below is the real gate.
             continue
         except OSError as exc:
             result.errors.append((path, str(exc)))
@@ -150,15 +146,8 @@ def _mounted_targets() -> set[str]:
 
 
 def kill_strays_by_uid(uid: int, *, term_grace: float = 2.0) -> list[int]:
-    """Kill every live process of the uid (crash-orphans included).
-
-    This is release step 3's primitive, also used by boot reconciliation
-    (the respawn path re-checks its slot uid for a live process
-    and kills it first if present — invariant 7 is enforced at the spawn
-    boundary, not assumed). TERM first, KILL after grace; the session's
-    own pi child is handled by the driver's ladder in release step 2.
-    Returns the pids killed.
-    """
+    """Kill every live process of the uid (crash-orphans included). TERM
+    first, KILL after grace. Returns the pids killed."""
     import os as _os
     import signal
     import time

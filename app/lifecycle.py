@@ -45,17 +45,13 @@ log = logging.getLogger("servitor.lifecycle")
 PROBE_CACHE_TTL = 30.0
 PROBES = ("messages", "stats")
 
-# orphan transcript GC grace: a fork is confirmed by the next write, so
-# an abandoned fork's file lingers this long before the sweep takes it
+# GC grace for orphaned fork transcripts (a fork is confirmed by the next write)
 ORPHAN_IDLE_GRACE_SEC = 86_400.0
 
 #: disk pressure: release oldest non-stable until usage is below this
 DISK_PRESSURE_FRACTION = 0.90
 
-#: FREE-row retention: a released row is GONE to the API (list excludes
-# it, detail 404s) — it lingers only so operators/doctor can see what
-# recently ran on a slot. After this, registry GC drops it (registry
-# docstring: the row stays "until a registry GC deletes it").
+#: FREE-row retention (rows are API-gone; kept for operator/doctor visibility, then registry GC drops them)
 FREE_ROW_RETENTION_SEC = 7 * 86_400.0
 
 
@@ -80,10 +76,9 @@ class Live:
 
 
 class SessionNotResumable(RuntimeError):
-    """The row is in a terminal state (release phases DRAINING/CLEANING,
-    FREE, or a stuck quarantine): no route re-opens it, so respawn/
-    pickup is refused before any side effect (stray kill, mounts,
-    process). The API maps it to 409."""
+    """Row in a terminal state (release phase, FREE, stuck quarantine): no
+    route re-opens it; respawn/pickup refused before any side effect.
+    The API maps it to 409."""
 
     def __init__(self, session_id: str, state: str) -> None:
         self.session_id = session_id
@@ -102,14 +97,14 @@ class LifecycleConfig:
     api_key: str
     exa_key: str | None = None
     toolkit_dir: str = "/opt/toolkit"
-    baseline_extensions: tuple[str, ...] = ()  # image/config baseline names
+    baseline_extensions: tuple[str, ...] = ()
     idle_kill_sec: float = 3600.0
     shutdown_grace_sec: float = 90.0  # strictly < the unit's TimeoutStopSec
     gc_idle_days: float = 14.0
     gc_interval_sec: float = 300.0
-    delivery: "Delivery | None" = None  # delivery service (staging)
-    sse_ring_bytes: int | None = None  # per-session SSE cap (None = 50 MB default)
-    update_pending_path: str | None = None  # the update-pending flag file (sync/update write)
+    delivery: "Delivery | None" = None
+    sse_ring_bytes: int | None = None  # None = 50 MB default
+    update_pending_path: str | None = None  # flag file, written by sync/update
     update_tick_sec: float = 5.0
     restart_cmd: tuple[str, ...] | None = None  # default: systemctl restart servitor
     doctor_cmd: tuple[str, ...] | None = None  # default: own venv python -m app.doctor
@@ -132,7 +127,6 @@ class LifecycleHooks:
         if row is None:
             return
         if quarantined:
-            # slot quarantined in the pool; row stays DRAINING, never reused
             self.events.add(session_id, "slot_quarantined", detail)
             return
         self.reg.set_state(session_id, CLEANING, cause=detail)
@@ -141,29 +135,25 @@ class LifecycleHooks:
 
 
 class _AbortStartHooks:
-    """ReleaseHooks for the failed-start rollback: the registry
-    transitions still run (a crash mid-abort must leave the same
-    DRAINING signature as a crashed release), but the FEED takes no
-    release shape — the session never existed, so release_start/released
-    items for its id are ghosts the panel cannot resolve (the row is
-    deleted on the clean path). The quarantine event IS kept: there the
-    row STAYS, and the feed is where the stuck slot is seen."""
+    """ReleaseHooks for failed-start rollback: the registry transitions run
+    as usual (a crash mid-abort must leave the same DRAINING signature as a
+    crashed release), but the feed gets no release-shaped events — the
+    session never existed, so release_start/released for its id are ghosts.
+    The quarantine event IS kept: there the row stays, and the feed is
+    where the stuck slot is seen."""
 
     def __init__(self, reg: Registry, events: "EventFeed"):
         self.reg = reg
         self.events = events
 
     def mark_draining(self, session_id: str, reason: str) -> None:
-        # no release_start event: nothing was released, no session existed
         self.reg.set_state(session_id, DRAINING, cause=f"release: {reason}")
 
     def mark_released(self, session_id: str, *, quarantined: bool, detail: str) -> None:
         if quarantined:
-            # row stays DRAINING: panel/doctor visibility, as on release
             self.events.add(session_id, "slot_quarantined", detail)
             return
-        # no CLEANING/FREE churn and no event: the abort deletes the row —
-        # a failed start was never a session to be released
+        # the abort deletes the row: a failed start was never a session
 
 
 class EventFeed:
@@ -209,24 +199,17 @@ class Lifecycle:
         self._update_task: Optional[asyncio.Task] = None
 
     def hub(self, session_id: str) -> "SseHub | None":
-        """The session's SSE hub (created on first use; respawns re-attach).
+        """The session's SSE hub, created on first use; respawns re-attach.
 
-        Creation is refused for every non-ALLOCATED/LIVE row (release
-        phases DRAINING/CLEANING, FREE, unknown): re-openable by no
-        route, so a hub made for it would live for the process's life
-        holding up to sse_ring_bytes. The DRAINING refusal matters for
-        the quarantine case — a failed sweep leaves the row DRAINING
-        forever, and a reconnecting client would otherwise mint a fresh
-        50 MB hub that no drop site ever reaches. A session with no hub
-        has no subscribers, so refusing loses nothing: release events of
-        a never-spawned session land in the feed (the panel), and the
-        client 404s on connect and stops. release() and _abort_start()
-        are the drop sites; idle-kill never drops — respawn re-attaches
-        to the same hub (Last-Event-ID resume). Lookup is first, so an
-        existing hub is returned whatever the row says (in-flight
-        releases keep delivering on their hub). ``"*"`` (broadcast app
-        events) gets no hub either: no client can subscribe to an id that
-        is not a registry row."""
+        Minting is refused for every non-ALLOCATED/LIVE row (release
+        phases, FREE, unknown): a hub made for a terminal row — notably
+        the quarantine case, where a failed sweep leaves the row DRAINING
+        forever — would live for the process's life holding up to
+        sse_ring_bytes, and a session with no hub has no subscribers, so
+        refusing loses nothing (release events still land in the feed).
+        Lookup is first, so an existing hub is returned whatever the row
+        says (in-flight releases keep delivering on their hub).
+        """
         h = self._hubs.get(session_id)
         if h is not None:
             return h
@@ -240,10 +223,10 @@ class Lifecycle:
         return h
 
     def close_streams(self) -> None:
-        """Close every session hub. Called at SIGTERM and (idempotently)
-        from shutdown(): a streaming response never ends on its own and
-        uvicorn does not cancel one, so it would hold the unit stop open
-        to TimeoutStopSec. Reconnecting clients get 503 until restart."""
+        """Close every session hub (idempotent). A streaming response never
+        ends on its own and uvicorn does not cancel one, so it would hold
+        the unit stop open to TimeoutStopSec. Reconnecting clients get 503
+        until restart."""
         for h in list(self._hubs.values()):
             try:
                 h.close()
@@ -256,24 +239,21 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     def boot_reconcile(self) -> list[dict]:
-        """Kill crash-orphans / mark interrupted sessions before any
-        spawn/respawn. Crash signatures: (1) a live slot-uid process —
-        killed via the ladder; (2) no process but the transcript's last
-        run never settled. Transcripts and slots survive either way;
-        the expectation is a respawn on pickup, not a release. A third
-        signature is the RELEASE itself: a DRAINING/CLEANING row means
-        a release was interrupted by the crash — no respawn ever comes
-        for it, so its slot is quarantined, never handed out
-        (invariant 8)."""
+        """Kill crash-orphans and mark interrupted sessions before any
+        spawn/respawn. Signatures: a live slot-uid process (killed via the
+        ladder); a transcript whose last run never settled; a
+        DRAINING/CLEANING row — a release interrupted by the crash, for
+        which no respawn ever comes, so its slot is quarantined and never
+        handed out. Transcripts and slots survive either way; the
+        expectation is a respawn on pickup, not a release."""
         out: list[dict] = []
         for slot in self.cfg.pool.slots.values():
             row = self.cfg.registry.session_for_slot(slot.name)
             if row is None or row.state == FREE:
                 continue
-            # a draining/cleaning row: its session is being released and
-            # nothing will ever respawn it — a slot-uid process is an
-            # orphan either way (the run-level 'interrupted' flag belongs
-            # to respawnable rows only; the quarantine records this one)
+            # a draining/cleaning row will never respawn: a slot-uid process
+            # is an orphan either way (the 'interrupted' flag belongs to
+            # respawnable rows only; the quarantine records this one)
             quarantining = row.state in (DRAINING, CLEANING)
             pids = self._pids_of_uid(slot.uid)
             killed = kill_strays_by_uid(slot.uid) if pids else []
@@ -289,9 +269,6 @@ class Lifecycle:
             if interrupted:
                 self.cfg.registry.mark_interrupted(row.id)
                 self.events.add(row.id, "interrupted", detail)
-            # rebuild the pool from the registry: a draining/cleaning row
-            # means a release was interrupted by the crash — quarantine the
-            # slot, never hand it out
             self._rebuild_pool_slot(slot, row)
             out.append({"slot": slot.name, "uid": slot.uid, "killed": killed, "session": row.id})
             if quarantining:
@@ -315,18 +292,11 @@ class Lifecycle:
                 slot.session_id = row.id
                 slot.stable = row.stable
         elif row.state in (DRAINING, CLEANING):
-            # a release was interrupted by the crash: quarantine the slot,
-            # never hand it out (invariant 8). The pool is rebuilt from
-            # scratch at boot — every slot still has session_id None, so
-            # pool.quarantine(row.id) could never find it via
-            # by_session(): the session is re-attached here directly, the
-            # way the allocated branch above re-attaches its row. The
-            # fields mirror SlotPool.quarantine(): state quarantined,
-            # stable False, session_id kept so the panel shows whose junk
-            # is stuck where (the sweep's deletion list is the audit
-            # trail). The row stays DRAINING/CLEANING; the human re-runs
-            # release (quarantined -> cleaning is the RUNBOOK retry path,
-            # and mark_cleaning accepts quarantined slots by design).
+            # release interrupted at boot: quarantine the slot directly (the
+            # pool is rebuilt from scratch, so by_session() could never find
+            # it), mirroring SlotPool.quarantine(). The row stays
+            # DRAINING/CLEANING; the operator re-runs release (quarantined
+            # -> cleaning is the retry path, and mark_cleaning accepts it).
             if slot.state != "quarantined":
                 slot.state = "quarantined"
                 slot.session_id = row.id
@@ -370,8 +340,7 @@ class Lifecycle:
             home=f"/home/{self._slot_name_for(session_id)}",
             user=self._slot_name_for(session_id),
             agent_dir=sp.agent_dir,
-            # the LLM key (env-only, invariant 5) — child env, never argv
-            omnissiah_api_key=self.cfg.api_key,
+            omnissiah_api_key=self.cfg.api_key,  # env-only: the key never appears on argv
             exa_api_key=self.cfg.exa_key,
             web_cache_root=sp.web_cache,
         )
@@ -387,38 +356,30 @@ class Lifecycle:
         slot_name = self.cfg.registry.get(session_id).slot
         ident = slot_identity(slot_name)
         driver = PiSession(launch, ident, cwd=live.sp.workdir)
-        # the second argument is the run's aborted flag: an ABORTED
-        # settle must not clear the interrupted flag (the drain's mark
-        # is owed to the operator — see _on_settled)
+        # the second argument is the run's aborted flag (an ABORTED settle must
+        # not clear the interrupted flag — see _on_settled)
         driver.on_settled = (
             lambda _s, aborted, **k: self._on_settled(session_id, aborted))
-        # event stream is the SSE hub; delivery never feeds back into the
-        # run (invariant 4 — the hub evicts + gaps, it never blocks)
         hub = self.hub(session_id)
         if hub is None:
-            # a spawn invariant violation: the row is ALLOCATED/LIVE here
-            # by construction (start_session upserts it ALLOCATED,
-            # _respawn refuses terminal rows) — refuse loudly rather than
-            # spawn a process whose events go nowhere
+            # the row is ALLOCATED/LIVE here by construction; refuse loudly
+            # rather than spawn a process whose events go nowhere
             raise RuntimeError(
                 f"{session_id}: no event hub at spawn (row missing or "
                 f"not allocated/live)")
         driver.on_event = hub.on_event
-        # extension dialogs park in the driver (the child blocks until a
-        # human answers or aborts): surface them — feed + SSE stream
+        # dialogs park in the driver (the child blocks until answered or aborted)
         driver.on_dialog = lambda _d, rec: self._on_dialog(session_id, rec)
-        # pi-side resolution (timeout/abort) is swept at settle
         driver.on_dialog_resolved = lambda _d, rids: self._on_dialog_resolved(
             session_id, rids
         )
         return driver
 
     def _on_dialog(self, session_id: str, rec: dict) -> None:
-        """An extension dialog just parked (select/confirm/input/editor).
-        The run waits for the human — a designed, visible state: it lands
-        in the event feed and the session's SSE stream (the UI re-fetches
-        the full dialog via GET .../dialogs and answers via POST).
-        Dialogs die with the process; there is nothing to clean up here."""
+        """An extension dialog parked (select/confirm/input/editor); the run
+        waits for the human. The UI re-fetches the full record via
+        GET .../dialogs and answers via POST. A dialog dies with the process.
+        """
         method = str(rec.get("method", ""))
         rid = str(rec.get("id", ""))
         title = str(rec.get("title", ""))
@@ -427,11 +388,10 @@ class Lifecycle:
         log.info("session %s: extension dialog pending — %s", session_id, detail)
 
     def _on_dialog_resolved(self, session_id: str, rids: list[str]) -> None:
-        """pi resolved parked dialogs on its own (its timeout, or an
-        abort): the run's settle swept them. The UI re-fetches the
-        pending set on the feed event — the dialogs are gone, and no
-        answer is on the way. Nothing else to clean up: a dialog dies
-        with its process."""
+        """pi resolved parked dialogs on its own (its timeout or an abort);
+        the run's settle swept them. The UI re-fetches the pending set on
+        this event — the dialogs are gone and no answer is on the way.
+        """
         for rid in rids:
             self.events.add(session_id, "extension_dialog_resolved", rid)
         log.info(
@@ -446,20 +406,13 @@ class Lifecycle:
         if not aborted:
             row = self.cfg.registry.get(session_id)
             if row is not None and row.interrupted:
-                # the flag means "the last run never COMPLETED" — a clean
-                # settle refutes it, so clear it (the tests:
-                # test/unit/test_settle_clears_interrupted.py). An ABORTED
-                # settle must not clear it: the shutdown drain aborts a
-                # live run and marks the session interrupted (the mark is
-                # owed to the operator — the Sessions chip is the only
-                # meter for a parked session, invariant 2), and the
-                # child's agent_settled {aborted: true} then lands here —
-                # clearing on it would race the drain's mark and lose
-                # the flag. Without a clear at all it sticks for the
-                # session's whole life: mark_interrupted is only ever
-                # called with the default True (boot reconcile, shutdown
-                # drain) — it would read 'interrupted' forever, past
-                # respawns and clean runs.
+                # the flag means "the last run never COMPLETED": a clean
+                # settle refutes it. An ABORTED settle must not clear it —
+                # the drain's mark (the only meter for a parked session)
+                # would be raced away; and without a clear at all it would
+                # stick for the session's whole life, past respawns and
+                # clean runs (mark_interrupted is only ever called True
+                # elsewhere).
                 self.cfg.registry.mark_interrupted(session_id, False)
         self.cfg.registry.touch(session_id)
 
@@ -472,7 +425,7 @@ class Lifecycle:
     ) -> dict:
         """Allocate slot + mounts + first spawn. Under slot pressure,
         release the oldest non-stable non-running; if none is releasable
-        the start is REFUSED (NoFreeSlot → 503) — there is no queue: a
+        the start is REFUSED (NoFreeSlot → 503). There is no queue: a
         parked row has no end state (nothing could wake it, and with no
         slot it could not be released either)."""
         if self.shutting_down:
@@ -486,9 +439,6 @@ class Lifecycle:
             if await self._release_oldest_for_pressure():
                 slot = self.cfg.pool.allocate(session_id)
             else:
-                # nothing releasable: refuse cleanly (the caller retries
-                # later) — never park a row that can neither be woken
-                # nor released
                 raise NoFreeSlot(
                     "all slots are live sessions (running or awaiting "
                     "release) and none is releasable — try again later"
@@ -502,13 +452,10 @@ class Lifecycle:
         )
 
         # Everything from here on is under the abort guard: a failure at
-        # ANY step (config missing, dir creation, mount — the tamper gate
-        # included — spawn) rolls back through release_session (the
-        # SINGLE cleanup path: the spawned child, strays, mounts, the
-        # uid's files, the state areas, and a sweep-verified slot) and
-        # deletes the row — never a second, smaller cleanup (F44). A
-        # leaked ALLOCATED row pins its slot for the life of the process
-        # (boot reconciliation only runs at boot).
+        # ANY step (config missing, dir creation, mount, spawn) rolls back
+        # through release_session (the single cleanup path) and deletes the
+        # row. A leaked ALLOCATED row would pin its slot for the life of the
+        # process (boot reconciliation only runs at boot).
         sp = SessionMountPaths.for_session(session_id, str(self.cfg.state.scratch))
         live = Live(
             session_id=session_id, sp=sp, mount_ops=[], driver=None,
@@ -527,10 +474,9 @@ class Lifecycle:
             self._record_extensions(session_id, sp)
             driver = self._make_driver(session_id, None, live)
             await driver.start()
-            # retained the moment the child exists: any LATER failure
-            # (get_state, the transcript handoff, ...) must reach the
-            # abort's shutdown — a started-but-unretained driver would be
-            # orphaned: no row, no hub, no slot-uid reaper (F44)
+            # retained the moment the child exists, so any LATER failure
+            # (get_state, the transcript handoff, ...) reaches the abort's
+            # shutdown — a started-but-unretained driver would be orphaned
             live.driver = driver
             st = await driver.get_state()
             session_file = st.get("sessionFile")
@@ -545,24 +491,13 @@ class Lifecycle:
             raise
 
     async def _abort_start(self, session_id: str, live: Live, slot) -> None:
-        """Failed-start rollback: the SINGLE cleanup path
-        (release_session), not a second, smaller one. The row still
-        exists (upserted ALLOCATED before any side effect), so release's
-        steps run in order: the ladder on the spawned child, strays
-        killed for the uid, the mounts down (a failure is reported and
-        the sweep re-checks, never discarded), the uid's files swept,
-        the three state areas deleted wholesale, and the slot freed ONLY
-        when the sweep verified clean (invariant 8) — a failed sweep
-        quarantines, exactly as a release does. After: the live entry
-        and hub go, and the row goes too — a failed start produced no
-        transcript, it was never a session. EXCEPT on quarantine: the
-        DRAINING row STAYS, as on a quarantined release, so the panel
-        and doctor see the stuck slot and an operator can re-run
-        release (the RUNBOOK retry path). A crash mid-abort leaves that
-        same DRAINING row for boot reconciliation, the way a crashed
-        release does. The feed sees no release-shaped events for the
-        ghost session (_AbortStartHooks) — only slot_quarantined, where
-        the row stays to be seen."""
+        """Failed-start rollback through release_session (the single
+        cleanup path), then drop the live entry, hub and row — a failed
+        start produced no transcript, it was never a session. EXCEPT on
+        quarantine: the DRAINING row stays (panel/doctor visibility;
+        the operator re-runs release), as on a stuck release. The feed
+        sees no release-shaped events for the ghost session (only
+        slot_quarantined, where the row stays)."""
         quarantined = False
         try:
             outcome = await release_session(
@@ -588,9 +523,8 @@ class Lifecycle:
                     session_id, slot.name, "; ".join(outcome.errors),
                 )
         except Exception:
-            # release_session collects its own errors in the outcome; an
-            # escape here (a pool/registry bug) must not leak the slot:
-            # fail closed — quarantine, never hand out (invariant 8)
+            # an escape here (a pool/registry bug) must not leak the slot:
+            # fail closed — quarantine, never hand out
             log.exception("start %s aborted: release_session raised", session_id)
             quarantined = True
             try:
@@ -598,10 +532,7 @@ class Lifecycle:
                     session_id, "abort: release_session raised")
             except Exception:
                 pass
-            # if the quarantine landed, surface the stuck slot (the row
-            # stays DRAINING), as the hooks do on the ordinary quarantine
-            # path; if it could not (e.g. the slot was already freed by
-            # the escape), there is nothing stuck to report
+            # surface the stuck slot only if the quarantine actually landed
             if slot.state == "quarantined":
                 self.events.add(session_id, "slot_quarantined",
                                 "abort: release_session raised")
@@ -613,10 +544,7 @@ class Lifecycle:
         self.live.pop(session_id, None)
         self._drop_session_state(session_id)
         if not quarantined:
-            # no transcript was produced: not a session, the row goes
             self.cfg.registry.delete(session_id)
-        # quarantined: the DRAINING row stays — panel/doctor visibility
-        # and the re-release retry, exactly as on a stuck release
 
     async def prompt(self, session_id: str, text: str) -> str:
         """Steer/prompt with respawn-on-pickup. A transcript-less row is
@@ -648,10 +576,8 @@ class Lifecycle:
         if row is None:
             raise KeyError(session_id)
         if row.state not in (ALLOCATED, LIVE):
-            # terminal row (release phase, stuck quarantine): no route
-            # re-opens it, and hub() refuses to mint its event hub —
-            # refuse BEFORE any side effect (stray kill, mounts,
-            # process); the API maps this to 409
+            # terminal row: refuse before any side effect (stray kill,
+            # mounts, process); the API maps this to 409
             raise SessionNotResumable(session_id, row.state)
         if not row.session_file:
             raise ValueError(f"{session_id}: no transcript to respawn from")
@@ -659,8 +585,8 @@ class Lifecycle:
         slot_name = row.slot
         ident = slot_identity(slot_name)
 
-        # invariant 7: re-check the slot uid for a live process and kill
-        # it first (a crash could have happened since boot)
+        # re-check the slot uid for a live process and kill it first
+        # (a crash could have happened since boot)
         stray = self._pids_of_uid(ident.uid)
         if stray:
             kill_strays_by_uid(ident.uid)
@@ -692,7 +618,6 @@ class Lifecycle:
             await driver.start()
             st = await driver.get_state()
         except SpawnFailure:
-            # fatal spawn error: release, never retry
             log.error("respawn of %s failed fatally: releasing", session_id)
             self.events.add(session_id, "spawn_fatal", "respawn failed; releasing")
             await self.release(session_id, reason="fatal spawn error")
@@ -714,20 +639,18 @@ class Lifecycle:
 
     async def probe(self, session_id: str, which: str = "messages") -> Any:
         """Reads of a session with no live process: short-lived RPC spawn
-        as the slot uid, one process per session file (concurrent probes
-        coalesce), no model call, results briefly cached."""
+        as the slot uid (concurrent probes coalesce), no model call,
+        results briefly cached."""
         if which not in PROBES:
             raise ValueError(f"unknown probe {which!r}")
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
         if row.state == FREE or not row.session_file or not os.path.exists(row.session_file):
-            # the probe is never the first process to touch an agent dir
             raise ValueError(f"{session_id}: probe refused — no transcript (first-touch rule)")
         live = self.live.get(session_id)
         if live is not None and live.driver is not None and not live.driver.exited:
             return await self._probe_via(live.driver, which)
-        # coalesce: one probe process per session file (per command)
         key = (session_id, which)
         cached = self._probe_cache.get(key)
         if cached and time.time() - cached[0] < PROBE_CACHE_TTL:
@@ -739,10 +662,8 @@ class Lifecycle:
         self._probe_locks[key] = fut
         try:
             result = await self._run_probe(session_id, which, row)
-            # a terminal row (release phase, stuck quarantine) is never
-            # dropped again by release(): caching for it would keep the
-            # result to the process's life — nothing else evicts
-            # _probe_cache
+            # terminal rows are never dropped by release(): caching for them
+            # would keep the result to the process's life
             if row.state in (ALLOCATED, LIVE):
                 self._probe_cache[key] = (time.time(), result)
             fut.set_result(result)
@@ -782,9 +703,10 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     async def idle_kill_tick(self) -> list[str]:
-        """1 h (default), settled-only, ladder, never unmounts. A run in
-        progress is never eligible; a session with no process has nothing
-        to kill (mounts survive; the next pickup respawns)."""
+        """Settled-only idle kill (1 h default), via the ladder; never
+        unmounts — mounts survive and the next pickup respawns. A run in
+        progress, a watched session, or a process with no settled history
+        is never eligible."""
         if self.shutting_down:
             return []
         now = time.time()
@@ -795,7 +717,7 @@ class Lifecycle:
                 continue
             hub = self._hubs.get(session_id)
             if hub is not None and hub.consumer_count > 0:
-                continue  # a human is watching: never idle-kill
+                continue  # a human is watching
             try:
                 st = await d.get_state()
             except Exception:
@@ -805,10 +727,10 @@ class Lifecycle:
             if st.get("pendingMessageCount", 0) > 0:
                 continue
             if live.last_settled is None:
-                continue  # never settled: not "truly idle"
+                continue
             if now - live.last_settled < self.cfg.idle_kill_sec:
                 continue
-            code = await d.shutdown()  # the ladder: EOF → TERM → KILL
+            code = await d.shutdown()
             self.cfg.registry.touch(session_id)
             self.events.add(session_id, "idle_killed", f"exit={code}; mounts kept")
             killed.append(session_id)
@@ -819,15 +741,15 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     async def shutdown(self, cause: str = "app stop") -> None:
-        """Abort-then-drain. Per-session order stays load-bearing: the
-        abort travels over stdin BEFORE that child's stdin closes, and a
-        session with a run in flight is marked `interrupted` — but the
-        waits are shared: notify all (phase 1), close all stdins
-        (phase 2), wait on everything under ONE budget (phase 3), then
-        the ladder escalates for the survivors. Worst case stays under
-        TimeoutStopSec regardless of N. Files and mounts survive."""
+        """Abort-then-drain. Per-session the abort travels over stdin
+        BEFORE that child's stdin closes, and a session with a run in
+        flight is marked `interrupted` — but the waits are shared:
+        notify all, close all stdins, wait on everything under ONE budget,
+        then the ladder escalates for the survivors. Worst case stays
+        under TimeoutStopSec regardless of N. Files and mounts survive.
+        """
         self.shutting_down = True
-        self.close_streams()  # idempotent if the stop path already did it at SIGTERM
+        self.close_streams()
         if self._gc_task is not None:
             self._gc_task.cancel()
             self._gc_task = None
@@ -843,9 +765,9 @@ class Lifecycle:
             if live.driver is not None and not live.driver.exited
         ]
 
-        # phase 1 — notify: probe for a run in flight, abort over stdin
-        # for every child with work, BEFORE its stdin closes. Gathered:
-        # the phase costs the slowest child, never the sum.
+        # phase 1 — notify: abort over stdin for every child with a run
+        # in flight, BEFORE its stdin closes; gathered, so the phase costs
+        # the slowest child, not the sum
         async def _notify(session_id: str, d) -> None:
             active = d.run_active
             try:
@@ -872,8 +794,7 @@ class Lifecycle:
             if isinstance(r, Exception):
                 log.warning("drain: notify step failed: %r", r)
 
-        # phase 2 — close: stdin EOF on every child (rung 1); per-child
-        # close is bounded inside close_stdin
+        # phase 2 — close: stdin EOF on every child
         for r in await asyncio.gather(
             *(d.close_stdin() for _session_id, d in drivers),
             return_exceptions=True,
@@ -881,9 +802,8 @@ class Lifecycle:
             if isinstance(r, Exception):
                 log.warning("drain: stdin close failed: %r", r)
 
-        # phase 3 — wait: ONE shared EOF budget for ALL children (clock
-        # started at phase 1), then the ladder escalates: SIGTERM (rung 2),
-        # SIGKILL (rung 3 — the rung that guarantees exit)
+        # phase 3 — wait under ONE shared budget (clock started at phase 1),
+        # then the ladder escalates: SIGTERM, then SIGKILL (guarantees exit)
         def _survivors() -> list[tuple[str, Any]]:
             return [(sid, d) for sid, d in drivers if not d.exited]
 
@@ -916,7 +836,6 @@ class Lifecycle:
         if alive:
             for _sid, d in alive:
                 d.kill()
-            # SIGKILL exits at once; bound the wait for the exit task
             try:
                 await asyncio.wait_for(
                     asyncio.gather(*(d.wait_exited() for _sid, d in alive)),
@@ -928,8 +847,7 @@ class Lifecycle:
                 if d.exited:
                     ended_by[sid] = "SIGKILL"
 
-        # bookkeeping: the drained event (tagged with the rung that ended
-        # a stubborn child), reap the driver's tasks, hand the session
+        # bookkeeping: the drained event, reap driver tasks; the session goes
         # back to the respawn-on-pickup path (mounts and files survive)
         for session_id, live in list(self.live.items()):
             d = live.driver
@@ -958,7 +876,6 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     def any_run_active(self) -> list[str]:
-        """Sessions with a run in flight."""
         return [
             sid
             for sid, live in self.live.items()
@@ -968,9 +885,8 @@ class Lifecycle:
         ]
 
     def start_update_tick(self) -> None:
-        """In-process tick: applies the pending restart + doctor at the
-        first idle moment; defers (and flags the sessions) while a run
-        is active."""
+        """Apply the pending restart + doctor at the first idle moment;
+        defer (and flag the sessions) while a run is active."""
         if self._update_task is None:
             self._update_task = asyncio.get_running_loop().create_task(
                 self._update_loop()
@@ -1000,22 +916,20 @@ class Lifecycle:
         active = self.any_run_active()
 
         if not flag.doctor and not flag.restart:
-            # degenerate (all-false) flag: a lingering FILE would wedge
-            # sync's APPLIED gate and the doctor's update.waiting warn
+            # an all-false flag is degenerate: a lingering file would wedge
+            # sync's APPLIED gate
             from app.update_pending import clear as _clear_flag
             _clear_flag(path)
             return {"no_op": True, "reason": flag.reason}
 
         if flag.doctor and not active:
-            # a doctor run (the in-guest cert): applied inline for a
-            # doctor-only flag, pre-restart cert when restart is staged
+            # the in-guest cert: applied inline for a doctor-only flag,
+            # pre-restart cert when a restart is staged
             result = await self._run_doctor()
             if not flag.restart:
-                # Clear the FILE only on a PASSED cert: the file's
-                # existence means "staged target pending" (sync's APPLIED
-                # gate and update.waiting key on it), and "file gone" is
-                # what sync's post-clear edge probe trusts. Kept on
-                # failure: stays visible, this instance retries next tick.
+                # Clear the FILE only on a PASSED cert: the file's existence
+                # means "staged target pending" (sync's APPLIED gate and
+                # update.waiting key on it); kept on failure, retried next tick.
                 if result.get("ok") is True:
                     from app.update_pending import clear as _clear_flag
                     _clear_flag(path)
@@ -1026,11 +940,10 @@ class Lifecycle:
                 )
                 return {"doctor_failed": True, "rc": result.get("rc")}
             if result.get("ok") is False:
-                # A pre-restart doctor FAIL must not hold the staged
-                # restart (provisioning: the image ships keyless env
-                # defaults, so the pre-restart doctor can never pass
-                # until the restart injects the keys). The post-restart
-                # tick re-runs the doctor on the new state.
+                # A pre-restart doctor FAIL must not hold the staged restart:
+                # the image ships keyless env defaults, so the pre-restart
+                # doctor can never pass until the restart injects the keys.
+                # The post-restart tick re-runs the doctor on the new state.
                 log.error(
                     "update doctor (pre-restart cert) failed — proceeding "
                     "with the staged restart anyway:\n%s",
@@ -1070,9 +983,9 @@ class Lifecycle:
         return {"no_op": True, "reason": flag.reason}
 
     async def _run_doctor(self) -> dict:
-        """Run the guest doctor in a subprocess (own venv on the guest,
-        test override elsewhere). Bounded: 600 s subprocess timeout.
-        Inherits the service environment (the 0600 env file)."""
+        """Run the guest doctor in a subprocess (own venv on the guest;
+        test override elsewhere). Bounded: 600 s; inherits the service
+        environment (the 0600 env file)."""
         import sys
 
         cmd = self.cfg.doctor_cmd
@@ -1121,20 +1034,16 @@ class Lifecycle:
                 log.exception("gc tick failed")
 
     async def gc_tick(self) -> list[str]:
-        """Release sessions idle > gc_idle_days (not stable, not
-        running); sweep abandoned fork transcripts past the orphan
-        grace; disk pressure releases the oldest non-stable until
-        headroom; registry GC drops FREE rows past the retention.
-        Slot pressure is handled at allocation."""
+        """Release sessions idle > gc_idle_days (not stable, not running);
+        sweep abandoned fork transcripts past the orphan grace; disk
+        pressure releases the oldest non-stable until headroom; registry
+        GC drops FREE rows past the retention."""
         if self.shutting_down:
             return []
         released: list[str] = []
-        # pool-ownership guard shared by both release passes below: a row
-        # on a slot outside --slots (shrunk/renamed under it) is never
-        # releasable from here — Lifecycle.release refuses it with
-        # SlotOutsidePool, which would raise out of gc_tick and skip the
-        # disk-pressure section on every tick (the volume's automatic
-        # protection, lost until the row is hand-fixed)
+        # rows on slots outside this app's pool are never releasable from
+        # here (release would raise SlotOutsidePool and skip the rest of the
+        # tick): skip them in both release passes
         owned = set(self.cfg.pool.slots)
         # orphan sweep first: the reclaimed space may be the headroom
         await self.gc_orphaned_files()
@@ -1152,7 +1061,7 @@ class Lifecycle:
             res = await self.release(row.id, reason="idle GC")
             if res.released:
                 released.append(row.id)
-        # disk pressure (same pool-ownership guard as slot pressure)
+        # disk pressure
         if await asyncio.to_thread(self._disk_near_full):
             for row in sorted(
                 (r for r in self.cfg.registry.list_sessions()
@@ -1164,12 +1073,8 @@ class Lifecycle:
                 res = await self.release(row.id, reason="disk pressure")
                 if res.released:
                     released.append(row.id)
-        # registry GC: FREE rows are dead rows (slot released, transcript
-        # areas deleted) — the docstring promises they are deleted here.
-        # Without this call they accumulate forever and are rescanned by
-        # every pass above on every tick. Synchronous, like the rest of
-        # the registry access in this tick (the connection is thread-
-        # bound); one DELETE on a small table is microseconds.
+        # registry GC: FREE rows are dead rows; without this they
+        # accumulate forever and are rescanned on every pass above
         dropped = self.cfg.registry.delete_released(
             time.time() - FREE_ROW_RETENTION_SEC
         )
@@ -1181,13 +1086,11 @@ class Lifecycle:
         live = self.live.get(session_id)
         if live is None or live.driver is None or live.driver.exited:
             return False
-        # a live process counts as running unless we know it is settled
         return True
 
     async def ensure_alive(self, session_id: str) -> dict:
         """Panel action `start`: make sure the session's process is up.
-        Live ⇒ no-op; dead with a transcript ⇒ respawn; no transcript ⇒
-        idle (nothing to start). Never starts a run."""
+        Never starts a run."""
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
@@ -1200,7 +1103,7 @@ class Lifecycle:
         return {"alive": True, "respawned": True}
 
     # ------------------------------------------------------------------ #
-    # transcript fetch (reattach on load — fetch, never replay)
+    # transcript fetch (reattach on load)                                 #
     # ------------------------------------------------------------------ #
 
     def _live_driver(self, session_id: str):
@@ -1225,18 +1128,17 @@ class Lifecycle:
         return out
 
     async def fetch_messages(self, session_id: str) -> dict[str, Any]:
-        """Authoritative active-branch messages (UI reattach base):
-        pi RPC get_entries with a live process, the session file on
-        disk otherwise. Returns {leaf_id, cursor, messages}."""
+        """Authoritative active-branch messages (the UI's reattach base):
+        pi RPC get_entries with a live process, the session file on disk
+        otherwise. Returns {leaf_id, cursor, messages}."""
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
         driver = self._live_driver(session_id)
-        # cursor FIRST: it is the hub position before the (awaiting)
-        # entries read; a concurrent event in between duplicates an entry
-        # the snapshot already contains (the client dedupes by id), while
-        # the reverse order would silently skip the tail. A session with
-        # no hub (never spawned, or already released) has no ring: 0.
+        # cursor FIRST: it is the hub position before the (awaiting) entries
+        # read — the reverse order would silently skip a concurrent tail
+        # event (a duplicate is harmless; the client dedupes by id).
+        # No hub (never spawned, or released) → 0.
         hub = self.hub(session_id)
         cursor = hub.latest_id if hub is not None else 0
         if driver is not None:
@@ -1272,19 +1174,18 @@ class Lifecycle:
 
     async def retire_after_write(self, session_id: str, driver) -> None:
         """After an accepted write on the live process: re-sync the
-        registry to the process's file and retire the orphaned session
-        files (the accepted write is what confirms a fork — until it
-        lands the abandoned file stays put)."""
+        registry and retire orphaned session files (the accepted write is
+        what confirms a fork — until it lands the abandoned file stays put).
+        """
         await self._live_sync_file(session_id, driver)
         self.retire_orphaned_files(session_id)
 
     def retire_orphaned_files(self, session_id: str) -> int:
         """Delete the session files the registry no longer points at
-        (orphaned by a fork). Call only after a write extended the
-        active file: an unconfirmed orphan is still recoverable and is
-        reclaimed by the grace-bounded sweep anyway. Best-effort: a
-        failure leaves the file — deletion is a space optimization,
-        never a correctness gate. Returns the number deleted."""
+        (orphaned by a fork). Call only after a write extended the active
+        file: an unconfirmed orphan is still recoverable and is reclaimed
+        by the grace-bounded sweep anyway. Best-effort; returns the number
+        deleted."""
         row = self.cfg.registry.get(session_id)
         if row is None or not row.session_file:
             return 0
@@ -1307,10 +1208,10 @@ class Lifecycle:
         return swept
 
     async def gc_orphaned_files(self) -> int:
-        """Sweep orphaned transcripts in sessions past the grace
-        (ORPHAN_IDLE_GRACE_SEC): forks never confirmed by a write.
-        Safe with a live process: re-sync first so the sweep never
-        touches the file being written. Returns the number deleted."""
+        """Sweep orphaned transcripts in sessions past the orphan grace
+        (forks never confirmed by a write). Safe with a live process:
+        re-sync first so the sweep never touches the file being written.
+        Returns the number deleted."""
         cutoff = time.time() - ORPHAN_IDLE_GRACE_SEC
         swept = 0
         for row in self.cfg.registry.list_sessions():
@@ -1319,7 +1220,7 @@ class Lifecycle:
             driver = self._live_driver(row.id)
             if driver is not None:
                 # a live process may sit on a file the registry has not
-                # flipped to yet (lazy fork file): sync first
+                # flipped to yet (lazy fork file)
                 await self._live_sync_file(row.id, driver)
             swept += self.retire_orphaned_files(row.id)
         if swept:
@@ -1330,9 +1231,9 @@ class Lifecycle:
     async def _sync_session_file(self, session_id: str, driver) -> None:
         """Follow the process's sessionFile after a fork (pi creates the
         new file lazily, on the next write). The abandoned file is NOT
-        deleted here — retirement waits for the next accepted write, so
-        an unconfirmed fork stays recoverable. The registry must never
-        point at a missing file (the probe/respawn/disk paths trust it)."""
+        deleted here — retirement waits for the next accepted write, so an
+        unconfirmed fork stays recoverable. The registry must never point
+        at a missing file."""
         try:
             st = await driver.get_state()
             new_file = st.get("sessionFile")
@@ -1360,10 +1261,9 @@ class Lifecycle:
         return row.session_file if row else None
 
     async def fork(self, session_id: str, entry_id: str) -> dict[str, Any]:
-        """Fork from a previous user message ("edit that message").
-        Dead process ⇒ respawn first, then the RPC. An extension-
-        canceled fork passes ``cancelled`` through: nothing is synced
-        (nothing can be orphaned)."""
+        """Fork from a previous user message. Dead process ⇒ respawn
+        first, then the RPC. An extension-canceled fork passes `cancelled`
+        through: nothing is synced (nothing can be orphaned)."""
         row = self.cfg.registry.get(session_id)
         if row is None:
             raise KeyError(session_id)
@@ -1389,9 +1289,7 @@ class Lifecycle:
 
     async def _release_oldest_for_pressure(self) -> bool:
         """Slot pressure: release the oldest non-stable non-running
-        session. All running ⇒ False (the new session's start is
-        refused). Rows on slots outside this app's pool are never
-        releaseable here."""
+        session. All running ⇒ False (the start is refused)."""
         owned = set(self.cfg.pool.slots)
         candidates = sorted(
             (
@@ -1412,16 +1310,12 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     def _drop_session_state(self, session_id: str) -> None:
-        """Drop the session's in-memory state at a TERMINAL transition
-        (release, aborted start). The hub's ring can hold up to
-        sse_ring_bytes (default 50 MB) and _probe_cache holds probe
-        results — without this, _hubs grows one entry per session for
-        the life of the process: the 50 MB cap is per-LIVE-session, not
-        per-session-since-boot. The hub is closed, not just popped, so
-        in-flight streams end now (the client re-fetches, gets 404, and
-        stops retrying) and close_streams' SIGTERM contract still holds.
-        Never call this from idle-kill: the row survives, pickup
-        respawns, and clients re-attach to the same hub."""
+        """Drop the session's in-memory state at a terminal transition.
+        The hub's ring (up to sse_ring_bytes) and _probe_cache would
+        otherwise live one entry per session to process end. The hub is
+        closed, not just popped, so in-flight streams end now. Never call
+        this from idle-kill: pickup respawns and clients re-attach to the
+        same hub."""
         hub = self._hubs.pop(session_id, None)
         if hub is not None:
             hub.close()
@@ -1431,18 +1325,12 @@ class Lifecycle:
     async def release(self, session_id: str, *, reason: str = "user close") -> Any:
         """Concurrent-release idempotency in front of the single cleanup
         path: a second release for a session whose release is already in
-        flight (a panel double-tap, a user close racing gc_tick or the
-        slot/disk pressure release — all on one loop) does NOT re-enter
-        release_session; it shares the in-flight task and gets the same
-        outcome. Pre-fix the re-entry ran release_session's first step,
-        pool.mark_cleaning, on a slot already 'cleaning' (release_session
-        marks it before suspending at its first await) and raised
-        SlotQuarantined, which propagated through Lifecycle.release and
-        the /release and /panel action routes (neither catches it) to the
-        500 handler: a spurious error banner on a normal double-tap. The
-        shared task is shielded: one caller disconnecting — or a GC tick
-        being cancelled — never cancels the cleanup the other callers
-        are waiting for."""
+        flight (panel double-tap, user close racing gc_tick or the
+        slot/disk pressure release) does NOT re-enter release_session; it
+        shares the in-flight task and gets the same outcome. The shared
+        task is shielded: one caller disconnecting — or a GC tick being
+        cancelled — never cancels the cleanup the other callers are
+        waiting for."""
         task = self._release_tasks.get(session_id)
         if task is not None and not task.done():
             return await asyncio.shield(task)
@@ -1456,12 +1344,9 @@ class Lifecycle:
     def _release_task_done(self, session_id: str, task: "asyncio.Task") -> None:
         """Drop a finished in-flight release entry. The identity check
         matters: a FRESH release may have registered a newer task before
-        this callback ran (the old task finished between its last await
-        and this loop iteration). A failed task whose callers are all
-        gone would otherwise surface only as 'exception was never
-        retrieved' at GC — log it here instead; the slot is left
-        'cleaning' and the row DRAINING, which boot reconciliation and
-        the quarantine retry own."""
+        this callback ran. A failed task whose callers are all gone would
+        otherwise surface only as 'exception was never retrieved' at GC —
+        log it here instead."""
         if self._release_tasks.get(session_id) is task:
             del self._release_tasks[session_id]
         if not task.cancelled():
@@ -1475,18 +1360,12 @@ class Lifecycle:
         if row is None:
             raise KeyError(session_id)
         if row.slot not in self.cfg.pool.slots:
-            # --slots was shrunk/renamed under an existing row: pool.get
-            # would KeyError out of EVERY release path (idle GC tick,
-            # POST /release, panel action — 500s, gc_tick aborted forever).
-            # Refuse with the typed error the API maps to 4xx instead; the
-            # row is only fixable by restoring the slot name or editing the
-            # registry (doctor: slots.off_pool_rows flags it).
+            # the row's slot is outside this pool: refuse with the typed
+            # error the API maps to 4xx, rather than let pool.get KeyError
+            # out of every release path (doctor: slots.off_pool_rows)
             raise SlotOutsidePool(session_id, row.slot)
         live = self.live.get(session_id)
         slot = self.cfg.pool.get(row.slot)
-        # a session with a live run is never released by pressure/GC —
-        # the caller guarantees; a user close releases after abort-then-
-        # drain (the driver is shut down by release_session's ladder)
         outcome = await release_session(
             session_id=session_id,
             slot=slot,
@@ -1504,8 +1383,6 @@ class Lifecycle:
                 except Exception:
                     pass
             self.live.pop(session_id, None)
-        # after release_session's events (release_start, released) have
-        # landed in the ring: dropping the hub is the terminal move
         self._drop_session_state(session_id)
         return outcome
 
@@ -1516,10 +1393,10 @@ class Lifecycle:
 
 
 def extension_names(sp: SessionMountPaths, ext_path: str | None) -> tuple[str, ...]:
-    """Loaded extension set as the app sees it before spawn: the
-    explicit -e paths plus the agent dir's extensions dir (one level
-    deep, pi's discovery rule). Shared by the registry recorder and the
-    doctor's standalone probe (no registry row)."""
+    """Loaded extension set as the app sees it before spawn: the explicit
+    -e paths plus the agent dir's extensions dir (one level deep, pi's
+    discovery rule). Shared by the registry recorder and the doctor's
+    standalone probe (no registry row)."""
     names: list[str] = []
     if ext_path:
         names.append(Path(ext_path).name)
@@ -1550,10 +1427,8 @@ def transcript_unsettled(path: str) -> bool:
 
     last_message: dict | None = None
     try:
-        # the session dir is slot-owned: a planted link must not make the
-        # root app read a root-readable target at boot. A tampered
-        # transcript is judged UNSETTLED: the session gets marked
-        # interrupted and lands in the operator's view.
+        # a planted link must not make the root app read a root-readable
+        # target at boot: tampered = unsettled = marked interrupted
         if stat.S_ISLNK(os.lstat(path).st_mode):
             return True
         with open(path) as f:
@@ -1594,7 +1469,6 @@ def _lower_for_version(config_root: str, version: str) -> str | None:
 
 
 async def _probe_command(driver: PiSession, which: str) -> Any:
-    """get_messages / get_session_stats — no model call."""
     if which == "messages":
         return await driver.get_messages()
     if which == "stats":

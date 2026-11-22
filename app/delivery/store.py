@@ -2,13 +2,13 @@
 inbox), outbox, manifests.
 
 Guarantees: no truncation, no caps (uploads stream to a spooled temp
-file, hashed incrementally); byte-identical (the sha256 is computed
-while streaming and the VERIFIED part is what lands in the inbox); MIME
-by magic bytes, never the extension; no half-files (crash drill) — an
-upload is visible only after it is staged, verified, and renamed into
-the session inbox (atomic: staging and inbox share the state volume's
-filesystem). A crash before that leaves the part in staging, swept by
-the boot GC — nothing half-visible, and no second copy is kept around.
+file, hashed incrementally); byte-identical (the sha256 is computed while
+streaming and the VERIFIED part is what lands in the inbox); MIME by magic
+bytes, never the extension; no half-files (crash drill) — an upload is
+visible only after it is staged, verified, and renamed into the session
+inbox (atomic: staging and inbox share the state volume's filesystem). A
+crash before that leaves the part in staging, swept by the boot GC —
+nothing half-visible, and no second copy is kept around.
 """
 from __future__ import annotations
 
@@ -96,12 +96,11 @@ class Staging:
 _sha_lock = threading.Lock()
 _SHA_CACHE: OrderedDict[tuple, str] = OrderedDict()
 # Bounded: the key includes (size, mtime), so every file VERSION ever hashed
-# gets its own entry and a superseded entry is never read again — nothing
-# is ever evicted on rewrite or delete. Uncapped, a long-running process
-# watching a growing artifact leaks ~300 B per version (the outbox view
-# polls every 4 s). FIFO is the right order: the oldest version is the one
-# no live listing will ever request again; if a live file is evicted, the
-# next listing re-hashes it once (CPU, not correctness).
+# gets its own entry and a superseded entry is never read again. Uncapped, a
+# long-running process watching a growing artifact leaks ~300 B per version
+# (the outbox view polls every 4 s). FIFO evicts the oldest version first;
+# if a live file is evicted, the next listing re-hashes it once (CPU, not
+# correctness).
 _SHA_CACHE_MAX = 4096  # ≈1.3 MB worst case
 _SHA_PENDING: set[tuple] = set()
 
@@ -137,8 +136,8 @@ def _manifest_lock(manifest_path: Path) -> threading.Lock:
 
     Module-level, not on SessionFiles: every request builds a fresh
     SessionFiles, so an instance attribute would serialize nothing.
-    One entry per manifest path ever seen — bounded by the session
-    count for the process's life (the update path restarts the app).
+    One entry per manifest path ever seen — bounded by the session count
+    for the process's life (the update path restarts the app).
     """
     key = str(manifest_path)
     with _manifest_lock_guard:
@@ -179,7 +178,6 @@ class SessionFiles:
         # outbox is created lazily: it lives in the merged workdir and is
         # (re)created by mount_session; mkdir here only matters unmounted
         # (harmless: it lands in the overlay upper)
-
     def _chown(self, p: Path) -> None:
         if self.slot is not None:
             try:
@@ -202,12 +200,11 @@ class SessionFiles:
             return {"uploads": []}
 
     def register_upload(self, f: DeliveredFile) -> None:
-        # The read-modify-write is serialized on the process-wide lock
-        # (see _manifest_lock): every request builds a fresh SessionFiles,
-        # so without it two concurrent uploads to the same session would
-        # both read the manifest and the last write wins — the earlier
-        # upload lands in the inbox but never in the manifest, so it is
-        # invisible in the UI.
+        # The read-modify-write is serialized on the process-wide lock:
+        # every request builds a fresh SessionFiles, so without it two
+        # concurrent uploads to the same session would both read the
+        # manifest and the last write wins — the earlier upload lands in
+        # the inbox but never in the manifest.
         with _manifest_lock(self.manifest_path):
             man = self.read_manifest()
             man["uploads"] = [u for u in man.get("uploads", []) if u["name"] != f.name]
@@ -216,11 +213,10 @@ class SessionFiles:
             )
             # The slot owns this directory and the app runs as root: the temp
             # name is FIXED, so a planted ``files.json.tmp`` symlink must never
-            # be written through (that truncates/overwrites the target as root).
-            # O_EXCL|O_NOFOLLOW fails closed on any pre-existing name, symlink
-            # or otherwise; only a stale REGULAR file (a crash between open and
-            # replace) is recovered — unlink it and retry once. os.replace below
-            # swaps the name itself, never follows the manifest.
+            # be written through (that overwrites the target as root).
+            # O_EXCL|O_NOFOLLOW fails closed on any pre-existing name; only a
+            # stale REGULAR file (a crash between open and replace) is
+            # recovered — unlink it and retry once.
             tmp = self.manifest_path.with_suffix(".json.tmp")
             try:
                 fd = os.open(
@@ -229,9 +225,8 @@ class SessionFiles:
                     0o600,
                 )
             except FileExistsError:
-                # name already exists: only a stale REGULAR file (a crash
-                # between open and replace) is recoverable; anything else
-                # (a planted link) fails closed
+                # only a stale REGULAR file (a crash between open and replace)
+                # is recoverable; anything else (a planted link) fails closed
                 st = os.lstat(tmp)
                 if not stat.S_ISREG(st.st_mode):
                     raise DeliveryError(
@@ -261,17 +256,15 @@ class SessionFiles:
 
     def deliver(self, part: Path, name: str) -> str:
         """Hand the verified staged file to the inbox: chown to the slot,
-        then atomic rename. Staging and inbox share the state volume's
+        then atomic rename (staging and inbox share the state volume's
         filesystem, so the final name appears whole and slot-owned in one
-        step — the agent never sees a root-owned or partially-written
-        file, and a crash before the rename leaves the part in staging
-        for the boot GC, never a half file under the real name.
+        step; a crash before the rename leaves the part in staging for the
+        boot GC, never a half file under the real name).
 
         Returns the name the file actually landed under (``_safe_name``
-        of the requested name — a leading-dot upload like ``.env``
-        lands as ``env``): the caller must record THAT name in the
-        manifest, or the entry can never match ``os.listdir(inbox)``
-        and the upload is invisible in GET /files forever.
+        of the requested name — a leading-dot upload like ``.env`` lands as
+        ``env``): the caller must record THAT name in the manifest, or the
+        entry can never match ``os.listdir(inbox)``.
         """
         safe = _safe_name(name)
         dest = self.inbox / safe
@@ -289,8 +282,8 @@ class SessionFiles:
     def list_outbox(self) -> list[dict]:
         # sha256 is computed LAZILY in a background thread, cached per
         # (session, path, size, mtime): a multi-GB artifact must not be
-        # re-hashed on every listing. The UI shows whatever is cached
-        # (null while the first hash is still running).
+        # re-hashed on every listing (the UI shows null while the first
+        # hash is still running).
         sid = self.session_dir.name
         out = []
         if not self.outbox.is_dir():
@@ -304,10 +297,9 @@ class SessionFiles:
                 except OSError:
                     continue
                 # the outbox is slot-owned: a planted link must not be
-                # root-read (the lazy hash and the mime sniff would open
-                # the target) or advertised in the listing (a link to a
-                # root file would expose its existence/size in the UI).
-                # Symlinked artifacts are not a documented feature: skip.
+                # root-read (the lazy hash and the mime sniff would open the
+                # target) or advertised in the listing (a link to a root file
+                # would expose its existence/size in the UI). Skip.
                 if stat.S_ISLNK(st.st_mode):
                     continue
                 key = (sid, rel, st.st_size, st.st_mtime)

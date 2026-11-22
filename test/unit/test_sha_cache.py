@@ -1,9 +1,9 @@
-"""Unit: F37 — the outbox sha256 cache must be bounded.
+"""Unit: the outbox sha256 cache must be bounded.
 
-``_SHA_CACHE`` is keyed ``(sid, rel, size, mtime)`` and the old code only
-ever inserted: every file VERSION ever hashed (each rewrite of a growing
-artifact between the 4 s outbox polls) kept its entry for the process's
-life, and so did entries for deleted files.
+``_SHA_CACHE`` is keyed ``(sid, rel, size, mtime)``, so every file
+VERSION ever hashed (each rewrite of a growing artifact between the 4 s
+outbox polls) gets its own entry. Unbounded, those entries — and entries
+for deleted files — would accumulate for the process's life.
 
 Pinned here:
 - churning one file never grows the cache past ``_SHA_CACHE_MAX``;

@@ -6,9 +6,9 @@ accumulated message) bound a single context window's SSE volume far
 below 50 MB, so exercising the mechanism end-to-end at 50 MB in one
 run is impossible by construction.
 
-The ring is a replay buffer only: the run never feeds back on delivery
-(invariant 4). A slow consumer falls behind the ring, gets a gap, and
-re-syncs via the API — the hub never blocks it or the run.
+The ring is a replay buffer only: the run never feeds back on delivery.
+A slow consumer falls behind the ring, gets a gap, and re-syncs via
+the API — the hub never blocks it or the run.
 """
 from __future__ import annotations
 

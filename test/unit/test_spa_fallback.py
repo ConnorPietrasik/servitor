@@ -5,7 +5,7 @@ route (API/panel/healthz routes are registered earlier and win). The
 path arrives percent-decoded (``%2f`` == ``/``), so a name that is
 lexically inside ``ui/dist`` can still walk out via ``..`` — and the
 app runs as root, so an uncontained path is a root file-read
-(/etc/servitor/servitor.env holds the only secrets, invariant 5).
+(/etc/servitor/servitor.env holds the only secrets).
 The fallback serves only files that RESOLVE inside the dist (an
 escaping symlink fails the check too); anything else falls back to
 the SPA index — an indistinguishable 200, never a leak of the

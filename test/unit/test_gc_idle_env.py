@@ -1,6 +1,6 @@
 """SERVITOR_GC_IDLE_DAYS must reach the running lifecycle.
 
-Regression (F4): load_http_config parsed and validated the env value into
+Regression: load_http_config parsed and validated the env value into
 Config.gc_idle_days, but run_http copied only cfg.sse_ring_bytes into the
 lifecycle — LifecycleConfig.gc_idle_days came solely from the --gc-idle-days
 CLI default (14.0), which the guest unit never passes (ExecStart is

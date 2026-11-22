@@ -40,9 +40,9 @@ done
 set -a; source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE"); set +a
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
 : "${SERVITOR_PORT:=8787}"
-# the edge credential (invariant 3): the key-gate probes below compare the
+# the edge credential: the key-gate probes below compare the
 # app's verdict against this .env's value
-: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential, invariant 3)}"
+: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential)}"
 # The keyed probe carries it on a quoted curl-config line via stdin (curl
 # -K -), never argv: /proc/<pid>/cmdline is world-readable (unlike environ),
 # so a secret on argv would leak to every local uid for the life of the
@@ -86,7 +86,7 @@ else
   PROBE_RC=1
 fi
 
-# key gate (invariant 3): the app must REJECT the keyless request and ADMIT
+# key gate: the app must REJECT the keyless request and ADMIT
 # the keyed one — proves the credential is enforced, the guest env key
 # matches THIS .env, and the edge contract holds end-to-end (the firewall
 # admits the whole edge subnet, so without the gate any neighbor container

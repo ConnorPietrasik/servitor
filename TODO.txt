@@ -1,4 +1,5 @@
 Add more inbox / outbox management
+Add a stricter sandbox mode; read-only tools and no internet access for the model
 Add model switching
 Add image / video gen calls
 Add SearXNG integration

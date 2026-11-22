@@ -20,16 +20,16 @@ from dataclasses import dataclass
 # --- image-baked guest paths -----------------------------------------------
 
 # Baked toolkit — overlay lower of every session workdir. Root-owned 0755,
-# a plain directory, never a mount. Must contain no context files
-# (image gate asserts).
+# a plain directory, never a mount. Must contain no context files (image gate
+# asserts).
 TOOLKIT_DIR = "/opt/toolkit"
 
-# pi-web-access install root. Created by the sync pipeline (stage +
-# rename), never baked into the image.
+# pi-web-access install root. Created by the sync pipeline (stage + rename),
+# never baked into the image.
 PI_EXT_DIR = "/opt/pi-ext/pi-web-access"
 
-# npm prefix for the pinned pi install. The absolute CLI path is a
-# constant in the harness — never PATH resolution.
+# npm prefix for the pinned pi install. The absolute CLI path is a constant in
+# the harness — never PATH resolution.
 PI_PREFIX = "/opt/servitor/pi"
 NODE_BIN = "/usr/bin/node"  # LTS, pinned by the image build
 PI_CLI_JS = f"{PI_PREFIX}/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js"
@@ -99,11 +99,7 @@ def state_paths(root: str) -> StatePaths:
 
 @dataclass(frozen=True)
 class SessionMountPaths:
-    """Per-session scratch layout.
-
-    Mounted at allocate, before any spawn/respawn; live for the session
-    lifetime (idle-kill never unmounts — only release does).
-    """
+    """Per-session scratch layout (paths under ``scratch/<s>/``)."""
 
     session_id: str
     scratch: str  # scratch/<s>/

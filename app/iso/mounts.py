@@ -76,8 +76,7 @@ def ensure_session_dirs(sp: SessionMountPaths, state: StatePaths) -> None:
 
     Note: the inbox BIND TARGET (``workdir/inbox``) is created only AFTER
     the workdir overlay is mounted (the target must exist in the merged
-    view; a bind onto a missing target fails), and is chowned to the slot
-    uid by the caller before the agent can see it — see mount_session.
+    view; a bind onto a missing target fails) — see mount_session.
     """
     for d in (
         sp.scratch,
@@ -142,20 +141,18 @@ def mount_session(
     toolkit_dir: str = TOOLKIT_DIR,
     agent_dir_ro: bool = False,
 ) -> list[MountOp]:
-    """The full ordered mount sequence. Returns the ops (for
-    reverse-order teardown at release).
+    """The full ordered mount sequence. Returns the ops (for reverse-order
+    teardown at release).
 
-    ``scratch/<s>/`` is slot-uid-owned: the app
-    creates the dirs as root, then hands the whole per-session tree to
-    the slot BEFORE any mount — a root-owned 0755 upper would be
-    unwritable by the very session it exists for (the agent runs as the
-    slot uid). The outbox dir (the workdir convention, SYSTEM.md) is
-    likewise chowned once it exists in the merged view.
+    ``scratch/<s>/`` is slot-uid-owned: the app creates the dirs as root,
+    then hands the whole per-session tree to the slot BEFORE any mount — a
+    root-owned 0755 upper would be unwritable by the very session it exists
+    for (the agent runs as the slot uid).
     """
-    # scratch/<s>/ is slot-owned and survives a reboot: on a re-mount the
-    # agent may have replaced a canonical path (upper, work, ...) with a
-    # symlink. A plain chown or mount(2) would follow it: gate EVERY
-    # canonical name before anything touches it.
+    # scratch/<s>/ is slot-owned and survives a reboot: on a re-mount the agent
+    # may have replaced a canonical path (upper, work, ...) with a symlink.
+    # A plain chown or mount(2) would follow it: gate EVERY canonical name
+    # before anything touches it.
     for d in (
         sp.scratch,
         sp.upper,
@@ -172,7 +169,7 @@ def mount_session(
     # Hand the trees to the slot: one walk per TOP-LEVEL root — every
     # per-session scratch child (upper, work, workdir, agent_*, web_cache)
     # already sits under sp.scratch, so per-child chowns would re-walk the
-    # same entries (8 walks instead of 3, and web_cache grows).
+    # same entries.
     for root in (
         sp.scratch,
         state.inbox_for(sp.session_id),
@@ -267,8 +264,8 @@ def unmount_all(ops: list[MountOp]) -> list[str]:
             op.unmount()
             unmounted.append(op.target)
         except MountError as exc:
-            # a stuck mount is a release failure: it gets reported (the
-            # sweep will see the mountpoint), never silently skipped
+            # a stuck mount is a release failure: it gets reported (the sweep
+            # will see the mountpoint), never silently skipped
             raise
     return unmounted
 

@@ -9,16 +9,16 @@ order: this file, then `deploy/README.md` (the contract) and
 provisioned once by `deploy/sync.sh`. Two gates, both on the traefik
 route: the portcullis auth chain (Authelia 2FA) authenticates the user,
 and the `servitor-edge` middleware injects the edge credential
-(`X-Servitor-Edge-Key`) which the app re-verifies on every route
-(invariant 3) — the guest firewall admits the port from the WHOLE edge
-subnet, so the credential is what stops a neighbor container from
-driving the agent unauthed.
+(`X-Servitor-Edge-Key`) which the app re-verifies on every route — the
+guest firewall admits the port from the WHOLE edge subnet, so the
+credential is what stops a neighbor container from driving the agent
+unauthed.
 
 ```
 ┌─ portcullis server ─────────────────────────────────────────────┐
 │  traefik (docker "edge" net) ──br-<edge>──► servitor VM         │
 │        :443 (2FA + edge key)  VM_IP:8787  (nft: edge subnet;    │
-│                                app key-gated, invariant 3)     │
+│                                app key-gated)                   │
 │  host checkout /opt/servitor-repo ──ssh(deploy key)──► VM root  │
 │        deploy/sync.sh · doctor.sh · update.sh                   │
 └─────────────────────────────────────────────────────────────────┘
@@ -95,7 +95,7 @@ Set (everything else may stay at defaults):
 # secrets (from the secret store)
 OMNISSIAH_API_KEY=<router bearer key>
 EXA_API_KEY=<exa key>
-# the edge credential (invariant 3): generate ONE value and set it in BOTH
+# the edge credential: generate ONE value and set it in BOTH
 # places — here (the guest's copy: the image build bakes it in, the sync's
 # key slice re-injects it) and portcullis's .env (the servitor-edge
 # middleware's source). A mismatch 403s the whole UI; portcullis `make
@@ -282,7 +282,7 @@ entries. If the server's portcullis clone pre-dates that merge, pull it first.
    port 8787 (same value as `SERVITOR_VM_IP` in this repo's `.env` — the
    route file is the second place that value lives; keep them in sync).
    The route's second middleware (`servitor-edge@file`, the edge
-   credential — invariant 3) lives in portcullis's
+   credential) lives in portcullis's
    `compose/traefik/dynamic/middlewares.yml`, its value sedded from
    portcullis's `.env` (`SERVITOR_EDGE_KEY` — the one you set in §3);
    if the clone pre-dates it, pull portcullis first. The portcullis
@@ -310,7 +310,7 @@ entries. If the server's portcullis clone pre-dates that merge, pull it first.
 ```bash
 virsh domstate servitor                      # running
 curl -s -H "X-Servitor-Edge-Key: $SERVITOR_EDGE_KEY" \
-     http://$SERVITOR_VM_IP:8787/healthz     # ok (from the host; invariant 3)
+     http://$SERVITOR_VM_IP:8787/healthz     # ok (from the host)
 curl -s -o /dev/null -w '%{http_code}' \
      http://$SERVITOR_VM_IP:8787/healthz     # 403 (keyless — the gate is on)
 deploy/doctor.sh                             # RESULT: GREEN (incl. both key probes)
@@ -361,7 +361,7 @@ UI's built dist at `/opt/servitor/app/ui/dist` (host vite build at image
 time; sync.sh refreshes it for `ui/`-only changes), the toolkit at
 `/opt/toolkit`, pi 1.5.2 at the pinned global npm path, nftables
 default-deny (edge-subnet 8787, LAN-only 22 — and the app is
-key-gated on every route on top, invariant 3), resolved with the public
+key-gated on every route on top), resolved with the public
 upstream, systemd units (`servitor`, `servitor-firewall`), the 0600 env
 file with the deploy defaults INCLUDING the baked edge key (first boot is
 already gated; rotation re-injects via the sync's key slice), and the

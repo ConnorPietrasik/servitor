@@ -3,8 +3,8 @@ unit tests.
 
 The doctor runs in-guest with the guest env file sourced (the host's
 deploy/doctor.sh does ``set -a; . /etc/servitor/servitor.env`` before
-``python -m app.doctor``). In production the app key-gates EVERY route
-(invariant 3 — EdgeKeyMiddleware in app/api/app.py), so the probe must
+``python -m app.doctor``). In production the app key-gates every route
+(EdgeKeyMiddleware in app/api/app.py), so the probe must
 present SERVITOR_EDGE_KEY: a keyless probe against a healthy, gated app
 403s and turns ``ui.index`` (and with it the whole guest certification)
 red. A loopback http.server stands in for the app and replicates exactly

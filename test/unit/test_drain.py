@@ -338,7 +338,7 @@ def test_aborted_settle_cannot_unmark_the_drain(tmp_path):
     agent_settled lands on the event loop a tick after the drain's
     mark_interrupted. The settle must not clear the mark — the run was
     interrupted on purpose, and the flag is the only meter a parked
-    session has (F36)."""
+    session has."""
     d = FakeDriver(run_active=True, get_state={"isStreaming": True},
                    settle_on_abort=True)
     lc = _lc(tmp_path, grace=1.0)

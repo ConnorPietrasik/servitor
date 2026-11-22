@@ -245,8 +245,8 @@ def main() -> int:
     )
     check(
         "servitor-edge@file" in router.get("middlewares", []),
-        "route uses the servitor-edge credential middleware (invariant 3: "
-        "the app re-verifies X-Servitor-Edge-Key on every route)",
+        "route uses the servitor-edge credential middleware "
+        "(the app re-verifies X-Servitor-Edge-Key on every route)",
     )
     lb = route["http"]["services"]["servitor"]["loadBalancer"]
     urls = [s["url"] for s in lb.get("servers", [])]
@@ -289,7 +289,7 @@ def main() -> int:
         )
         check(
             prov.get("apiKey") == "$OMNISSIAH_API_KEY",
-            f"provider {pid}: apiKey is $OMNISSIAH_API_KEY (env-only, invariant 5)",
+            f"provider {pid}: apiKey is $OMNISSIAH_API_KEY (env-only, never on disk)",
             str(prov.get("apiKey")),
         )
         model_ids = [m["id"] for m in prov.get("models", [])]

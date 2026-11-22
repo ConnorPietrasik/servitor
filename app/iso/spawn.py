@@ -1,15 +1,12 @@
 """Setuid spawn helper (root app, slot-uid agent).
 
 The app runs privileged (root); the agent never is. Each session's pi
-runs as a slot uid. The invariant "the agent's uid is never the app's
-uid" is what makes the read-only mounts real.
+runs as a slot uid. This helper: asserts the caller is root (fail closed),
+spawns with ``preexec_fn`` setgid/setuid, and asserts the child's uid from
+/proc after spawn (the helper asserts; the caller trusts nothing).
 
-This helper: asserts the caller is root (fail closed), spawns with
-``preexec_fn`` setgid/setuid, and asserts the child's uid from /proc
-after spawn (the helper asserts; the caller trusts nothing).
-
-asyncio note: ``create_subprocess_exec`` runs ``preexec_fn`` in the
-forked child before exec; it must be called from the event loop's thread.
+asyncio note: ``create_subprocess_exec`` runs ``preexec_fn`` in the forked
+child before exec; it must be called from the event loop's thread.
 """
 from __future__ import annotations
 
@@ -86,8 +83,8 @@ async def spawn_setuid(
     )
     assert proc.pid is not None
     # the child is now exec-ing node (slow first step): read /proc while it
-    # still exists; the setuid happened in the child before exec, so the
-    # uid is already final.
+    # still exists; the setuid happened in the child before exec, so the uid
+    # is already final.
     for _ in range(50):  # up to ~50 ms of grace
         uid = _child_uid(proc.pid)
         if uid is not None:

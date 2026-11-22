@@ -1,4 +1,4 @@
-"""Unit: F2 — the app (root) must never write or chown THROUGH a symlink
+"""Unit: the app (root) must never write or chown THROUGH a symlink
 the slot planted in a slot-owned tree.
 
 The attack surface this pins down:

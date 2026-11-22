@@ -25,14 +25,11 @@ class SlotQuarantined(RuntimeError):
 
 
 class SlotOutsidePool(RuntimeError):
-    """A registry row points at a slot name this app's pool no longer
-    holds (--slots was shrunk or renamed under it). The slot user's state
-    cannot be resolved here, so release is refused with a typed error the
-    API maps to 4xx — the bare pool.get KeyError that pre-fix escaped
-    every release path (idle GC tick, POST /release, panel action) as a
-    500, and permanently aborted gc_tick's disk-pressure section.
-    Operator remedy: restore the slot name in --slots, or hand-edit the
-    registry (doctor: slots.off_pool_rows)."""
+    """A registry row points at a slot name this app's pool no longer holds
+    (--slots was shrunk or renamed under it). The slot user's state cannot
+    be resolved here, so release is refused with a typed error the API maps
+    to 4xx. Operator remedy: restore the slot name in --slots, or hand-edit
+    the registry (doctor: slots.off_pool_rows)."""
 
     def __init__(self, session_id: str, slot: str) -> None:
         super().__init__(
@@ -82,9 +79,8 @@ class SlotPool:
         return self.slots[name]
 
     def by_session(self, session_id: str) -> Slot | None:
-        """The slot owning this session — allocated, cleaning, OR
-        quarantined (a quarantined slot still owns that session's
-        cleanup)."""
+        """The slot owning this session — allocated, cleaning, OR quarantined
+        (a quarantined slot still owns that session's cleanup)."""
         for s in self.slots.values():
             if s.session_id == session_id and s.state in ("allocated", "cleaning", "quarantined"):
                 return s
@@ -94,8 +90,8 @@ class SlotPool:
         return [s for s in self.slots.values() if s.state == "free"]
 
     def allocate(self, session_id: str, *, stable: bool = False) -> Slot:
-        # idempotent per session: a RESPAWN of a live session reuses the
-        # slot it already pins (the respawn path never re-rolls the uid)
+        # idempotent per session: a RESPAWN of a live session reuses the slot
+        # it already pins (the respawn path never re-rolls the uid)
         for s in self.slots.values():
             if s.session_id == session_id and s.state == "allocated":
                 s.stable = s.stable or stable
@@ -119,8 +115,7 @@ class SlotPool:
             raise SlotQuarantined(
                 f"slot {s.name} is {s.state} — cannot mark cleaning (double release?)"
             )
-        # allocated -> cleaning (fresh release) or quarantined -> cleaning
-        # (the retry path after a human unblocked the stuck file)
+        # allocated -> cleaning (fresh release) or quarantined -> cleaning (retry)
         s.state = "cleaning"
         return s
 
@@ -145,6 +140,5 @@ class SlotPool:
             raise KeyError(session_id)
         s.state = "quarantined"
         s.stable = False
-        # session_id is kept: the panel shows which session's junk is stuck
-        # where (the sweep's deletion list is the audit trail)
+        # session_id is kept: the panel shows which session's junk is stuck where
         raise SlotQuarantined(f"slot {s.name} quarantined after release of {session_id}: {reason}")

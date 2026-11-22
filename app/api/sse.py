@@ -1,17 +1,17 @@
 """Per-session SSE event hub.
 
-One hub per session. Every session event — pi events AND app events —
-is published here, gets a monotonic integer id, and is kept in a bounded
+One hub per session. Every session event — pi events AND app events — is
+published here, gets a monotonic integer id, and is kept in a bounded
 ring (the per-session cap) for ``Last-Event-ID`` resume.
 
 The ring is a replay buffer for delivery; it NEVER feeds back into the
-run. A consumer that falls behind the ring — slow connection,
-backgrounded phone, closed app — is simply evicted: the stream emits a
-``gap`` event (at subscribe and mid-stream) and the client re-syncs via
-the API (transcript fetch + re-subscribe). Invariant 4: the producer
-never awaits a client — a dropped or slow connection never cancels,
-slows, or stalls a run. Memory is bounded (cap + one in-flight event);
-the transcript on disk is never touched.
+run. A consumer that falls behind the ring — slow connection, backgrounded
+phone, closed app — is simply evicted: the stream emits a ``gap`` event
+(at subscribe and mid-stream) and the client re-syncs via the API
+(transcript fetch + re-subscribe). The producer never awaits a client — a
+dropped or slow connection never cancels, slows, or stalls a run. Memory
+is bounded (cap + one in-flight event); the transcript on disk is never
+touched.
 
 The cap is a memory policy knob (``SERVITOR_SSE_RING_BYTES``, default
 50 MB) — it sizes the resume window, never a capability cap.
@@ -24,15 +24,12 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
-# the per-session replay cap — a memory bound on the resume window,
-# never a capability cap: past it the ring evicts and a slow consumer
-# gets a gap (it re-syncs from the API). Per-hub configurable
-# (SseHub(cap_bytes=...), from SERVITOR_SSE_RING_BYTES); this is the
-# production default.
+# the per-session replay cap (production default; per-hub configurable via
+# SseHub(cap_bytes=...), from SERVITOR_SSE_RING_BYTES)
 EVENT_BUFFER_CAP = 50 * 1024 * 1024
 
-# the heartbeat sentinel name stream_events yields (the endpoint maps it
-# to a bare ":hb\n\n" comment line — no id, no data)
+# the heartbeat sentinel name stream_events yields (the endpoint maps it to
+# a bare ":hb\n\n" comment line — no id, no data)
 HEARTBEAT = "hb"
 
 
@@ -64,7 +61,7 @@ class SseHub:
         # publish -> waiters wake-up (lost-wakeup-free: a waiter registers
         # its future BEFORE re-checking the latest id)
         self._waiters: set[asyncio.Future] = set()
-        # the app's stop path (SIGTERM drain) — see close()
+        # the app's stop path — see close()
         self._closed = False
 
     # ------------------------------------------------------------------ #
@@ -77,8 +74,8 @@ class SseHub:
         self.publish(str(record.get("type", "event")), record)
 
     def publish(self, name: str, data: dict[str, Any] | str) -> int:
-        """Append one event; return its id. Synchronous. Never blocks on
-        a consumer — eviction is unconditional (the gap contract)."""
+        """Append one event; return its id. Synchronous. Never blocks on a
+        consumer — eviction is unconditional (the gap contract)."""
         if isinstance(data, str):
             data_str = data
         else:
@@ -104,8 +101,8 @@ class SseHub:
         """Free events every live consumer already has, then evict to the
         cap. Eviction may move PAST a slow consumer — that is the gap
         contract (the stream detects the skip via gap_before and the
-        client re-syncs via the API). The run is never blocked by
-        delivery, whatever the consumer does."""
+        client re-syncs via the API). The run is never blocked by delivery.
+        """
         mc = self._min_consumed()
         if mc:
             while self._ring and self._ring[0].id <= mc:
@@ -163,14 +160,14 @@ class SseHub:
     def close(self) -> None:
         """Terminal (the app's stop path): end every stream. Idempotent.
 
-        An SSE response never terminates on its own — the browser holds
-        it open for the life of the tab, and uvicorn's graceful shutdown
-        only disables keep-alive — so without this, live waiters hold
-        uvicorn's 'waiting for connections' phase open to the unit's
-        TimeoutStopSec SIGKILL. It wakes the waiters so the response
-        generators exit on their next iteration; a waiter registered
-        after the close returns at once (the wait loop checks
-        ``closed``)."""
+        An SSE response never terminates on its own — the browser holds it
+        open for the life of the tab, and uvicorn's graceful shutdown only
+        disables keep-alive — so without this, live waiters hold uvicorn's
+        'waiting for connections' phase open to the unit's TimeoutStopSec
+        SIGKILL. It wakes the waiters so the response generators exit on
+        their next iteration; a waiter registered after the close returns
+        at once (the wait loop checks ``closed``).
+        """
         self._closed = True
         for fut in list(self._waiters):
             if not fut.done():
@@ -244,26 +241,21 @@ async def stream_events(
     heartbeat_secs: float,
 ):
     """The live SSE tail for one subscription — the endpoint's streaming
-    body. Yields ``(name, data, id_or_None)`` tuples; the endpoint
-    formats them into frames. ``(HEARTBEAT, None, None)`` is the
-    heartbeat sentinel.
+    body. Yields ``(name, data, id_or_None)`` tuples; the endpoint formats
+    them into frames. ``(HEARTBEAT, None, None)`` is the heartbeat sentinel.
 
-    Contract (invariant 4): this loop only READS the ring — it never
-    waits on the run for a client. A ``gap`` tuple is emitted whenever
-    the consumer's position has been evicted — at subscribe (phone came
-    back) or mid-stream (the consumer stalled — slow phone,
-    backgrounded app) — and the stream resumes from the newest event:
-    the client re-syncs via the API, never a partial tail. The ring is
-    never re-sent after a gap: it duplicates the transcript fetch and
-    costs up to the cap; events published while the client re-syncs
-    still arrive on this stream (the cursor is snapshotted before the
-    yield).
-    Ends when the request disconnects or the hub is closed (the stop
-    path — the client's EventSource auto-reconnects, ?after= resumes).
+    This loop only READS the ring — it never waits on the run for a
+    client. A ``gap`` tuple is emitted whenever the consumer's position has
+    been evicted — at subscribe or mid-stream — and the stream resumes from
+    the newest event: the client re-syncs via the API, never a partial tail.
+    The ring is never re-sent after a gap: it duplicates the transcript fetch
+    and costs up to the cap; events published while the client re-syncs still
+    arrive on this stream (the cursor is snapshotted before the yield).
+    Ends when the request disconnects or the hub is closed (the client's
+    EventSource auto-reconnects, ?after= resumes).
     """
     if gap:
-        # the requested position was evicted from the ring: the client
-        # must re-sync from the API, not guess.
+        # the requested position was evicted: the client must re-sync from the API
         cursor = hub.latest_id
         yield ("gap", json.dumps({"after": start}), None)
         hub.consume(sub_id, cursor)
@@ -284,15 +276,14 @@ async def stream_events(
             yield (HEARTBEAT, None, None)
             continue
         if hub.closed:
-            # the stop path closed the hub (SIGTERM drain): end the
-            # stream — the client's EventSource auto-reconnects
-            # (?after=<cursor> resumes)
+            # the stop path closed the hub: end the stream — the client's
+            # EventSource auto-reconnects (?after=<cursor> resumes)
             return
-        # the ring evicted past our cursor (slow consumer): gap — the
-        # client re-syncs via the API; this stream continues from the
-        # newest event AT GAP TIME (no partial tail, no ring re-send,
-        # and events published while the client re-syncs still arrive
-        # on the stream — the cursor is snapshotted before the yield)
+        # the ring evicted past our cursor (slow consumer): gap — the client
+        # re-syncs via the API; this stream continues from the newest event
+        # AT GAP TIME (no partial tail, no ring re-send; events published
+        # while the client re-syncs still arrive — the cursor is
+        # snapshotted before the yield)
         if hub.gap_before(cursor):
             missed_from = cursor
             cursor = hub.latest_id

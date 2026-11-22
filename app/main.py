@@ -1,8 +1,7 @@
 """The servitor app entry: the HTTP/SSE API on the one published port
 (uvicorn), with the JSON-over-stdio protocol kept behind ``--stdio``
-(crash drill + lifecycle regression tests use it).
-
-The front door is thin: the same Lifecycle object in both modes.
+(crash drill + lifecycle regression tests use it). The front door is
+thin: the same Lifecycle object in both modes.
 
 Protocol (stdio mode): one JSON object per line on stdin/stdout:
 
@@ -48,7 +47,9 @@ log = logging.getLogger("servitor.app")
 
 def _stage_config(config_root: str, config_src: str, router_url: str | None) -> str | None:
     """Stage a config version if none is active yet (boot from scratch).
-    Mirrors deploy/sync.sh: stage + swap; the active pointer is the truth."""
+    Mirrors deploy/sync.sh: stage + swap; the active pointer is the truth.
+    The staging copy lives OUTSIDE config_root and is never left behind.
+    """
     if active_version(config_root):
         return None
     stage = Path(config_root).parent / f"cfgsrc-{next_version(config_root)}"
@@ -62,7 +63,6 @@ def _stage_config(config_root: str, config_src: str, router_url: str | None) -> 
     try:
         return stage_and_swap(config_root, str(stage))
     finally:
-        # the staging copy lives OUTSIDE config_root; never leave it behind
         shutil.rmtree(stage, ignore_errors=True)
 
 
@@ -272,13 +272,12 @@ class App:
 
         env = dict(os.environ)
         cfg = load_http_config(env, root=self.args.state)
-        # the SSE ring cap is a per-hub memory policy (default 50 MB):
-        # wire it before any session hub is created (hubs are lazy)
+        # per-hub memory policy (default 50 MB); hubs are lazy, so wiring
+        # it now is before any of them exists
         self.lc.cfg.sse_ring_bytes = cfg.sse_ring_bytes
-        # the idle-GC horizon rides the env file (SERVITOR_GC_IDLE_DAYS):
-        # the guest unit passes only --state/--config-src, so without this
-        # the --gc-idle-days CLI default (14.0) would silently win and an
-        # operator override would be a no-op
+        # the guest unit passes only --state/--config-src: without this the
+        # CLI default would silently win and the env file's
+        # SERVITOR_GC_IDLE_DAYS override would be a no-op
         self.lc.cfg.gc_idle_days = cfg.gc_idle_days
         # start_update_tick is idempotent; the ASGI lifespan starts the GC
         self.lc.start_update_tick()
@@ -291,15 +290,11 @@ class App:
                 log_level="info",
                 lifespan="on",
                 timeout_keep_alive=75,
-                # backstop for the 'waiting for connections' phase.
-                # Normal stop: the stop path (lifespan-installed SIGTERM
-                # handler) closes every SSE hub the instant SIGTERM
-                # lands, the connection wait ends at once, and the
-                # budget is the drain that follows — three phases under
-                # ONE shared clock (lifecycle.shutdown), bounded
-                # REGARDLESS of how many children are live. The backstop
-                # fires only for a connection that survives the hub
-                # close (a bug) — kept small.
+                # backstop for the 'waiting for connections' phase: normal
+                # stop closes every SSE hub at SIGTERM (the stop path) and
+                # the drain that follows (lifecycle.shutdown) is the budget.
+                # This fires only for a connection that survives the hub
+                # close — a bug — so it stays small.
                 timeout_graceful_shutdown=20.0,
             )
         )

@@ -47,11 +47,11 @@ done
 [[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
 set -a; source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE"); set +a
 : "${OMNISSIAH_API_KEY:?OMNISSIAH_API_KEY missing in $ENV_FILE}"
-# the edge credential (invariant 3) rides the key slice: the app verifies
+# the edge credential rides the key slice: the app verifies
 # every request against the guest env's value while it is set, so a .env
 # that has it but a guest env that does not (or a drifted one) 403s the
 # whole UI — the slice keeps them in lockstep on every sync
-: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential, invariant 3)}"
+: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential)}"
 # The post-deploy healthz wait carries it on a quoted curl-config line via
 # stdin (curl -K -), never argv: /proc/<pid>/cmdline is world-readable
 # (unlike environ), so a secret on argv would leak to every local uid for
@@ -302,8 +302,8 @@ for raw in open(path):
     line = raw.rstrip('\n')  # normalize: the write adds exactly one '\n' per line
     if not line or line.lstrip().startswith('#'):
         continue  # drop blank/comment lines (systemd ignores them; keeping
-                  # them once was the bloat bug: blank lines DOUBLED each
-                  # pass, blowing the file past execve's env limit)
+                  # them lets the file grow past execve's env limit over
+                  # repeated syncs)
     k = line.split('=', 1)[0]
     if k in new:
         out.append(new[k]); seen.add(k)
@@ -409,9 +409,8 @@ for ((i = 0; i < STAGING_WAIT_SECS; i += 5)); do
   run_guest "test -f /var/lib/servitor/update-pending.json" 2>/dev/null || rc=$?
   # rc is the REMOTE test's exit status only when the ssh itself succeeded:
   # 0 = the flag is still staged, 1 = it has been cleared. Any other rc
-  # (255 = an ssh hiccup) is NOT "applied" — a transient ssh failure once
-  # flipped APPLIED while the tick was mid-apply and raced a healthy
-  # restart into a false exit 3.
+  # (255 = an ssh hiccup) is NOT "applied" — a transient ssh failure read as
+  # "applied" would race the healthy restart into a false exit 3.
   if [[ $rc -eq 1 ]]; then
     APPLIED=1; break
   fi

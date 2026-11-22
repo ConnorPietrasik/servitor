@@ -72,17 +72,7 @@ never is.** Each session's pi runs as a **slot uid** from a static pool of
    unset/empty authenticates nobody (dev/standalone; the bind is the
    control) — while production is always keyed: baked into the image at
    build (first boot already gated), re-injected by the sync's key
-   slice, certified by the doctor's keyed/keyless probes. Why the
-   credential: the guest firewall
-   admits the port from the WHOLE edge subnet (the proxy's source IP
-   is indistinguishable from a neighbor's), and that subnet carries the
-   public gpu fleet — a compromised neighbor must not be able to drive
-   the agent or read its files directly. Scope, honestly: it stops no
-   internet attacker (Authelia 2FA + admins-only stays the human gate)
-   and no host-side actor — its population is unauthenticated in-subnet
-   callers. Bind the ingress interface, admit the port from the edge
-   subnet only; dev binds loopback (gate off unless the dev `.env`
-   sets a key).
+   slice, certified by the doctor's keyed/keyless probes.
 4. **The producer never awaits a client.** Dropped phone connections
    never cancel, slow, or stall a run. Delivery is a separate concern
    from the run.

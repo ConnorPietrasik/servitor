@@ -273,10 +273,9 @@ export default function Chat() {
     if (!idRef.current) return;
     const s = idRef.current;
     unsubRef.current?.();
-    // a re-attach (gap re-sync, fork) replaces the transcript
-    // wholesale: drop the old stream's queued events, else a pending
-    // flush applies them on top of the fresh snapshot (duplicate
-    // deltas on the trailing message)
+    // a re-attach (gap re-sync, fork) replaces the transcript wholesale:
+    // drop the old stream's queued events, else a pending flush applies
+    // them on top of the fresh snapshot
     queue.current = [];
     try {
       const m = await api.getMessages(s);
@@ -285,10 +284,9 @@ export default function Chat() {
       const r = await api.getSession(s);
       if (idRef.current !== s) return; // navigated away during fetch
       setRow(r);
-      // seed run state from the server: the agent_start/agent_settled
-      // events for a run already in flight fired before our cursor and
-      // will not be redelivered, so a reattach (page load, gap re-sync)
-      // must learn the run is live from the row, not the stream tail
+      // seed run state from the row, not the stream tail: agent_start/
+      // agent_settled for a run already in flight fired before our cursor
+      // and will not be redelivered
       setRunning(r.busy);
       // a returning client is re-offered any still-pending dialog
       void refreshDialogs();
@@ -329,9 +327,9 @@ export default function Chat() {
 
   // navigated to a different session: every state here is session-scoped
   // and must not survive the transition. `running` in particular gates
-  // send() (steer vs prompt) — a stale true would steer a session with
-  // no run in flight; the row/msgs reset avoids showing the previous
-  // session's data during the fetch window (attach reseeds everything)
+  // send() (steer vs prompt) — a stale true would steer a session with no
+  // run in flight; the row/msgs reset avoids showing the previous
+  // session's data during the fetch window
   useEffect(() => {
     setRow(null);
     setMsgs([]);
@@ -417,24 +415,23 @@ export default function Chat() {
   }
 
   // "edit + go from here" (user message context menu): fork the
-  // conversation back to this user message, prefill the composer with
-  // its text, and re-attach for the new branch.
+  // conversation back to this user message, prefill the composer, and
+  // re-attach for the new branch.
   async function editAt(m: Msg) {
     if (!sid) return;
     try {
       const r = await api.fork(sid, m.id);
       if (r.cancelled) {
-        // an extension canceled the fork: the process is still on the
+        // the extension canceled the fork: the process is still on the
         // original branch — nothing to re-attach to
         setBanner("Fork was canceled — the conversation is unchanged");
         return;
       }
-      setComposerPrefill(m.text); // "edit that message": prefilled
+      setComposerPrefill(m.text);
       setBanner(null);
       // the fork switches the process to a new session file: re-attach
-      // for the fresh (empty-so-far) transcript — only if still on this
-      // session (a nav away already switched targets; that session's
-      // own param effect attaches it)
+      // for the fresh transcript (only if still on this session — a nav
+      // away already switched targets)
       window.setTimeout(() => {
         if (idRef.current === sid) void attach();
       }, 500);

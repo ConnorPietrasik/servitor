@@ -1,7 +1,8 @@
 """PiSession — one `pi --mode rpc` subprocess per conversation.
 
-Protocol rules (verified against pi 1.5.2, docs/rpc.md, docs/rpc-commands.md,
-docs/json.md): JSONL over stdio with LF-only framing, correlated by ``id``;
+Protocol rules (verified empirically against the pinned pi, and against
+pi's own docs/rpc.md, rpc-commands.md, json.md): JSONL over stdio with
+LF-only framing, correlated by ``id``;
 subscribe (start the stdout dispatcher) BEFORE prompting; stdout is
 protocol-only, stderr is captured but never parsed. ``disposition``:
 ``started`` | ``queued`` | ``handled`` — ``handled`` means consumed, no run
@@ -216,9 +217,8 @@ class PiSession:
 
     async def _stdout_task(self) -> None:
         """Drain stdout continuously, unconditionally: the run must never
-        stall because a client is slow or gone (invariant 4) — delivery
-        is the SSE hub's concern, and its ring evicts + gaps rather
-        than blocking."""
+        stall because a client is slow or gone — delivery is the SSE hub's
+        concern, and its ring evicts + gaps rather than blocking."""
         assert self._proc is not None and self._proc.stdout is not None
         framer = LFFramer(self._on_record, self._on_parse_error)
         while True:
