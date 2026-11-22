@@ -100,7 +100,7 @@ changes:
   0600). The host-deploy section at the bottom of `.env.example` is never read
   by the app and never synced.
 - Day-2: `make sync` (config/lib push, key slice) or `make update` (float +
-  gated deploy + doctor + auto-rollback, image included).
+  doctor-certified deploy + auto-rollback, image included).
 - `make deploy` deliberately prints instructions instead of running a script —
   the one-time install (`deploy/portcullis/INSTALL.md`) keeps operator
   decisions visible. Do not add a deploy script.

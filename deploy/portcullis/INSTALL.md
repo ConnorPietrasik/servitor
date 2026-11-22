@@ -55,8 +55,7 @@ sudo systemctl enable --now libvirtd
 - `libvirt` — the hypervisor (none on the server at first deploy).
 - `qemu` — provides `qemu-img` (state disk) and the emulator.
 - `nodejs` + `npm` — `deploy/sync.sh` stages the pi-web-access extension with
-  host npm and reads its resolved version with `node -e` (same command the
-  conformance gate uses), and builds the chat UI (vite) for the image and
+  host npm and reads its resolved version with `node -e`, and builds the chat UI (vite) for the image and
   for `ui/`-changing syncs.
 - `e2fsprogs` — `mkfs.ext4` for the state disk.
 - `rsync` + `zstd` + `curl` — `build.sh` needs them (rsync for the app/ui
@@ -273,7 +272,7 @@ the four `servitor-*` panel-do actions (with the `checkManagedScript`
 validation of this checkout before every exec), the doctor's tri-state
 servitor section (absent = skip; no libvirt / no domain / stale binary =
 fail; VM stopped or endpoint dead = warn — planned downtime never red-lights
-the update gate), the RUNBOOK section, and the hardening/troubleshooting
+the update's precheck), the RUNBOOK section, and the hardening/troubleshooting
 entries. If the server's portcullis clone pre-dates that merge, pull it first.
 
 1. **Route (the only file to add):** copy
@@ -328,28 +327,28 @@ actions in the registry) — a stopped VM shows as WARN there by design.
 
 ---
 
-## 10. Host prerequisites for the first update (the update gate)
+## 10. Host prerequisites for the on-demand root suites
 
-`deploy/update.sh` gates every versioned deploy with the conformance suite,
-and that suite runs **host-side** (root) — so the server's checkout needs
-what the suite spawns into, none of which §1–§9 created:
+`make update` needs none of these — a versioned deploy is certified by the
+post-deploy doctor (red => automatic rollback, image included). These are
+for the on-demand root suites — `make test` (unit + conformance) and
+`make sandbox-smoke` — which run **host-side** (root); e.g. to run the
+conformance suite before accepting an out-of-major bump. None of them was
+created in §1–§9:
 
 ```bash
 cd /opt/servitor-repo
-sudo make venv                                        # the gate runs the repo venv
-sudo useradd -u 9001 -m -s /usr/sbin/nologin slot1    # the gate's spawn uid
-# also (for `make test` / `make sandbox-smoke`, not the gate itself):
-sudo useradd -u 9002 -m -s /usr/sbin/nologin slot2
+sudo make venv                                        # the suites run the repo venv
+sudo useradd -u 9001 -m -s /usr/sbin/nologin slot1    # conformance's spawn uid
+sudo useradd -u 9002 -m -s /usr/sbin/nologin slot2    # sandbox-smoke's spawn uid
 ```
 
-The guest image creates its own slot0–16; the HOST gate needs its own —
+The guest image creates its own slot0–16; the HOST suites need their own —
 the conformance harness setuid-spawns a real pi as `slot1` and keeps its
-scratch under `/home/slot1`. `slot2` is only wanted if you also run the
-wider suites on the server (`test/unit/test_slots.py` resolves both
-slot1 and slot2 from passwd; `make sandbox-smoke` spawns as `slot2`).
-Without `slot1` the gate is RED on the first versioned update: nothing
-deploys — that is the gate working as intended, and the fix is two
-commands, not a debug session.
+scratch under `/home/slot1` (the unit half stands in passwd — no real
+users needed). Without `slot1` the conformance half of
+`make test` fails loud (never silently green) — the fix is a line in
+the block above, not a debug session.
 
 ---
 

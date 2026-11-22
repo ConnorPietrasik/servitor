@@ -171,7 +171,7 @@ UI_DIST_SHA="$(cd "$REPO/ui/dist" && find . -type f | LC_ALL=C sort | xargs -r s
 KEYS_SHA="$( { printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_EDGE_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "$SERVITOR_EDGE_KEY" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
 
 # extension: host npm stage at the .env selection (the same command the
-# conformance gate uses — --ignore-scripts, absolute prefix)
+# conformance suite uses — --ignore-scripts, absolute prefix)
 EXT_VERSION=""
 if [[ -n "$SERVITOR_PI_WEB_ACCESS_VERSION" ]]; then
   EXT_STAGING="$WORK/ext-prefix"

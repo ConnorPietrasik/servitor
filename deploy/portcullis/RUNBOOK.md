@@ -9,7 +9,8 @@ control is the four panel actions (`servitor-status`, `servitor-vm-restart`,
 userland) are `sudo make update` in the host checkout (SSH — floats each
 selection to the newest release in the same major, reports out-of-major
 releases instead of applying them, rebuilds + swaps the image when the
-userland outgrows the freshness floor, conformance-gated with auto-rollback); config
+userland outgrows the freshness floor, verified by the post-deploy doctor
+with auto-rollback); config
 edits are `deploy/sync.sh` or the panel's `servitor-sync` (fast path, never
 blocks on a run). Naming: `servitorctl` is the GUEST-side command (the app's modules,
 run inside the VM as `python -m app.<module>`); host-side, the entry points
@@ -53,7 +54,7 @@ are the `deploy/*.sh` scripts — there is no host `servitorctl`.
 | task | how |
 |---|---|
 | change prompts/skills/lib | edit `agent-config/` / `lib/` in the host checkout, panel `servitor-sync` (or `sudo deploy/sync.sh`) |
-| update pi / extension / guest userland | `sudo make update` in the host checkout (SSH — long, network-bound; floats each selection to the newest release in the same major — out-of-major releases are REPORTED, accept one by editing the `.env` line; rebuilds + swaps the image when the userland outgrows the 7-day freshness floor; conformance-gated host-side; auto-rollback, image included; first run on a fresh server: `sudo make venv` + the `slot1` user — INSTALL.md §10) |
+| update pi / extension / guest userland | `sudo make update` in the host checkout (SSH — long, network-bound; floats each selection to the newest release in the same major — out-of-major releases are REPORTED, accept one by editing the `.env` line; rebuilds + swaps the image when the userland outgrows the 7-day freshness floor; verified by the post-deploy doctor, auto-rollback, image included; the on-demand suites — `make test` / `make sandbox-smoke` — want `sudo make venv` + the slot users, INSTALL.md §10) |
 | rotate keys | host `.env` → `sudo deploy/sync.sh` (re-injects the key slice into the guest's 0600 env file, sets the restart flag) — the portcullis stack's copy of the key floats with its own `make update` as usual. The edge key (`SERVITOR_EDGE_KEY`) rotates on BOTH sides (portcullis `.env` + this `.env`, same value) + portcullis `make update` + a sync — the doctor's keyed/keyless probes certify it (deploy/README → Key rotation) |
 | ssh into the VM | from the server: `sudo ssh -i /root/.srv/deploy_key root@$SERVITOR_VM_IP` (the source is the host's edge-bridge IP — the guest firewall admits 22 from exactly that /32 for this reason). From a LAN workstation additionally needs a host forward rule (`sudo ufw route allow from <LAN subnet> to $SERVITOR_VM_IP port 22`) — not added by default; the designed flows (panel + server) don't need it |
 | release a session | UI close, GC timer (idle >14 d, non-stable), slot/disk pressure — all through the single `release()` (sweep by owner before the slot is reused; sweep-fail ⇒ quarantined, visible, retryable) |

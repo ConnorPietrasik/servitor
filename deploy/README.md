@@ -25,9 +25,8 @@ deploy/
 │                                      #   (PORTCULLIS's main.go is canonical)
 ├── sync.sh         # host-side one-way sync: config/lib push,
 │                   #   key slice, extension install, update-waiting flag
-├── update.sh       # host orchestrator: resolve -> host-side
-│                   #   conformance gate -> provision -> swap -> doctor ->
-│                   #   auto-rollback
+├── update.sh       # host orchestrator: resolve -> float -> provision ->
+│                   #   swap -> doctor -> auto-rollback
 └── doctor.sh       # host wrapper -> guest `servitorctl doctor`
 ```
 
@@ -119,11 +118,10 @@ drops the recorded known_hosts entry and re-accepts on first contact
 (both directions: swap forward and rollback swap-back).
 
 Order, after the resolve: precondition doctor (deployed state must be
-green) → conformance suite against the *resolved* versions, host-side (the
-guest is untouched until it passes) → the `.env` lines are floated to the
-targets (bump before apply: the build and the sync's key slice both read
-the `.env`) → provision only what moved → the sync's swap-based deploy →
-doctor → AUTOMATIC ROLLBACK on failure. The rollback restores the image,
+green) → the `.env` lines are floated to the targets (bump before apply:
+the build and the sync's key slice both read the `.env`) → provision only
+what moved → the sync's swap-based deploy → doctor → AUTOMATIC ROLLBACK on
+failure. The rollback restores the image,
 the manifest's `active` and the `.env` to what is actually running —
 always; the shape back to the retained previous too, but only when THIS
 run's sync deployed it. No failure path leaves the world ahead of what is
@@ -132,12 +130,14 @@ failure additionally restores the manifest's `active` to the still-running
 image. Re-run `make update` either way — a built-but-not-swapped image is
 reused (the swap retried), never rebuilt in place.
 
-The conformance gate runs host-side (root), so the host checkout needs its
-own `make venv` and the slot users the suite spawns into (`slot1` for the
-gate, `slot2` for `make test`'s unit half) — the guest image's slots are a
-different namespace (INSTALL.md §10 for the server). A run active at the
-restart step sets the update-waiting flag instead of restarting (never
-blocks).
+The on-demand root suites (`make test`, `make sandbox-smoke`) run
+host-side (root) and need the host checkout's own `make venv` plus the
+slot users they spawn into (`slot1` for the conformance half, `slot2` for
+sandbox-smoke — the unit half stands in passwd and needs no real users) —
+the guest
+image's slots are a different namespace (INSTALL.md §10 for the server). A
+run active at the restart step sets the update-waiting flag instead of
+restarting (never blocks).
 
 A world-current run (no in-major release newer than the deployed one, the
 image within the floor, the shape unchanged) touches nothing, restarts

@@ -4,8 +4,10 @@ The suite is VERSION-PARAMETERIZED: it runs against the pi version +
 extension selection resolved from the env (env-only, no default — the
 .env selections), installed into the shared prefix
 (test.conftest.pi_install).
-It also serves as the host-side preflight of `deploy/update.sh` (the
-update gate).
+The version parameterization is what makes the suite the pre-deploy
+proof for any selection — run it on-demand (`make test`), e.g. before
+accepting an out-of-major bump; a versioned deploy itself is certified
+by the post-deploy doctor.
 
 Slot: slot1 (see test/conftest.py for the suite-slot allocation).
 Root: required — loud-skip otherwise, never silently green.

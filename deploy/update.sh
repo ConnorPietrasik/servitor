@@ -13,12 +13,10 @@
 #   2. PRECHECK   the deployed doctor must be green before anything moves
 #                 (a pre-existing failure would auto-revert the whole
 #                 update); skipped only on a world-current run.
-#   3. GATE       the conformance suite runs HOST-SIDE against the resolved
-#                 versions (the guest is untouched until it passes), then
-#                 the .env lines are floated to the targets — bump before
-#                 apply, portcullis order (build.sh reads the .env; the
-#                 sync's key slice carries the values into the guest's
-#                 0600 env file).
+#   3. SELECT     the .env lines are floated to the resolved targets —
+#                 bump before apply, portcullis order (build.sh reads the
+#                 .env; the sync's key slice carries the values into the
+#                 guest's 0600 env file).
 #   4. PROVISION  only what moved: pi or stale userland => image rebuild
 #                 (the Arch packages re-resolve — kernel/node/python float
 #                 with it) + image swap (clean ACPI shutdown, domain
@@ -33,6 +31,11 @@
 #                 running; the shape back to the retained previous TOO, but
 #                 only when THIS run's sync deployed it), re-doctor, report.
 #
+# Version correctness is certified by the VERIFY doctor, not by a
+# pre-deploy host-side suite: a red doctor triggers the automatic rollback
+# above. The conformance suite stays on-demand (`make test`) — run it
+# before accepting an out-of-major bump if you want the pre-deploy proof.
+#
 # No failure path leaves the world ahead of what is running: a BUILD
 # failure restores the .env to the pre-run selections; a SWAP failure
 # additionally restores the manifest's active to the still-running image.
@@ -43,7 +46,7 @@
 # freshness floor, the shape unchanged) touches nothing, restarts nothing,
 # and reports NO-OP.
 #
-# Runs as root only (the gate's venv, the image build, the swap). Knobs —
+# Runs as root only (the image build, the swap). Knobs —
 # precedence: a non-empty .env line > the caller's environment > the
 # default below (an empty .env line is "unset"):
 #   UPDATE_DOCTOR=1         precheck + verify doctor (0 = skip both)
@@ -73,7 +76,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$(id -u)" == "0" ]] || { echo "update runs as root (sudo make update): the gate's venv, the image build and the swap need it" >&2; exit 1; }
+[[ "$(id -u)" == "0" ]] || { echo "update runs as root (sudo make update): the image build and the swap need it" >&2; exit 1; }
 [[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
 # update-run knobs: a non-empty .env line (a settled choice) > the caller's
 # environment (the portcullis update tail passes UPDATE_DOCTOR via sudo) >
@@ -98,7 +101,7 @@ SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-${IN_SHUTDOWN_TIMEOUT:-240}}"
 # the .env version lines are FLOORS: exact versions (X.Y.Z), never ranges
 # — a range hits the float rule's unparseable fail-safe (NO MOVEMENT), but
 # its literal string still differs from what is deployed, so the run would
-# gate, float the .env line to the range, and fail red at the guest's
+# float the .env line to the range and fail red at the guest's
 # installed==env assert. The preflight turns that into a one-line error
 # before anything moves (the rule itself: test/unit/test_update_resolve.py).
 if ! python3 "$REPO/deploy/resolve_target.py" --exact "$SERVITOR_PI_VERSION" \
@@ -127,7 +130,6 @@ case "$SERVITOR_EDGE_KEY" in
 esac
 SSH_TARGET="${SSH_TARGET:-root@${SERVITOR_VM_IP}}"
 [[ -f "$DEPLOY_KEY" ]] || { echo "deploy key not found: $DEPLOY_KEY" >&2; exit 1; }
-[[ -x "$REPO/.venv/bin/python" ]] || { echo "host checkout venv missing — sudo make venv (+ the slot1 user) per INSTALL.md §10: the update gate runs in it" >&2; exit 1; }
 [[ -f "$MANIFEST" ]] || { echo "no image manifest at $MANIFEST — the first deploy is INSTALL.md (image + domain + first sync), not this command (sudo make guest builds the image and writes the manifest)" >&2; exit 1; }
 
 # one update at a time (a manual run and a future timer would race the swap)
@@ -483,31 +485,11 @@ else
 fi
 
 # --------------------------------------------------------------------------
-if (( PI_MOVE || EXT_MOVE || AGE_OUT )); then
-  echo "==> [3/7] gate: conformance suite against pi=$PI_TARGET ext=${EXT_TARGET:-none} (host-side; the guest is untouched until it passes)"
-  GATE_LOG="$WORK/gate.log"
-  set +e
-  (
-    cd "$REPO"
-    SERVITOR_PI_VERSION="$PI_TARGET" \
-    SERVITOR_PI_WEB_ACCESS_VERSION="${EXT_TARGET}" \
-    "$REPO/.venv/bin/python" -m pytest test/conformance -q
-  ) > "$GATE_LOG" 2>&1
-  GATE_RC=$?
-  set -e
-  tail -15 "$GATE_LOG"
-  if [[ "$GATE_RC" -ne 0 ]]; then
-    # the EXIT trap deletes $WORK (and with it the log this message points
-    # at) — preserve the RED gate's full log at a stable path.
-    GATE_KEEP="/tmp/servitor-gate-$(date -u +%Y%m%d-%H%M%S).log"
-    cp -f "$GATE_LOG" "$GATE_KEEP"
-    echo "GATE RED (rc=$GATE_RC) — nothing deployed (full log: $GATE_KEEP; the suite needs the slot1 user + the host venv — INSTALL.md §10)" >&2
-    exit 1
-  fi
-  echo "    gate GREEN"
-  # float the .env lines NOW (bump before apply — portcullis order): the
-  # rebuild reads the .env for the pi install, and the sync's key slice
-  # carries these into the guest's 0600 env file.
+if (( PI_MOVE || EXT_MOVE )); then
+  echo "==> [3/7] selections: float the .env to the resolved targets"
+  # bump before apply — portcullis order: the rebuild reads the .env for
+  # the pi install, and the sync's key slice carries these into the
+  # guest's 0600 env file.
   if (( PI_MOVE )); then
     float_env_line SERVITOR_PI_VERSION "$PI_TARGET"
     echo "    .env: SERVITOR_PI_VERSION -> $PI_TARGET"
@@ -517,7 +499,7 @@ if (( PI_MOVE || EXT_MOVE || AGE_OUT )); then
     echo "    .env: SERVITOR_PI_WEB_ACCESS_VERSION -> $EXT_TARGET"
   fi
 else
-  echo "==> [3/7] gate (skipped: no versioned deploy — shape changes gate via the doctor)"
+  echo "==> [3/7] selections (skipped: nothing versioned moves)"
 fi
 
 # --------------------------------------------------------------------------

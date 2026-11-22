@@ -3,8 +3,7 @@
 # Gate vocabulary:
 #   check          contract lint (fast once the venv exists; needs venv)
 #   test           unit + conformance vs mock router (conformance
-#                  loud-skips without root; on the server it is also the
-#                  update gate)
+#                  loud-skips without root)
 #   test-stage2    lifecycle drills over the stdio app (root, server)
 #   sandbox-smoke  root (server): overlays, EROFS, sweep walk,
 #                  config/credential/context-file gates, protocol suite
@@ -71,7 +70,7 @@ sync:
 	deploy/sync.sh
 
 ## single day-2 update path (float in-major + freshness-floor image
-## rebuild + swap + host-side gate + automatic rollback, image included)
+## rebuild + swap + automatic rollback, image included)
 update:
 	deploy/update.sh
 

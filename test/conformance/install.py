@@ -4,9 +4,11 @@ The conformance suite takes a pi version + extension selection (npm
 semver specs, env-only — no default; supplied by the .env selections) and
 installs the resolved versions into a scratch prefix with ``npm install
 --ignore-scripts``. The resolved version is read back from the installed
-package.json (the registry records installed versions). This is also the
-host-side preflight of ``deploy/update.sh`` (the update gate): the guest
-is not touched until it passes.
+package.json (the registry records installed versions). The version
+parameterization is what makes the suite the pre-deploy proof for any
+selection — run it on-demand (``make test``) before, e.g., accepting an
+out-of-major bump; a versioned deploy itself is certified by the
+post-deploy doctor.
 
 Reused across tests at the session scope — installs are slow; the prefix
 is read-only input to every test.

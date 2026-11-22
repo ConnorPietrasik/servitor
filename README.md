@@ -149,6 +149,7 @@ sudo make guest         # build the guest image
 - **Updates**: `make update` — float pi/extension to the newest release in
   the same major (out-of-major releases are reported, not applied), rebuild
   the guest image when the userland outgrows the freshness floor (the guest
-  kernel updates with it), conformance-gate the resolved versions
-  host-side, deploy swap-based (image swap included) → doctor → automatic
-  rollback on failure. Config-only pushes: `make sync`.
+  kernel updates with it), deploy swap-based (image swap included) → doctor
+  → automatic rollback on failure (a versioned deploy is certified by that
+  doctor; the conformance suite stays on-demand — `make test`, e.g. before
+  accepting an out-of-major bump). Config-only pushes: `make sync`.
