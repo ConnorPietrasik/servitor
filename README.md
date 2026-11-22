@@ -11,7 +11,7 @@ steer or abort at any point.
 
 - **One KVM guest VM is the whole system.** Arch-based qcow2 image,
   `servitor` systemd service in `servitor.slice`, no docker inside.
-- **App** (Python 3.12+, FastAPI, one asyncio process, root on the guest):
+- **App** (Python 3.14+, FastAPI, one asyncio process, root on the guest):
   HTTP/SSE API + control plane on one published port. It authenticates
   no user; when `SERVITOR_EDGE_KEY` is set (always in production) it
   admits only requests carrying the edge credential the proxy injects
@@ -51,13 +51,13 @@ never is.** Each session's pi runs as a **slot uid** from a static pool of
    residual risk*), read-only where injection could persist (config,
    `lib/`), hash-verified uploads (staged, sha256-checked, atomically
    renamed — all-or-nothing), context-file discovery disabled,
-   launch-line trust flags asserted in CI, per-session uid + overlay +
-   owner-sweep, `lib/` writable only by a distinct human action. One
-   further accepted residual with a warning: baseline extension discovery
-   means an extension an agent plants in its own tree loads on the next
-   respawn — visible (new-extension warning), not blocked; it adds no
-   reach the slot uid doesn't already have, only an unattended trigger
-   point.
+   launch-line trust flags asserted in the conformance suite and
+   doctor, per-session uid + overlay + owner-sweep, `lib/` writable
+   only by a distinct human action. One further accepted residual with
+   a warning: baseline extension discovery means an extension an agent
+   plants in its own tree loads on the next respawn — visible
+   (new-extension warning), not blocked; it adds no reach the slot
+   uid doesn't already have, only an unattended trigger point.
 2. **No caps:** no path allow-lists, no iteration/wall-clock/vision
    limits. Reach is bounded only by the slot uid and read-only areas.
    Controls are meters (run state, current tool, outbox) + human
