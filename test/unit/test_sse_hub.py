@@ -145,9 +145,8 @@ def test_sse_event_framing_overhead_accounted():
 def test_close_wakes_blocked_waiters():
     """close() ends the wait: the response generator's wait_new returns
     on the next iteration, the stream ends, and uvicorn's 'waiting for
-    connections' phase can no longer be held open by an SSE stream
-    (the 2026-11-19 120 s stop: a browser-held SSE stream rode the stop
-    out to TimeoutStopSec)."""
+    connections' phase can no longer be held open by a browser-held SSE
+    stream (a held stream must not ride the stop out to TimeoutStopSec)."""
 
     async def go():
         hub = SseHub("s1")

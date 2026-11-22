@@ -449,18 +449,53 @@ for m in "$WORK/disk/dev/shm" "$WORK/disk/dev/pts" "$WORK/disk/dev/mqueue" \
     umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
   fi
 done
+# holders of the built disk: every pid rooted in, or cwd'd into, $WORK/disk,
+# as TAB-separated "pid  where  cmdline". Match on the /proc/<pid>/root and
+# /cwd paths, never by name: the pid namespace is the host's (unshare -m
+# only), so a name match would kill host processes.
+disk_holders() {
+  local p r c where
+  for p in /proc/[0-9]*; do
+    r="$(readlink "$p/root" 2>/dev/null)" || continue
+    c="$(readlink "$p/cwd" 2>/dev/null)" || continue
+    where=""
+    case "$r" in "$WORK/disk"|"$WORK/disk"/*) where="root=$r" ;; esac
+    case "$c" in "$WORK/disk"|"$WORK/disk"/*) where="${where:+$where, }cwd=$c" ;; esac
+    [[ -n "$where" ]] || continue
+    printf '%s\t%s\t%s\n' "${p#/proc/}" "$where" \
+      "$(tr '\0' ' ' < "$p/cmdline" 2>/dev/null)"
+  done
+}
+# sweep every process still rooted in, or cwd'd into, the built disk: a
+# daemon spawned in-chroot outlives the chroot shell (pacman-key's
+# gpg-agent is the known one — gpg auto-starts it, it detaches, and it
+# holds cwd on the rootfs; that open reference is what makes the root
+# umount EBUSY)
+while IFS=$'\t' read -r pid where cmd; do
+  echo "    killing lingering build process $pid — $cmd ($where)"
+  kill -9 "$pid" 2>/dev/null || true
+done < <(disk_holders)
+# a SIGKILLed agent does not unlink its own socket; do not ship one
+rm -f "$WORK/disk"/var/lib/pacman/gpg/S.gpg-agent* "$WORK/disk"/etc/pacman.d/gnupg/S.gpg-agent* 2>/dev/null || true
 # THE ROOT MOUNT IS NOT A PSEUDO MOUNT. Lazy-unmounting it leaves the ext4
 # mounted and dirty while losetup -d reports success (the loop driver defers
 # the detach over open holders), so the convert below would read root.raw
 # straight out of a live page cache: the image silently lacks everything the
-# final seconds wrote, and is still perfectly bootable. 2026-11-22 shipped
-# exactly that — no enabled units, no hostname, no fstab, no machine-id, no
-# host keys, no /etc/servitor: every step-[5/7] write, host-side and
-# in-chroot alike, lost to the cache.
+# final seconds wrote, and is still perfectly bootable.
 sync
 if mountpoint -q "$WORK/disk"; then
   umount -R "$WORK/disk" 2>/dev/null || umount "$WORK/disk" 2>/dev/null \
-    || { echo "FATAL: $WORK/disk will not unmount cleanly (something holds it busy) — refusing to image a dirty filesystem (lsof +D \"$WORK/disk\", then re-run)" >&2; exit 1; }
+    || { echo "FATAL: $WORK/disk will not unmount cleanly (something holds it busy) — refusing to image a dirty filesystem (evidence below, then re-run)" >&2
+         # print the evidence BEFORE the EXIT trap removes the workdir:
+         # leftover child mounts, then every process still rooted in / cwd'd
+         # into / holding an open file on the disk (a holder that only shows
+         # in /proc/*/fd is exactly how this class of bug hides)
+         findmnt -R --noheadings "$WORK/disk" 2>/dev/null | sed 's/^/    mount: /' >&2
+         while IFS=$'\t' read -r pid where cmd; do
+           echo "    holder: pid $pid $where cmd=$cmd" >&2
+         done < <(disk_holders)
+         find /proc/[0-9]*/fd -lname "$WORK/disk/*" 2>/dev/null | sed 's/^/    fd: /' >&2
+         exit 1; }
 fi
 # and prove the loop is really gone, not merely pending: one byte of
 # root.raw is read only after nothing can still write it

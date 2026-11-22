@@ -79,7 +79,7 @@ changes:
   session truth", "one per LIVE session", …); keep them accurate when the
   design moves. Comments are terse and load-bearing, not narration.
 - Docstrings and comments explain *invariants and why*, not what the next line
-  does. Avoid any history or wordy prose.
+  does. Avoid any history or wordy prose. Bug history explanations are forbidden; if you see a date in a comment, it should probably be deleted.
 - Version selections (pi, extensions) are floors in `.env` — no default pins
   in code; `deploy/update.sh` floats them in-major.
 

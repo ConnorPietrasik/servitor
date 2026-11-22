@@ -142,9 +142,8 @@ async def test_absent_flag_is_noop(tmp_path):
 
 
 async def test_shutting_down_instance_does_not_act_on_the_flag(tmp_path):
-    # the 2026-11-19 mode: the stop-draining OLD instance's tick must be
-    # inert — it must neither re-run the doctor nor touch the flag that
-    # belongs to the NEW instance
+    # the stop-draining OLD instance's tick must be inert — it must neither
+    # re-run the doctor nor touch the flag that belongs to the NEW instance
     flag = _flag(tmp_path)
     save(flag, UpdatePending(reason="test", restart=False, doctor=True,
                              ts=time.time()))

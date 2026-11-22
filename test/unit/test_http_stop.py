@@ -155,8 +155,8 @@ def test_sigterm_stops_cleanly_with_a_held_sse_stream(tmp_path):
             proc.kill()
             err = proc.stderr.read().decode(errors="replace")[-1500:]
             raise AssertionError(
-                f"process still alive 10 s after SIGTERM with an SSE "
-                f"stream held open (the 2026-11-19 failure mode)\n{err}"
+                f"process still alive 10 s after SIGTERM with an SSE stream "
+                f"held open\n{err}"
             )
         dt = time.time() - t0
         assert rc in (0, -15, 143), f"unexpected exit {rc}"
