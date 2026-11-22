@@ -99,6 +99,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = p.parse_args(argv)
     if not args.pi_node or not args.pi_cli:
         p.error("--pi-node and --pi-cli required (CLI or SERVITOR_PI_NODE_BIN/SERVITOR_PI_CLI_JS)")
+    if not args.baseline_ext:
+        # the image-bundled extension IS the baseline: without this fallback
+        # the baseline is empty and every spawn's own -e mount is reported as
+        # drift (the doctor's probe has the identical fallback)
+        args.baseline_ext = [Path(args.pi_ext).name] if args.pi_ext else []
     if args.shutdown_grace_sec is None:
         args.shutdown_grace_sec = float(drain_grace_secs())
     if args.update_pending_path is None:
