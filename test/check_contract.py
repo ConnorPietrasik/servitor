@@ -17,12 +17,17 @@ Asserts the interface contract before any runtime code exists:
    literal in ``app/`` (the bind comes from env even for loopback dev);
    the portcullis route file references the VM via placeholders, no
    literal port.
-3. **Contract file parses** — the portcullis
+3. **Deploy heredoc safety** — an unquoted ``<<WORD`` body is expanded
+   by the WRITING shell, so it must carry no command substitution (a
+   backtick or an unescaped ``$( ``): a bare interpreter at write time
+   inherits the operator's tty and hangs the build behind an
+   interactive prompt. Quoted ``<<'WORD'`` bodies are literal.
+4. **Contract file parses** — the portcullis
    route yml loads as YAML with the expected shape (one router, the
    servitor hostname, the auth-chain middleware, the servitor-edge
    credential middleware, the SSE flush
    setting, and the absence of the dead readTimeout key).
-4. **Agent-config sanity** — models.json: literal baseUrl (``$VAR`` is
+5. **Agent-config sanity** — models.json: literal baseUrl (``$VAR`` is
    NOT interpolated), ``apiKey: "$OMNISSIAH_API_KEY"`` (env-only key),
    image-capable model declared; no ``auth.json``/``models-store.json``
    (a stale stored credential would silently beat the env var); no
@@ -150,6 +155,34 @@ def code_files() -> list[Path]:
 
 
 IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+HEREDOC_START_RE = re.compile(r"<<(-?)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2")
+
+
+def unquoted_heredoc_bodies(path: Path) -> list[list[tuple[int, str]]]:
+    """Bodies of UNQUOTED-delimiter heredocs in a shell script, as
+    (lineno, line) lists. An unquoted ``<<WORD`` body is expanded by the
+    writing shell (parameter + command substitution, as in double quotes);
+    a quoted ``<<'WORD'`` body is literal. Comment lines never start a
+    heredoc in this repo's style — the scripts keep them clear of ``<<``."""
+    bodies: list[list[tuple[int, str]]] = []
+    lines = path.read_text().splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = HEREDOC_START_RE.search(line)
+        if m and not m.group(2) and not line.lstrip().startswith("#"):
+            dash, delim = m.group(1), m.group(3)
+            i += 1
+            body: list[tuple[int, str]] = []
+            while i < len(lines):
+                candidate = lines[i].lstrip("\t") if dash else lines[i]
+                if candidate.strip() == delim:
+                    break
+                body.append((i + 1, lines[i]))
+                i += 1
+            bodies.append(body)
+        i += 1
+    return bodies
 
 
 def main() -> int:
@@ -270,8 +303,37 @@ def main() -> int:
         "silently ignored; the no-cut contract rides the v3 defaults)",
     )
 
-    # --- 3/4. agent-config sanity ------------------------------------------
-    print("\n[3] agent-config sanity")
+    # --- 3. deploy heredoc safety ------------------------------------------
+    print("\n[3] deploy heredoc safety")
+    # Unquoted <<WORD bodies are expanded by the WRITING shell (that is how
+    # ${SERVITOR_PI_VERSION} reaches chroot-setup.sh): a backtick or an
+    # unescaped $( ) in the body runs a command at cat-time. A bare
+    # interpreter there inherits the operator's tty and hangs the build
+    # behind an interactive prompt (2026-11: `python` in a comment). The
+    # contract for literal shell text in those bodies is escaping (\$(, \`)
+    # — the chroot-setup script's own variables already ride it.
+    heredoc_hits: list[str] = []
+    for path in sorted((REPO / "deploy").rglob("*.sh")):
+        for body in unquoted_heredoc_bodies(path):
+            for lineno, line in body:
+                for k, ch in enumerate(line):
+                    if ch == "`" and (k == 0 or line[k - 1] != "\\"):
+                        heredoc_hits.append(
+                            f"{path.relative_to(REPO)}:{lineno}: {line.strip()[:80]}"
+                        )
+                    if line[k : k + 2] == "$(" and (k == 0 or line[k - 1] != "\\"):
+                        heredoc_hits.append(
+                            f"{path.relative_to(REPO)}:{lineno}: {line.strip()[:80]}"
+                        )
+    check(
+        not heredoc_hits,
+        "unquoted heredoc bodies in deploy/ carry no command substitution "
+        "(a bare interpreter at write time hangs the build on the operator's tty)",
+        "; ".join(sorted(set(heredoc_hits))[:5]),
+    )
+
+    # --- 4. contract file + agent-config sanity -----------------------------
+    print("\n[4] agent-config sanity")
     ac = REPO / "agent-config"
     models = json.loads((ac / "models.json").read_text())
     providers = models.get("providers", {})

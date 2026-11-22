@@ -178,7 +178,10 @@ pacman -Sy --noconfirm --needed "${PKGS[@]}" > /tmp/pacman.log 2>&1 \
 pacman -Qq > /tmp/pkglist.txt
 CHROOT_EOF
 cp "$WORK/chroot-packages.sh" "$WORK/disk/chroot-packages.sh"
-env LC_ALL=C TZ=UTC PACKAGES="$PACKAGES" chroot "$WORK/disk" /usr/bin/bash /chroot-packages.sh
+# in-chroot scripts get /dev/null stdin: nothing in the build may read the
+# operator's tty (a stray interactive prompt would hang the whole build —
+# the same class of hang the firstboot mask closes at boot)
+env LC_ALL=C TZ=UTC PACKAGES="$PACKAGES" chroot "$WORK/disk" /usr/bin/bash /chroot-packages.sh < /dev/null
 echo "    installed: $(tr '\n' ' ' < "$WORK/disk/tmp/pkglist.txt" | cut -c1-160)..."
 
 # app code from the repo (the synced artifact layout) BEFORE the venv
@@ -245,7 +248,7 @@ python --version > /tmp/python-version.txt
 # LOWER of every session's workdir overlay, so the agent sees bin/python
 # (the venv python — the sole toolkit entry that differs from /usr/bin,
 # by Pillow/numpy) as ./bin/python in its working directory: /opt/toolkit
-# is NOT on the agent's PATH, and bare `python` is /usr/bin/python. Every
+# is NOT on the agent's PATH, and bare python is /usr/bin/python. Every
 # other tool resolves via /usr/bin, which is already on the agent's PATH.
 # A new packaged tool is a pins.json + SYSTEM.md change; a new Python library
 # goes on the pip line below (uv comes from the Arch package, not here).
@@ -270,7 +273,7 @@ mkdir -p /opt/pi-ext
 chmod 0755 /opt/pi-ext
 CHROOT_EOF
 cp "$WORK/chroot-setup.sh" "$WORK/disk/chroot-setup.sh"
-env LC_ALL=C TZ=UTC chroot "$WORK/disk" /usr/bin/bash /chroot-setup.sh
+env LC_ALL=C TZ=UTC chroot "$WORK/disk" /usr/bin/bash /chroot-setup.sh < /dev/null
 rm -f "$WORK/disk/chroot-packages.sh" "$WORK/disk/chroot-setup.sh"
 
 echo "==> [5/7] systemd units + firewall + ssh + fstab"
@@ -378,7 +381,7 @@ ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
 systemctl enable systemd-resolved 2>/dev/null || true
 CHROOT_EOF
 cp "$WORK/chroot-systemd.sh" "$WORK/disk/chroot-systemd.sh"
-chroot "$WORK/disk" /usr/bin/env GUEST_ADDR="$GUEST_ADDR" GUEST_GW="$GUEST_GW" /usr/bin/bash /chroot-systemd.sh
+chroot "$WORK/disk" /usr/bin/env GUEST_ADDR="$GUEST_ADDR" GUEST_GW="$GUEST_GW" /usr/bin/bash /chroot-systemd.sh < /dev/null
 rm -f "$WORK/disk/chroot-systemd.sh"
 
 # fstab: root by UUID + the state disk by label (the operator labels it
