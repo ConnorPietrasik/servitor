@@ -36,11 +36,17 @@
 # above. The conformance suite stays on-demand (`make test`) — run it
 # before accepting an out-of-major bump if you want the pre-deploy proof.
 #
-# No failure path leaves the world ahead of what is running: a BUILD
-# failure restores the .env to the pre-run selections; a SWAP failure
-# additionally restores the manifest's active to the still-running image.
+# No failure path leaves the world ahead of what is running, and no failure
+# path leaves the machine NOT running: a BUILD failure restores the .env to
+# the pre-run selections (nothing moved); a SWAP failure additionally swaps
+# the domain BACK to the image that was running and brings the service up
+# before it reports, then restores the manifest's active and the .env. Only a
+# failed swap-back needs a human — and it prints the exact commands.
+#
 # Re-run make update either way: a built-but-not-swapped image is REUSED
-# (the swap is retried), never rebuilt in place.
+# (the swap is retried), never rebuilt in place. That retry is for a
+# TRANSIENT swap failure; when the new image itself will not come up over
+# ssh, quarantine it first or the retry re-swaps the same broken image in.
 #
 # A world-current run (no in-major release newer, the image within the
 # freshness floor, the shape unchanged) touches nothing, restarts nothing,
@@ -542,14 +548,30 @@ if (( REBUILD )); then
     echo "    new image: $NEW_IMAGE (previous retained: $OLD_IMAGE — the rollback target)"
   fi
   if ! swap_image "$NEW_IMAGE"; then
-    # the manifest + .env must describe the world that IS running again:
-    # active back to the old image and the .env back to the pre-run
-    # selections. Then a re-run reuses this very image and retries the
-    # swap.
-    manifest_set_active "$OLD_IMAGE" "$NEW_IMAGE" \
-      || echo "    WARNING: could not restore the manifest's active to $OLD_IMAGE — fix by hand (set 'active' to $OLD_IMAGE in $MANIFEST), or the next update measures the wrong image" >&2
+    # The domain is DEFINED ON $NEW_IMAGE and that boot is what just failed.
+    # Leaving it there is an outage with a misleading error message: nothing
+    # serves, and the next run's precheck doctor can never go green while the
+    # guest is down — a deadlock no automated path escapes and only a human
+    # notices. So put the running image back and bring the service up BEFORE
+    # reporting anything.
+    echo "    swapping the domain back to $OLD_IMAGE (the service comes back up before this run reports)" >&2
+    if swap_image "$OLD_IMAGE"; then
+      # restored: the manifest + .env describe the world that is running
+      # again, and a re-run reuses the built image and retries the swap.
+      manifest_set_active "$OLD_IMAGE" "$NEW_IMAGE" \
+        || echo "    WARNING: could not restore the manifest's active to $OLD_IMAGE — fix by hand (set 'active' to $OLD_IMAGE in $MANIFEST), or the next update measures the wrong image" >&2
+      restore_env_floors
+      echo "IMAGE SWAP FAILED — $OLD_IMAGE is running again (manifest + .env restored to it). $NEW_IMAGE is built and retained: re-run make update to retry the swap. If the guest will not come up over ssh, the image is the suspect, not the swap — read the console (virsh console servitor) and quarantine the candidate (mv it out of $IMAGES_DIR) before re-running, or the retry swaps the same broken image back in." >&2
+      exit 1
+    fi
+    # nothing is serving and the domain still names $NEW_IMAGE: the manifest
+    # stays pointing at what the domain definition actually carries (it is the
+    # record of "which image the domain boots", not of "which image is good").
     restore_env_floors
-    echo "IMAGE SWAP FAILED — the old image is intact at $IMAGES_DIR/$OLD_IMAGE (the manifest's active + the .env are restored to it). Re-run make update: it reuses the built image and retries the swap; if the VM will not come up: virsh console servitor." >&2
+    echo "IMAGE SWAP FAILED AND THE SWAP-BACK FAILED — nothing is serving. The domain is defined on $NEW_IMAGE; $OLD_IMAGE is intact at $IMAGES_DIR/$OLD_IMAGE. Restore by hand:" >&2
+    echo "    virsh destroy servitor; virsh dumpxml servitor > /tmp/dom.xml" >&2
+    echo "    sed -i 's#servitor-pi[^/]*\\.qcow2#$OLD_IMAGE#g; s#servitor-pi[^/]*\\.vmlinuz#${OLD_IMAGE%.qcow2}.vmlinuz#g; s#servitor-pi[^/]*\\.initramfs.img#${OLD_IMAGE%.qcow2}.initramfs.img#g' /tmp/dom.xml" >&2
+    echo "    virsh define /tmp/dom.xml && virsh start servitor && deploy/doctor.sh" >&2
     exit 1
   fi
   if (( CANDIDATE )); then

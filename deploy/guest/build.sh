@@ -11,8 +11,10 @@
 # extracted kernel/initramfs + manifest entry): an image triple is multi-GB
 # and rebuilds are routine.
 #
-# Determinism: pinned base (pins.json: url + sha256); the package set comes
-# from the Arch repos at build time and is recorded in the manifest.
+# Determinism: pinned base (pins.json: url + sha256); the base is then fully
+# upgraded (pacman -Syu) and the whole package set re-resolves from the Arch
+# repos at build time, every installed version recorded in the manifest. The
+# pins + manifest reproduce an image; they do not freeze one.
 #
 # Requirements: root (mkfs/loop mounts/chroot), qemu (qemu-img), network
 # (Arch repos + npm). Run from the repo root:
@@ -173,7 +175,17 @@ pacman-key --init >/dev/null 2>&1 || true
 pacman-key --populate archlinux >/dev/null 2>&1 || true
 rm -f /var/lib/pacman/db.lck
 read -r -a PKGS <<< "$PACKAGES"
-pacman -Sy --noconfirm --needed "${PKGS[@]}" > /tmp/pacman.log 2>&1 \
+# -Syu, never -Sy. `pacman -Sy <pkgs>` is a PARTIAL upgrade: the pinned
+# bootstrap's glibc/pam/systemd stay at the pin date while the requested set
+# and its deps come from today's repo. Arch does not support that, and the
+# failures are the quiet kind — logind/sshd refusing to start on a PAM or
+# libsystemd-shared skew, in an image that otherwise boots happily. A full
+# upgrade is also what makes the header's promise true for the base and not
+# just the added set: "the Arch packages re-resolve, kernel/node/python float
+# to the current repo state". --noconfirm (plus /dev/null stdin) answers any
+# conflict/selection prompt with pacman's default, never on the operator's
+# terminal.
+pacman -Syu --noconfirm --needed "${PKGS[@]}" > /tmp/pacman.log 2>&1 \
   || { tail -30 /tmp/pacman.log; exit 1; }
 pacman -Qq > /tmp/pkglist.txt
 CHROOT_EOF
@@ -198,12 +210,18 @@ rm -rf "$WORK/disk/opt/servitor/app.previous" \
 # The chat UI (static): the app serves ui/dist on the same port
 # (app/api/app.py resolves <app root>/ui/dist — on the guest that is
 # /opt/servitor/app/ui/dist). Built host-side at image time with vite
-# (nodejs is a required host package). NO --ignore-scripts here, unlike
-# the pi stage: esbuild (a vite dep) needs its install script. A dist-less
-# image is API-only (a 404 behind the 2FA gate, nothing explaining why) —
-# so this is a hard build step, not a convenience. sync.sh keeps it
-# current on the guest for UI-only changes (no image rebuild).
+# (nodejs is a required host package) with npm's DEFAULT script policy — no
+# --ignore-scripts, unlike the pinned pi stage. Nothing here may DEPEND on a
+# script running: npm's allowScripts policy can block one (esbuild's
+# postinstall is blocked on current npm) and the build is still correct,
+# because esbuild ships its binary as the @esbuild/<platform> optional
+# dependency. What is load-bearing is the artifact, so the finished dist is
+# certified — a dist whose index.html points at missing assets is a 200 and a
+# black screen, and a dist-less image is a 404 behind the gate with nothing
+# saying why. sync.sh keeps it current on the guest for UI-only changes (no
+# image rebuild).
 ( cd "$REPO/ui" && npm ci --no-audit --no-fund >/dev/null && npm run build >/dev/null )
+bash "$REPO/deploy/check_ui_dist.sh" "$REPO/ui/dist"
 rm -rf "$WORK/disk/opt/servitor/app/ui"
 mkdir -p "$WORK/disk/opt/servitor/app/ui"
 rsync -a --delete "$REPO/ui/dist/" "$WORK/disk/opt/servitor/app/ui/dist/"
@@ -340,12 +358,19 @@ WantedBy=multi-user.target
 EOF
 cat > "$WORK/chroot-systemd.sh" <<'CHROOT_EOF'
 set -euo pipefail
-systemctl enable sshd servitor-firewall servitor systemd-networkd systemd-resolved 2>/dev/null || true
+# no `|| true`, no stderr sink: `systemctl enable` is all-or-nothing per
+# invocation (one unresolvable name and every later one in the list is
+# skipped), so a swallowed failure here ships a guest with NOTHING enabled.
+# That guest still reaches multi-user and prints a login prompt; the only
+# symptom is ssh timing out 300 s into a swap.
+systemctl enable sshd servitor-firewall servitor systemd-networkd systemd-resolved
 ssh-keygen -A >/dev/null
-# first-boot hygiene: the bootstrap ships an EMPTY machine-id, so
-# systemd-firstboot.service would drop into an interactive prompt and HANG
-# boot. Set a machine-id and mask firstboot.
-systemd-machine-id-setup >/dev/null 2>&1 || true
+# first-boot hygiene: the bootstrap ships an UNPOPULATED machine-id (empty or
+# the literal "uninitialized"), so systemd-firstboot.service would drop into
+# an interactive prompt and HANG boot, and logind refuses to start without a
+# valid id. Set the id and mask firstboot; both are certified after the
+# filesystem is quiesced (see the [6/7] artifact gate).
+systemd-machine-id-setup >/dev/null
 ln -sf /dev/null /etc/systemd/system/systemd-firstboot.service
 cat > /etc/zram-generator.conf <<'CONF'
 [zram0]
@@ -378,7 +403,6 @@ DNSOverTLS=no
 DNSStubRRAAAA=no
 DNS
 ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-systemctl enable systemd-resolved 2>/dev/null || true
 CHROOT_EOF
 cp "$WORK/chroot-systemd.sh" "$WORK/disk/chroot-systemd.sh"
 chroot "$WORK/disk" /usr/bin/env GUEST_ADDR="$GUEST_ADDR" GUEST_GW="$GUEST_GW" /usr/bin/bash /chroot-systemd.sh < /dev/null
@@ -415,16 +439,107 @@ IMAGE_NAME="servitor-pi${PI_VERSION}-${BUILD_DATE}.qcow2"
 STEM="${IMAGE_NAME%.qcow2}"
 cp "$WORK/disk/boot/vmlinuz-linux" "$IMAGES_DIR/${STEM}.vmlinuz"
 cp "$WORK/disk/boot/initramfs-linux.img" "$IMAGES_DIR/${STEM}.initramfs.img"
-# unmount in reverse mount order, one by one; lazy fallback for a busy
-# devtmpfs bind (umount -R on nested dev mounts is unreliable)
+# unmount in reverse mount order, one by one. The pseudo mounts (the host
+# dev/devpts/run binds, the tmpfs visible under /dev) MAY legitimately refuse:
+# lazy is fine for them because none of their data is in the image.
 for m in "$WORK/disk/dev/shm" "$WORK/disk/dev/pts" "$WORK/disk/dev/mqueue" \
          "$WORK/disk/dev/hugepages" "$WORK/disk/proc" "$WORK/disk/sys" \
-         "$WORK/disk/run" "$WORK/disk/dev" "$WORK/disk"; do
+         "$WORK/disk/run" "$WORK/disk/dev"; do
   if mountpoint -q "$m" 2>/dev/null; then
     umount "$m" 2>/dev/null || umount -l "$m" 2>/dev/null || true
   fi
 done
-losetup -d "$LOOP"; LOOP=""
+# THE ROOT MOUNT IS NOT A PSEUDO MOUNT. Lazy-unmounting it leaves the ext4
+# mounted and dirty while losetup -d reports success (the loop driver defers
+# the detach over open holders), so the convert below would read root.raw
+# straight out of a live page cache: the image silently lacks everything the
+# final seconds wrote, and is still perfectly bootable. 2026-11-22 shipped
+# exactly that — no enabled units, no hostname, no fstab, no machine-id, no
+# host keys, no /etc/servitor: every step-[5/7] write, host-side and
+# in-chroot alike, lost to the cache.
+sync
+if mountpoint -q "$WORK/disk"; then
+  umount -R "$WORK/disk" 2>/dev/null || umount "$WORK/disk" 2>/dev/null \
+    || { echo "FATAL: $WORK/disk will not unmount cleanly (something holds it busy) — refusing to image a dirty filesystem (lsof +D \"$WORK/disk\", then re-run)" >&2; exit 1; }
+fi
+# and prove the loop is really gone, not merely pending: one byte of
+# root.raw is read only after nothing can still write it
+losetup -d "$LOOP" 2>/dev/null || true
+for _ in $(seq 1 60); do
+  losetup -j "$WORK/root.raw" | grep -q . || break
+  sleep 1
+done
+if losetup -j "$WORK/root.raw" | grep -q .; then
+  echo "FATAL: $WORK/root.raw is still attached to a loop device (open holders) — refusing to image it (losetup -l; lsof \"$WORK/root.raw\")" >&2
+  exit 1
+fi
+LOOP=""
+
+# --- artifact gate -------------------------------------------------------
+# Certify the QUIESCED filesystem read-only before it is shipped: the shape
+# every later step depends on, asserted against the bytes the guest will
+# actually boot. A guest that boots with nothing enabled is indistinguishable
+# from a healthy one until a swap's ssh wait expires, so this is the only
+# cheap place to catch it — before the image gets a name, a manifest entry,
+# and a domain definition pointing at it.
+echo "    certifying the image (read-only mount of the quiesced raw)"
+CHK="$WORK/verify"; mkdir -p "$CHK"
+RO_LOOP=""
+if ! RO_LOOP="$(losetup -f --show -r "$WORK/root.raw")" || ! mount -o ro,norecovery "$RO_LOOP" "$CHK"; then
+  [[ -n "$RO_LOOP" ]] && losetup -d "$RO_LOOP" 2>/dev/null
+  echo "FATAL: $WORK/root.raw cannot be mounted read-only — the filesystem is dirty or corrupt, nothing is shipped" >&2
+  exit 1
+fi
+BAD=()
+want_file() { [[ -s "$CHK$1" ]] || BAD+=("$1 missing/empty — $2"); }
+want_grep() { grep -q -- "$2" "$CHK$1" 2>/dev/null || BAD+=("$1 carries no '$2' — $3"); }
+want_unit() { # a symlink under /etc/systemd/system/*.wants (multi-user vs sysinit differs per unit)
+  compgen -G "$CHK/etc/systemd/system/*.wants/$1*" >/dev/null \
+    || BAD+=("$1 not enabled — the guest boots with nothing running (the swap's ssh wait expires)")
+}
+# step [5/7]: the boot-critical system configuration
+want_unit sshd; want_unit servitor; want_unit servitor-firewall
+want_unit systemd-networkd; want_unit systemd-resolved
+want_file /etc/hostname "the guest boots as the bootstrap's hostname"
+want_file /etc/fstab "root + the state disk never mount"
+want_grep /etc/fstab "servitor-state" "/var/lib/servitor never mounts (state.mount red)"
+[[ -L "$CHK/etc/systemd/system/systemd-firstboot.service" ]] \
+  || BAD+=("systemd-firstboot not masked — first boot prompts on a serial console nobody watches")
+grep -Eq '^[0-9a-f]{32}$' "$CHK/etc/machine-id" 2>/dev/null \
+  || BAD+=("/etc/machine-id is not a valid id — logind fails to start, firstboot prompts")
+[[ -n "$(ls "$CHK"/etc/ssh/ssh_host_*_key 2>/dev/null)" ]] \
+  || BAD+=("no ssh host keys — sshd cannot answer, and every swap rotates them anyway")
+want_file /root/.ssh/authorized_keys "there is no other way in: password auth is off"
+want_file /etc/systemd/network/10-servitor.network "no static edge address — no ssh, no sync, no doctor"
+want_grep /etc/systemd/network/10-servitor.network "^Gateway=" "no default route — live router and searches die"
+want_file /etc/systemd/resolved.conf.d/10-servitor.conf "no public resolver"
+want_file /etc/zram-generator.conf "the swap the slice sizing assumes"
+# the app's own contract: the unit's EnvironmentFile must carry the bind and
+# the edge credential (the first boot is gated BEFORE any sync has run)
+want_file /etc/servitor/servitor.env "the unit's EnvironmentFile: the app cannot start"
+want_grep /etc/servitor/servitor.env "^SERVITOR_BIND=" "ConfigError: the bind address has no default"
+want_grep /etc/servitor/servitor.env "^SERVITOR_EDGE_KEY=." "an unkeyed first boot (invariant 3: fail closed)"
+# the synced/spawned shape the doctor certifies
+want_file /opt/servitor/app/.venv/bin/python "the unit's interpreter is gone"
+want_file /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js "SERVITOR_PI_CLI_JS points at nothing: every spawn fails"
+want_file /opt/servitor/app/ui/dist/index.html "a UI-less image is a 404 behind the gate, with nothing saying why"
+want_file /opt/servitor/agent-config/SYSTEM.md "first-boot config staging has no source"
+want_file /opt/servitor/pkglist.txt "a step-[6/7] write is absent: the image was read while still mounted"
+# the verifier holds the same hazard it exists to catch: a lazy release here
+# would put a mounted filesystem back in front of the convert
+umount "$CHK" 2>/dev/null || umount -R "$CHK" 2>/dev/null \
+  || { echo "FATAL: $CHK will not unmount — nothing is shipped (a verifier that cannot release the image is not a gate)" >&2; exit 1; }
+losetup -d "$RO_LOOP" 2>/dev/null || true
+if losetup -j "$WORK/root.raw" | grep -q .; then
+  echo "FATAL: $WORK/root.raw is still attached after certification — refusing to image it" >&2
+  exit 1
+fi
+if (( ${#BAD[@]} )); then
+  echo "FATAL: the built image is not certifiable — $IMAGE_NAME is NOT shipped and the manifest is untouched:" >&2
+  for b in "${BAD[@]}"; do echo "    FAIL  $b" >&2; done
+  exit 1
+fi
+echo "    image certified (enabled units, boot config, machine-id, host keys, env contract)"
 
 qemu-img convert -c -f raw -O qcow2 "$WORK/root.raw" "$IMAGES_DIR/$IMAGE_NAME"
 IMAGE_SHA="$(sha256sum "$IMAGES_DIR/$IMAGE_NAME" | cut -d' ' -f1)"

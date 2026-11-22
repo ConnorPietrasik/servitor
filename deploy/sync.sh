@@ -155,9 +155,14 @@ APP_SHA="$(cd "$REPO" && find app pyproject.toml -type f -not -path '*/__pycache
 
 # UI: build host-side when the ui/ source moved since the last build
 # (stamp: ui/.ui-src-sha), then hash the dist — the same content
-# addressing as config/app. NO --ignore-scripts (vite/esbuild need
-# install scripts — unlike the pinned pi stage). The app serves the dist
-# on the same port; a UI-only change deploys here without an image
+# addressing as config/app. npm's DEFAULT script policy (no --ignore-scripts,
+# unlike the pinned pi stage), but nothing may depend on a script having run:
+# allowScripts can block one (esbuild's postinstall is) and the dist is still
+# correct, because esbuild's binary rides the @esbuild/<platform> optional
+# dependency. The dist is therefore CERTIFIED after the if-block, on the
+# rebuilt and the cached path alike — a truncated dist left by an interrupted
+# build would otherwise be content-hashed and pushed as truth. The app serves
+# the dist on the same port; a UI-only change deploys here without an image
 # rebuild. (The stamp is excluded from the source hash — it is the hash's
 # output.)
 UI_SRC_SHA="$(cd "$REPO/ui" && find . -type f -not -path './node_modules/*' -not -path './dist/*' -not -path './.ui-src-sha' | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)"
@@ -167,6 +172,7 @@ if [[ ! -f "$REPO/ui/dist/index.html" || "$(cat "$REPO/ui/.ui-src-sha" 2>/dev/nu
     || { echo "ui build failed (npm ci + npm run build in $REPO/ui)" >&2; exit 1; }
   echo "$UI_SRC_SHA" > "$REPO/ui/.ui-src-sha"
 fi
+bash "$REPO/deploy/check_ui_dist.sh" "$REPO/ui/dist"
 UI_DIST_SHA="$(cd "$REPO/ui/dist" && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)"
 KEYS_SHA="$( { printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_EDGE_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "$SERVITOR_EDGE_KEY" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
 

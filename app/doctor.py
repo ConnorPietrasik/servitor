@@ -120,6 +120,16 @@ def check_state_fs(rep: Report, root: str) -> None:
     reboot) and on an untested type, and passes nothing else."""
     code, out = _sh(["stat", "-f", "-c", "%T", root])
     fstype = out.strip().splitlines()[0] if code == 0 and out.strip() else "?"
+    # stat(1) names the SUPERBLOCK MAGIC, and ext2/ext3/ext4 share one: an
+    # ext4 state volume reports "ext2/ext3". That is not a wrong filesystem
+    # and not a wrong check (the magic is what decides overlay-safety); the
+    # name is only what the operator reads, so when the root IS a mount ask
+    # findmnt for the real type. The unmounted dev fallback has no findmnt row
+    # and keeps stat's name.
+    label = fstype
+    if fstype == "ext2/ext3":
+        code, out = _sh(["findmnt", "-no", "FSTYPE", "--mountpoint", root])
+        label = out.strip().splitlines()[0] if code == 0 and out.strip() else fstype
     if fstype in ("overlay", "overlayfs"):
         rep.add(
             "state.fs", FAIL,
@@ -127,7 +137,7 @@ def check_state_fs(rep: Report, root: str) -> None:
             "use it as upperdir/workdir (attach the state disk)",
         )
     elif fstype in ("ext2/ext3", "ext4", "xfs", "btrfs"):
-        rep.add("state.fs", PASS, f"{root} is {fstype} (local, overlay-safe)")
+        rep.add("state.fs", PASS, f"{root} is {label} (local, overlay-safe)")
     elif fstype == "tmpfs":
         rep.add(
             "state.fs", WARN,
