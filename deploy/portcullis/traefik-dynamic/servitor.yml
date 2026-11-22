@@ -9,10 +9,17 @@
 #   VM_INGRESS_IP  -> the VM ingress address (assigned at provisioning)
 #   SERVITOR_PORT  -> the servitor port (settled 8787)
 #
-# Auth: the only gate is the portcullis auth chain (Authelia 2FA
-# forward-auth, auth-chain@file). Servitor authenticates nobody (invariant 3).
-# No new UFW rule: the route rides the existing 443; the VM's own firewall
-# admits the port from the edge subnet only.
+# Auth: two gates, both on this route. (1) the portcullis auth chain
+# (Authelia 2FA forward-auth, auth-chain@file) authenticates the USER;
+# (2) the servitor-edge middleware then injects the edge credential
+# (X-Servitor-Edge-Key — its value lives in portcullis's .env as
+# SERVITOR_EDGE_KEY and MUST equal the guest's, synced by the servitor
+# key slice), which the app re-verifies on every route (invariant 3).
+# Gate (2) is what stops a neighbor container on the edge subnet — the
+# firewall admits the WHOLE segment, and the proxy's source IP is
+# indistinguishable from a neighbor's — from driving the agent or reading
+# its files directly. No new UFW rule: the route rides the existing 443;
+# the VM's own firewall admits the port from the edge subnet only.
 #
 # Admins-only: portcullis's authelia/configuration.yml carries the
 # servitor.pietrasik.top two_factor + group:admins rule pair ABOVE the
@@ -28,6 +35,7 @@ http:
         - websecure
       middlewares:
         - auth-chain@file
+        - servitor-edge@file
       service: servitor
   services:
     servitor:

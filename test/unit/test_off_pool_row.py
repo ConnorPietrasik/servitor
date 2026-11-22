@@ -40,7 +40,7 @@ import pytest
 
 import app.lifecycle as lcmod
 import app.iso.slots as slotsmod
-from app.api.app import build_app
+from app.api.app import EDGE_KEY_HEADER, build_app
 from app.doctor import PASS, WARN, Report, check_off_pool_rows
 from app.iso.layout import state_paths
 from app.iso.slots import Slot, SlotOutsidePool, SlotPool
@@ -130,7 +130,7 @@ def _run(coro):
 def _app(lc: Lifecycle):
     return build_app(
         SimpleNamespace(registry=lc.cfg.registry, lc=lc, boot_report=0),
-        SimpleNamespace(browser_origin=None, heartbeat_secs=15),
+        SimpleNamespace(browser_origin=None, heartbeat_secs=15, edge_key="unit-test-edge-key"),
     )
 
 
@@ -255,7 +255,10 @@ def test_release_routes_off_pool_row_409_not_500(
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t",
+            headers={EDGE_KEY_HEADER: "unit-test-edge-key"},
+        ) as c:
             return await c.post(url, json=body)
 
     resp = _run(scenario())

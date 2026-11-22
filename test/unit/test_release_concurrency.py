@@ -40,7 +40,7 @@ import pytest
 
 import app.lifecycle as lcmod
 import app.iso.slots as slotsmod
-from app.api.app import build_app
+from app.api.app import EDGE_KEY_HEADER, build_app
 from app.iso.layout import state_paths
 from app.iso.slots import Slot, SlotPool, SlotQuarantined
 from app.lifecycle import (
@@ -225,12 +225,15 @@ def test_double_release_across_both_routes_returns_200_not_500(tmp_path, monkeyp
 
     app = build_app(
         SimpleNamespace(registry=lc.cfg.registry, lc=lc, boot_report=0),
-        SimpleNamespace(browser_origin=None, heartbeat_secs=15),
+        SimpleNamespace(browser_origin=None, heartbeat_secs=15, edge_key="unit-test-edge-key"),
     )
 
     async def scenario():
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://t",
+            headers={EDGE_KEY_HEADER: "unit-test-edge-key"},
+        ) as c:
             r1 = asyncio.create_task(
                 c.post("/api/v1/sessions/s1/release", json={"reason": "user close"})
             )

@@ -28,7 +28,7 @@ from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
-from app.api.app import build_app
+from app.api.app import EDGE_KEY_HEADER, build_app
 from app.lifecycle import EventFeed, Lifecycle
 from app.rpc.session import PiSession
 
@@ -158,8 +158,8 @@ def _client(pending, *, dead: bool = False):
         ),
         boot_report=0,
     )
-    app = build_app(app_state, SimpleNamespace(browser_origin=None))
-    return TestClient(app), driver
+    app = build_app(app_state, SimpleNamespace(browser_origin=None, edge_key="unit-test-edge-key"))
+    return TestClient(app, headers={EDGE_KEY_HEADER: "unit-test-edge-key"}), driver
 
 
 def test_list_dialogs_returns_the_pending_set():

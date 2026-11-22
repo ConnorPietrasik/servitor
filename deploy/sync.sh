@@ -47,6 +47,20 @@ done
 [[ -f "$ENV_FILE" ]] || { echo "env file not found: $ENV_FILE" >&2; exit 1; }
 set -a; source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE"); set +a
 : "${OMNISSIAH_API_KEY:?OMNISSIAH_API_KEY missing in $ENV_FILE}"
+# the edge credential (invariant 3) rides the key slice: the app verifies
+# every request against the guest env's value while it is set, so a .env
+# that has it but a guest env that does not (or a drifted one) 403s the
+# whole UI — the slice keeps them in lockstep on every sync
+: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential, invariant 3)}"
+# The post-deploy healthz wait carries it on a quoted curl-config line via
+# stdin (curl -K -), never argv: /proc/<pid>/cmdline is world-readable
+# (unlike environ), so a secret on argv would leak to every local uid for
+# the life of the probe — the same contract as portcullis's panel-do probe.
+# The contract value is hex (openssl rand -hex 32); a quote, backslash or
+# newline is a mis-set secret the config line can't carry — fail fast.
+case "$SERVITOR_EDGE_KEY" in
+  *\"*|*\\*|*$'\n'*) echo "SERVITOR_EDGE_KEY is not a plain value (quote/backslash/newline) — the curl config line can't carry it" >&2; exit 1 ;;
+esac
 : "${SERVITOR_PI_WEB_ACCESS_VERSION:=0.48.0}"
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
 # doctor.sh defaults the same way: the .env may omit settled-default lines
@@ -108,7 +122,7 @@ r.close()\"" 1
 state_read "extension installed" GUEST_EXT_INSTALLED "node -e \"try{console.log(require('/opt/pi-ext/pi-web-access/package.json').version)}catch(e){console.log('')}\""
 state_read "app tree hash" GUEST_APP_SHA "cd /opt/servitor/app && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1"
 state_read "ui dist hash" GUEST_UI_SHA "cd /opt/servitor/app/ui/dist 2>/dev/null && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1"
-state_read "env key slice" GUEST_ENV_SHA "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1"
+state_read "env key slice" GUEST_ENV_SHA "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_EDGE_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1"
 
 # ---- artifacts (host) ----------------------------------------------------
 # config version: CONTENT-addressed (the directory's file set + bytes), so
@@ -154,7 +168,7 @@ if [[ ! -f "$REPO/ui/dist/index.html" || "$(cat "$REPO/ui/.ui-src-sha" 2>/dev/nu
   echo "$UI_SRC_SHA" > "$REPO/ui/.ui-src-sha"
 fi
 UI_DIST_SHA="$(cd "$REPO/ui/dist" && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)"
-KEYS_SHA="$( { printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+KEYS_SHA="$( { printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_EDGE_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "$SERVITOR_EDGE_KEY" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
 
 # extension: host npm stage at the .env selection (the same command the
 # conformance gate uses — --ignore-scripts, absolute prefix)
@@ -273,7 +287,7 @@ fi
 # rejects a process substitution ("/dev/fd/N is not a regular"). The file
 # lives in $WORK (0700 mktemp dir, removed by the trap).
 KEYS_TMP="$WORK/servitor-keys.$$"
-{ printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } > "$KEYS_TMP"
+{ printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_EDGE_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "$SERVITOR_EDGE_KEY" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } > "$KEYS_TMP"
 chmod 600 "$KEYS_TMP"
 SCp "$KEYS_TMP" "$SSH_TARGET:/tmp/servitor-keys"
 run_guest "
@@ -421,7 +435,8 @@ if [[ "$APPLIED" == "1" ]]; then
   # report that misreads "still starting" as a broken deploy.
   READY=0
   for ((i = 0; i < 90; i += 2)); do
-    if curl -sf -m 3 "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" >/dev/null 2>&1; then
+    if printf '%s\n' "header = \"X-Servitor-Edge-Key: ${SERVITOR_EDGE_KEY}\"" \
+        | curl -sf -m 3 -K - "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" >/dev/null 2>&1; then
       READY=1
       break
     fi

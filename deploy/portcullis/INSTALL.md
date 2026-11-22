@@ -6,13 +6,19 @@ order: this file, then `deploy/README.md` (the contract) and
 `deploy/portcullis/RUNBOOK.md` (day-2 ops).
 
 **The shape:** one libvirt VM (2 disks + 1 NIC on the portcullis edge bridge),
-provisioned once by `deploy/sync.sh`. The app authenticates nobody — the
-only gate is the portcullis auth chain (Authelia 2FA) on the traefik route.
+provisioned once by `deploy/sync.sh`. Two gates, both on the traefik
+route: the portcullis auth chain (Authelia 2FA) authenticates the user,
+and the `servitor-edge` middleware injects the edge credential
+(`X-Servitor-Edge-Key`) which the app re-verifies on every route
+(invariant 3) — the guest firewall admits the port from the WHOLE edge
+subnet, so the credential is what stops a neighbor container from
+driving the agent unauthed.
 
 ```
 ┌─ portcullis server ─────────────────────────────────────────────┐
 │  traefik (docker "edge" net) ──br-<edge>──► servitor VM         │
-│        :443 (2FA)                 VM_IP:8787  (nft: edge only)  │
+│        :443 (2FA + edge key)  VM_IP:8787  (nft: edge subnet;    │
+│                                app key-gated, invariant 3)     │
 │  host checkout /opt/servitor-repo ──ssh(deploy key)──► VM root  │
 │        deploy/sync.sh · doctor.sh · update.sh                   │
 └─────────────────────────────────────────────────────────────────┘
@@ -89,6 +95,12 @@ Set (everything else may stay at defaults):
 # secrets (from the secret store)
 OMNISSIAH_API_KEY=<router bearer key>
 EXA_API_KEY=<exa key>
+# the edge credential (invariant 3): generate ONE value and set it in BOTH
+# places — here (the guest's copy: the image build bakes it in, the sync's
+# key slice re-injects it) and portcullis's .env (the servitor-edge
+# middleware's source). A mismatch 403s the whole UI; portcullis `make
+# doctor` cross-checks the two.
+SERVITOR_EDGE_KEY=<openssl rand -hex 32>
 
 # network (from §0)
 SERVITOR_EDGE_SUBNET=<edge subnet, e.g. 172.28.0.0/20>
@@ -268,8 +280,13 @@ entries. If the server's portcullis clone pre-dates that merge, pull it first.
    `deploy/portcullis/traefik-dynamic/servitor.yml` into the portcullis
    clone's `compose/traefik/dynamic/`, substituting the VM ingress IP +
    port 8787 (same value as `SERVITOR_VM_IP` in this repo's `.env` — the
-   route file is the second place that value lives; keep them in sync). The
-   portcullis deploy prunes deployed route files absent from its repo, so
+   route file is the second place that value lives; keep them in sync).
+   The route's second middleware (`servitor-edge@file`, the edge
+   credential — invariant 3) lives in portcullis's
+   `compose/traefik/dynamic/middlewares.yml`, its value sedded from
+   portcullis's `.env` (`SERVITOR_EDGE_KEY` — the one you set in §3);
+   if the clone pre-dates it, pull portcullis first. The portcullis
+   deploy prunes deployed route files absent from its repo, so
    the file must be committed in the clone, not hand-placed in /opt/panel.
    **Ordering trap:** do not commit the route BEFORE the domain exists —
    the portcullis doctor's servitor section then reads `bad` (route defined,
@@ -292,8 +309,11 @@ entries. If the server's portcullis clone pre-dates that merge, pull it first.
 
 ```bash
 virsh domstate servitor                      # running
-curl -s http://$SERVITOR_VM_IP:8787/healthz  # ok (from the host)
-deploy/doctor.sh                             # RESULT: GREEN
+curl -s -H "X-Servitor-Edge-Key: $SERVITOR_EDGE_KEY" \
+     http://$SERVITOR_VM_IP:8787/healthz     # ok (from the host; invariant 3)
+curl -s -o /dev/null -w '%{http_code}' \
+     http://$SERVITOR_VM_IP:8787/healthz     # 403 (keyless — the gate is on)
+deploy/doctor.sh                             # RESULT: GREEN (incl. both key probes)
 ```
 
 Then, from a phone/LAN browser: `https://servitor.pietrasik.top` → Authelia
@@ -340,9 +360,11 @@ outside the app pool), the app tree + venv at `/opt/servitor/app`, the chat
 UI's built dist at `/opt/servitor/app/ui/dist` (host vite build at image
 time; sync.sh refreshes it for `ui/`-only changes), the toolkit at
 `/opt/toolkit`, pi 1.5.2 at the pinned global npm path, nftables
-default-deny (edge-only 8787, LAN-only 22), resolved with the public
-upstream, systemd units (`servitor`, `servitor-firewall`), the 0600 env file
-with the non-key deploy defaults, and the deploy key in root's
-`authorized_keys`. **Not** in the image, by design: the API keys, the
-pi-web-access extension, and any state volume — the first sync + the state
-disk provide those.
+default-deny (edge-subnet 8787, LAN-only 22 — and the app is
+key-gated on every route on top, invariant 3), resolved with the public
+upstream, systemd units (`servitor`, `servitor-firewall`), the 0600 env
+file with the deploy defaults INCLUDING the baked edge key (first boot is
+already gated; rotation re-injects via the sync's key slice), and the
+deploy key in root's `authorized_keys`. **Not** in the image, by
+design: the model/search keys, the pi-web-access extension, and any state
+volume — the first sync + the state disk provide those.

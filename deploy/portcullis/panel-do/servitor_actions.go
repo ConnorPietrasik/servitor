@@ -37,7 +37,7 @@ package main
 
 // The functions below (and the registry entries at the end) drop into
 // portcullis's panel-do/main.go ACTIONS section; the helpers they call —
-// runCmd, checkManagedScript, logf — live in that file too.
+// runCmd / runCmdInput, checkManagedScript, logf — live in that file too.
 
 // ── servitor (agent VM) ──────────────────────────────────────────────────────
 //
@@ -45,9 +45,12 @@ package main
 // host at /opt/servitor-repo) that portcullis hosts on the edge segment:
 // a libvirt domain on the edge bridge, reached by a plain file-provider
 // route (traefik/dynamic/servitor.yml — invariant 2 holds: the route is a
-// file, no docker.sock). The app authenticates nobody; the edge auth chain
-// is its only gate, and the VM's own nftables admits its port from the edge
-// subnet only.
+// file, no docker.sock). The app authenticates no user: the edge auth
+// chain gates the human, and the servitor-edge middleware's credential
+// (X-Servitor-Edge-Key, invariant 3 in the servitor repo) is what the app
+// re-verifies on every route — the VM's own nftables admits the port from
+// the whole edge subnet, so without it a neighbor container would drive
+// the agent unauthed.
 //
 // The four actions below are thin wrappers over virsh + the servitor repo's
 // host-side deploy scripts. The scripts exec as ROOT out of an admin-editable
@@ -72,7 +75,8 @@ var servitorPortRe = regexp.MustCompile(`^\d{1,5}$`)
 // servitorEnvKV reads ONE key from the servitor checkout's .env (the same
 // contract file deploy/sync.sh consumes). It never sources the file and
 // returns only the one value: the rest of it holds secrets (the API keys)
-// this action must not touch.
+// no action needs — the edge key (SERVITOR_EDGE_KEY) is the one exception
+// (the healthz probe presents it; invariant 3 in the servitor repo).
 func servitorEnvKV(key string) (string, error) {
 	data, err := os.ReadFile(servitorRepoPath + "/.env")
 	if err != nil {
@@ -92,16 +96,23 @@ func servitorEnvKV(key string) (string, error) {
 // probeServitorHealth — best-effort liveness probe from the host at the VM
 // ingress address: the target is the ONE pair of values the servitor
 // checkout's .env declares (SERVITOR_BIND/SERVITOR_PORT — the same contract
-// the sync pipeline and the doctor's open-probe use). A deliberate exception
-// to the "no network" rule, bounded on both ends: a 5 s one-shot curl to a
-// fixed, fully-validated target. The vm-up-but-app-down state is the one
-// the dashboard otherwise cannot see. Every probe failure degrades to a
-// string, never an error: status is a viewer, not a gate.
+// the sync pipeline and the doctor's open-probe use), and the request
+// carries the edge credential from the same file (invariant 3: the app 403s
+// keyless requests, so an unkeyed probe would read a healthy VM as down) —
+// on stdin (curl -K -), not argv: /proc/<pid>/cmdline is world-readable
+// (unlike environ, the reason for the reduced env files), so a secret on
+// argv would leak to every local uid for the 5 s of the probe.
+// A deliberate exception to the "no network" rule, bounded on both ends: a
+// 5 s one-shot curl to a fixed, fully-validated target that no caller input
+// can influence. The vm-up-but-app-down state is the one the dashboard
+// otherwise cannot see. Every probe failure degrades to a string, never an
+// error: status is a viewer, not a gate.
 func probeServitorHealth(ctx context.Context) string {
 	bind, err1 := servitorEnvKV("SERVITOR_BIND")
 	port, err2 := servitorEnvKV("SERVITOR_PORT")
-	if err1 != nil || err2 != nil {
-		return "(no probe: .env incomplete)"
+	edgeKey, err3 := servitorEnvKV("SERVITOR_EDGE_KEY")
+	if err1 != nil || err2 != nil || err3 != nil {
+		return "(no probe: .env incomplete — SERVITOR_BIND/SERVITOR_PORT/SERVITOR_EDGE_KEY)"
 	}
 	if m := servitorIPRe.FindStringSubmatch(bind); m == nil {
 		return "(no probe: SERVITOR_BIND is not a plain IPv4)"
@@ -118,7 +129,16 @@ func probeServitorHealth(ctx context.Context) string {
 	if n, _ := strconv.Atoi(port); n < 1 || n > 65535 {
 		return "(no probe: SERVITOR_PORT out of range)"
 	}
-	out, err := runCmd(ctx, "/usr/bin/curl", "-s", "-m", "5", "http://"+bind+":"+port+"/healthz")
+	// The credential rides a quoted curl-config line on stdin. The contract
+	// value is hex (openssl rand -hex 32); a quote, backslash or newline is
+	// a mis-set secret — degrade like every other probe failure (status is
+	// a viewer, not a gate).
+	if strings.ContainsAny(edgeKey, "\"\\\n") {
+		return "(no probe: SERVITOR_EDGE_KEY is not a plain value — the curl config can't carry it)"
+	}
+	out, err := runCmdInput(ctx, "/usr/bin/curl",
+		"header = \"X-Servitor-Edge-Key: "+edgeKey+"\"\n",
+		"-s", "-m", "5", "-K", "-", "http://"+bind+":"+port+"/healthz")
 	if err != nil {
 		if t := strings.TrimSpace(out); t != "" {
 			return "(unreachable: " + t + ")"

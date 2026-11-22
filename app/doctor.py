@@ -383,7 +383,13 @@ def check_ui(rep: Report) -> None:
     """The chat UI is served by the app itself (static, same port): GET /
     on the app's bind address must answer 200. If ui/dist is missing
     from the deployed tree, / is a bare FastAPI 404 while the API stays
-    healthy — only this check sees it."""
+    healthy — only this check sees it. The app key-gates EVERY route
+    (invariant 3, EdgeKeyMiddleware in app/api/app.py) while
+    SERVITOR_EDGE_KEY is set — production always: this doctor runs with
+    the guest env file sourced, so the probe presents the same value the
+    app verifies; keyless (dev/standalone) the gate is off and a bare
+    GET is right. A 403 here means the guest env's key drifted from what
+    the app holds — deploy/sync.sh re-injects it."""
     bind = optional_env("SERVITOR_BIND") or ""
     port = optional_env("SERVITOR_PORT") or ""
     if not bind or not port:
@@ -393,8 +399,12 @@ def check_ui(rep: Report) -> None:
     import urllib.request
 
     url = f"http://{bind}:{port}/"
+    req = urllib.request.Request(url)
+    edge_key = optional_env("SERVITOR_EDGE_KEY")
+    if edge_key:
+        req.add_header("X-Servitor-Edge-Key", edge_key)
     try:
-        with urllib.request.urlopen(url, timeout=5) as r:
+        with urllib.request.urlopen(req, timeout=5) as r:
             status, ctype = r.status, r.headers.get("Content-Type", "")
     except Exception as e:  # transport failure — report, don't crash the doctor
         rep.add("ui.index", FAIL, f"GET {url} failed ({type(e).__name__}: {e})")

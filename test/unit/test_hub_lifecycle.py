@@ -42,7 +42,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.lifecycle as lcmod
-from app.api.app import build_app
+from app.api.app import EDGE_KEY_HEADER, build_app
 from app.iso.layout import state_paths
 from app.lifecycle import (
     FREE, ALLOCATED, LIVE, DRAINING, CLEANING,
@@ -305,9 +305,9 @@ def test_quarantined_release_never_recreates_hub(tmp_path, monkeypatch):
     # without minting a hub either
     app = build_app(
         SimpleNamespace(registry=lc.cfg.registry, lc=lc, boot_report=0),
-        SimpleNamespace(browser_origin=None, heartbeat_secs=15),
+        SimpleNamespace(browser_origin=None, heartbeat_secs=15, edge_key="unit-test-edge-key"),
     )
-    c = TestClient(app)
+    c = TestClient(app, headers={EDGE_KEY_HEADER: "unit-test-edge-key"})
     r = c.get(f"/api/v1/sessions/{sid}/events")
     assert r.status_code == 404, r.text
     assert lc._hubs == {}
@@ -427,9 +427,9 @@ def test_events_endpoint_404_when_hub_gone():
     lc = SimpleNamespace(shutting_down=False, hub=lambda sid: None)
     app = build_app(
         SimpleNamespace(registry=_Registry(), lc=lc, boot_report=0),
-        SimpleNamespace(browser_origin=None, heartbeat_secs=15),
+        SimpleNamespace(browser_origin=None, heartbeat_secs=15, edge_key="unit-test-edge-key"),
     )
-    c = TestClient(app)
+    c = TestClient(app, headers={EDGE_KEY_HEADER: "unit-test-edge-key"})
     r = c.get("/api/v1/sessions/s1/events")
     assert r.status_code == 404, r.text
 
@@ -485,9 +485,9 @@ def test_prompt_quarantined_row_409_end_to_end(tmp_path, monkeypatch):
 
     app = build_app(
         SimpleNamespace(registry=lc.cfg.registry, lc=lc, boot_report=0),
-        SimpleNamespace(browser_origin=None, heartbeat_secs=15),
+        SimpleNamespace(browser_origin=None, heartbeat_secs=15, edge_key="unit-test-edge-key"),
     )
-    c = TestClient(app)
+    c = TestClient(app, headers={EDGE_KEY_HEADER: "unit-test-edge-key"})
     r = c.post(f"/api/v1/sessions/{sid}/prompt", json={"text": "hello"})
     assert r.status_code == 409, r.text
     assert "terminal" in r.json()["detail"]
@@ -509,9 +509,9 @@ def test_fork_quarantined_row_409_not_503(tmp_path, monkeypatch):
 
     app = build_app(
         SimpleNamespace(registry=lc.cfg.registry, lc=lc, boot_report=0),
-        SimpleNamespace(browser_origin=None, heartbeat_secs=15),
+        SimpleNamespace(browser_origin=None, heartbeat_secs=15, edge_key="unit-test-edge-key"),
     )
-    c = TestClient(app)
+    c = TestClient(app, headers={EDGE_KEY_HEADER: "unit-test-edge-key"})
     r = c.post(f"/api/v1/sessions/{sid}/fork", json={"entry_id": "e1"})
     assert r.status_code == 409, r.text
     assert "terminal" in r.json()["detail"]

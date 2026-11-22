@@ -40,6 +40,27 @@ slow consumer that falls behind the ring simply gets a gap — the run
 continues to completion (invariant 4). No caps: uploads/downloads stream
 to/from disk.
 
+Admission (invariant 3): the edge credential gate is active when
+``SERVITOR_EDGE_KEY`` is set — always in production (baked into the
+image at build, re-injected by the sync's key slice, certified by the
+doctor's keyed/keyless probes); unset in dev/standalone, where the app
+authenticates nobody and the bind is the control. When active, EVERY
+request must carry ``X-Servitor-Edge-Key`` — the value the Traefik
+``servitor-edge`` middleware injects after the auth chain, overwriting
+anything a client sends. :class:`EdgeKeyMiddleware` (pure-ASGI; it wraps
+the WHOLE app, the /assets StaticFiles mount included — route-level
+dependencies never reach a mount; websocket upgrades are checked the same
+way — fail-closed, the app is never called without a valid key — and
+lifespan passes through) constant-time-verifies it before any route runs
+and answers one uniform 403 for missing vs wrong.
+Why the credential: the guest firewall admits the port from the WHOLE
+edge subnet (the proxy's source IP is indistinguishable from a
+neighbor's), and that subnet carries the public gpu fleet — a
+compromised neighbor must not drive the agent or read its files
+directly. It stops no internet attacker (Authelia 2FA + the admins-only
+rule stays the human gate) — its population is unauthenticated
+in-subnet callers.
+
 Extension dialogs (select/confirm/input/editor) park in the session's
 process until the human answers (or aborts): the pending set is listed
 via GET .../dialogs and answered via POST .../dialogs/{id}/answer. pi
@@ -51,6 +72,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 import signal
 import time
 from contextlib import asynccontextmanager
@@ -60,6 +82,8 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
+from starlette.datastructures import Headers
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api.sse import HEARTBEAT, stream_events
 from app.delivery.service import Delivery
@@ -74,6 +98,84 @@ log = logging.getLogger("servitor.api")
 
 API_VERSION = "v1"
 PANEL_ACTIONS = ("start", "steer", "prompt", "abort", "release")
+
+# The edge credential header (invariant 3). The value is injected by
+# Traefik's `servitor-edge` headers middleware AFTER the auth chain —
+# customRequestHeaders overwrites any client-supplied value, so a
+# neighbor on the edge subnet cannot forge it without the secret.
+EDGE_KEY_HEADER = "X-Servitor-Edge-Key"
+
+
+class EdgeKeyMiddleware:
+    """The edge credential gate (invariant 3) — active only when the
+    key is set.
+
+    Configured: every request must carry the value the edge injects;
+    the app constant-time-verifies it before any route runs, one
+    uniform 403 for missing vs wrong (no oracle). Unset or empty:
+    no gate at all — dev/standalone runs authenticate nobody (the
+    bind is the control: dev binds loopback); production is ALWAYS
+    keyed (baked into the image at build, re-injected by the sync's
+    key slice, certified by the doctor's keyed/keyless probes), so a
+    keyless production boot is caught, not merely discouraged.
+    Pure-ASGI on purpose, in both directions: it must wrap the whole
+    app (the /assets mount is a separate ASGI app that FastAPI route
+    dependencies never see), and it must not buffer or intercept
+    ``receive`` (BaseHTTPMiddleware breaks the SSE streaming +
+    disconnect contract this app's event stream relies on). ``lifespan``
+    passes through untouched (middleware stacks sit above the router); a
+    websocket upgrade is checked the same way — the app is only ever
+    called with a valid key, the consumed ``connect`` is re-delivered —
+    and a missing/wrong key closes the upgrade without accepting, which
+    the server turns into a 403.
+    """
+
+    def __init__(self, app: ASGIApp, key: bytes) -> None:
+        self.app = app
+        self.key = key
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            if self.key:
+                provided = Headers(scope=scope).get(EDGE_KEY_HEADER, "").encode("latin-1")
+                if not secrets.compare_digest(provided, self.key):
+                    await JSONResponse({"detail": "forbidden"}, status_code=403)(
+                        scope, receive, send
+                    )
+                    return
+            await self.app(scope, receive, send)
+            return
+        if scope["type"] == "lifespan":
+            # Middleware stacks sit above the router: lifespan must reach
+            # the app untouched (a gate that swallowed it would silently
+            # kill the app's startup/shutdown).
+            await self.app(scope, receive, send)
+            return
+        # Websocket upgrade (the only other scope this app sees — the
+        # transport is SSE, not WS, so this path is defensive today): the
+        # gate's "EVERY request" claim must not depend on that staying
+        # true. The upgrade carries the same headers, so the same check
+        # applies; the connect message is consumed here and re-delivered
+        # once, because the app expects to receive it first.
+        if self.key:
+            connect = await receive()
+            provided = Headers(scope=scope).get(EDGE_KEY_HEADER, "").encode("latin-1")
+            if not secrets.compare_digest(provided, self.key):
+                # Close WITHOUT accepting: the app is never called, and the
+                # server rejects the upgrade (uvicorn answers 403).
+                await send({"type": "websocket.close"})
+                return
+            delivered = False
+
+            async def gated_receive() -> Message:
+                nonlocal delivered
+                if not delivered:
+                    delivered = True
+                    return connect
+                return await receive()
+
+            receive = gated_receive
+        await self.app(scope, receive, send)
 
 
 class PromptBody(BaseModel):
@@ -256,6 +358,21 @@ def build_app(app_state, cfg) -> FastAPI:
         # pre-fix 500 KeyError from pool.get
         log.info("release refused: %s", exc)
         return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    # Edge credential gate (invariant 3) — registered BEFORE the CORS
+    # middleware below: last-added is outermost, and a CORS preflight
+    # (OPTIONS, no key) must reach CORSMiddleware first. The credential
+    # is injected server-side by the proxy, so the browser never sees or
+    # sends it — same-origin UI, SSE and file downloads need no client
+    # change.
+    # (getattr, not attribute: a cfg built outside load_http_config that
+    # lacks the key gets an EMPTY key — gate off (dev/standalone
+    # semantics) instead of build_app crashing mid-startup; `or ""`
+    # because load_http_config hands out None for an unset key.)
+    app.add_middleware(
+        EdgeKeyMiddleware,
+        key=(getattr(cfg, "edge_key", "") or "").encode("latin-1"),
+    )
 
     if cfg.browser_origin:
         app.add_middleware(

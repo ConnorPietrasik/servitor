@@ -22,9 +22,11 @@ ENV_NAMES: tuple[str, ...] = (
     # --- machine credentials (the only secrets; invariant 5: env-only) ---
     "OMNISSIAH_API_KEY",  # router bearer (host's LLM_API_KEY)
     "EXA_API_KEY",  # search extension key; env-first in pi-web-access 0.48.0
-    # --- network contract (the edge is the only auth gate) ---
+    # --- network contract (the edge is the gate; the credential is its
+    #     proof — invariant 3) ---
     "SERVITOR_BIND",
     "SERVITOR_PORT",
+    "SERVITOR_EDGE_KEY",  # edge credential (invariant 3): verified on every route when set; unset/empty = gate off (dev/standalone)
     "SERVITOR_EDGE_SUBNET",
     "SERVITOR_OPS_SUBNET",
     "SERVITOR_BROWSER_ORIGIN",  # the one origin allowed to use the API from a browser (CORS)
@@ -84,6 +86,7 @@ class Config:
     # network contract
     bind: str  # ingress address; no default — env-only
     port: int  # the one published port; no default — env-only
+    edge_key: str | None  # edge credential (invariant 3); None/empty = gate off (dev/standalone — the bind is the control)
     edge_subnet: str | None  # None = dev loopback
     ops_subnet: str | None  # None = dev loopback
     browser_origin: str | None  # the one browser origin (CORS allow-list); None = API-only
@@ -160,6 +163,7 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
     return Config(
         bind=_require(env, "SERVITOR_BIND"),
         port=port,
+        edge_key=_optional(env, "SERVITOR_EDGE_KEY"),
         edge_subnet=_optional(env, "SERVITOR_EDGE_SUBNET"),
         ops_subnet=_optional(env, "SERVITOR_OPS_SUBNET"),
         browser_origin=_optional(env, "SERVITOR_BROWSER_ORIGIN"),

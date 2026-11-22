@@ -19,7 +19,8 @@ Asserts the interface contract before any runtime code exists:
    literal port.
 3. **Contract file parses** — the portcullis
    route yml loads as YAML with the expected shape (one router, the
-   servitor hostname, the auth-chain middleware, the SSE flush
+   servitor hostname, the auth-chain middleware, the servitor-edge
+   credential middleware, the SSE flush
    setting, and the absence of the dead readTimeout key).
 4. **Agent-config sanity** — models.json: literal baseUrl (``$VAR`` is
    NOT interpolated), ``apiKey: "$OMNISSIAH_API_KEY"`` (env-only key),
@@ -240,7 +241,12 @@ def main() -> int:
     )
     check(
         "auth-chain@file" in router.get("middlewares", []),
-        "route uses the auth-chain middleware (the only auth gate)",
+        "route uses the auth-chain middleware (the user gate)",
+    )
+    check(
+        "servitor-edge@file" in router.get("middlewares", []),
+        "route uses the servitor-edge credential middleware (invariant 3: "
+        "the app re-verifies X-Servitor-Edge-Key on every route)",
     )
     lb = route["http"]["services"]["servitor"]["loadBalancer"]
     urls = [s["url"] for s in lb.get("servers", [])]

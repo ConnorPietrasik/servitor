@@ -40,6 +40,19 @@ done
 set -a; source <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ENV_FILE"); set +a
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
 : "${SERVITOR_PORT:=8787}"
+# the edge credential (invariant 3): the key-gate probes below compare the
+# app's verdict against this .env's value
+: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential, invariant 3)}"
+# The keyed probe carries it on a quoted curl-config line via stdin (curl
+# -K -), never argv: /proc/<pid>/cmdline is world-readable (unlike environ),
+# so a secret on argv would leak to every local uid for the life of the
+# probe — the same contract as portcullis's panel-do healthz probe. The
+# contract value is hex (openssl rand -hex 32); a quote, backslash or
+# newline is a mis-set secret the config line can't carry — fail fast:
+# this script is a gate, not a viewer.
+case "$SERVITOR_EDGE_KEY" in
+  *\"*|*\\*|*$'\n'*) echo "SERVITOR_EDGE_KEY is not a plain value (quote/backslash/newline) — the curl config line can't carry it" >&2; exit 1 ;;
+esac
 SSH_TARGET="${SSH_TARGET:-root@${SERVITOR_VM_IP}}"
 [[ -f "$DEPLOY_KEY" ]] || { echo "deploy key not found: $DEPLOY_KEY" >&2; exit 1; }
 SSH=(ssh -i "$DEPLOY_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 "$SSH_TARGET")
@@ -70,6 +83,30 @@ if timeout 5 bash -c "exec 3<>/dev/tcp/${SERVITOR_VM_IP}/${SERVITOR_PORT}" 2>/de
   echo "PASS  firewall.probe_open   — port ${SERVITOR_PORT} open from ${SERVITOR_VM_IP} (edge subnet)"
 else
   echo "FAIL  firewall.probe_open   — port ${SERVITOR_PORT} NOT reachable from the host"
+  PROBE_RC=1
+fi
+
+# key gate (invariant 3): the app must REJECT the keyless request and ADMIT
+# the keyed one — proves the credential is enforced, the guest env key
+# matches THIS .env, and the edge contract holds end-to-end (the firewall
+# admits the whole edge subnet, so without the gate any neighbor container
+# would drive the agent unauthed). 403-everything (keyed also 403) is the
+# signature of a drifted/missing guest key — a sync fixes it. The keyed
+# request carries the credential via stdin (curl -K -), not argv (guard
+# at the top).
+code_nokey="$(curl -s -o /dev/null -w '%{http_code}' -m 5 "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" 2>/dev/null || true)"
+if [[ "$code_nokey" == "403" ]]; then
+  echo "PASS  firewall.probe_key_gate — keyless /healthz rejected (403 — the edge credential is enforced)"
+else
+  echo "FAIL  firewall.probe_key_gate — keyless /healthz got ${code_nokey:-000} (want 403: the app is serving unkeyed or is down)"
+  PROBE_RC=1
+fi
+code_key="$(printf '%s\n' "header = \"X-Servitor-Edge-Key: ${SERVITOR_EDGE_KEY}\"" \
+  | curl -s -o /dev/null -w '%{http_code}' -m 5 -K - "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" 2>/dev/null || true)"
+if [[ "$code_key" == "200" ]]; then
+  echo "PASS  firewall.probe_keyed   — keyed /healthz answered 200 (guest env key == this .env's key)"
+else
+  echo "FAIL  firewall.probe_keyed   — keyed /healthz got ${code_key:-000} (want 200: guest env key drifted from $ENV_FILE, or the app is down — run deploy/sync.sh)"
   PROBE_RC=1
 fi
 

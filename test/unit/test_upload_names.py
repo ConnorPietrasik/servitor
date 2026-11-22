@@ -32,7 +32,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.app import build_app
+from app.api.app import EDGE_KEY_HEADER, build_app
 from app.delivery.service import Delivery
 from app.delivery.store import DeliveredFile, FileNotDelivered, SessionFiles
 
@@ -113,7 +113,10 @@ def _client(tmp_path):
         ),
         boot_report=0,
     )
-    return TestClient(build_app(app_state, SimpleNamespace(browser_origin=None))), app_state
+    return TestClient(
+        build_app(app_state, SimpleNamespace(browser_origin=None, edge_key="unit-test-edge-key")),
+        headers={EDGE_KEY_HEADER: "unit-test-edge-key"},
+    ), app_state
 
 
 def _app_sf(app_state, sid: str = "s1") -> SessionFiles:

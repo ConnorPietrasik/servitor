@@ -13,7 +13,9 @@ steer or abort at any point.
   `servitor` systemd service in `servitor.slice`, no docker inside.
 - **App** (Python 3.12+, FastAPI, one asyncio process, root on the guest):
   HTTP/SSE API + control plane on one published port. It authenticates
-  nobody — the edge is the gate.
+  no user; when `SERVITOR_EDGE_KEY` is set (always in production) it
+  admits only requests carrying the edge credential the proxy injects
+  (invariant 3).
 - **Agent**: one `pi --mode rpc` subprocess per session, spawned setuid to a
   slot uid from a static pool of 16. The app is privileged; the agent never
   is.
@@ -25,9 +27,13 @@ steer or abort at any point.
   from the agent's view); all cleanup goes through one `release()` that
   sweeps by owner.
 - **Edge contract**: one reverse proxy routes one hostname to the VM's
-  ingress port and is the only auth gate. Production: the owner's portcullis
-  (Traefik file-provider + Authelia 2FA). Dev runs bind loopback only,
-  same code.
+  ingress port and is the only auth gate — it authenticates the user
+  (Authelia 2FA) AND injects the edge credential on every request it
+  proxies, which the app re-verifies (invariant 3). Production: the
+  owner's portcullis (Traefik file-provider + Authelia 2FA). Dev runs
+  bind loopback only, same code — the credential gate is active only
+  when `SERVITOR_EDGE_KEY` is set: leave it empty in a dev `.env` (no
+  gate, the bind is the control) or set it to exercise the same check.
 - **Config** (`agent-config/`) and the library (`lib/`) are synced one-way
   from this repo to the guest — versioned, doctor-gated, swap-based with
   rollback.
@@ -36,14 +42,12 @@ steer or abort at any point.
 
 Privilege model: **the app is privileged (root on the guest); the agent
 never is.** Each session's pi runs as a **slot uid** from a static pool of
-16. The agent's uid is never the app's uid — that is what makes the
-read-only config real (root could remount it rw; the agent cannot be
-root). Code and deploy comments cite these by number (`invariant N`).
+16. The agent's uid is never the app's uid.
 
 1. **Prompt injection is the dominant threat.** Search results, fetched
    pages, and uploaded files steer an agent that holds credentials and a
    network position. Mitigation ladder: VM boundary (no egress filtering
-   by design — exfiltration to the open internet is the *accepted
+   by design — exfiltration to the open internet is *accepted
    residual risk*), read-only where injection could persist (config,
    `lib/`), hash-verified uploads (staged, sha256-checked, atomically
    renamed — all-or-nothing), context-file discovery disabled,
@@ -58,10 +62,27 @@ root). Code and deploy comments cite these by number (`invariant N`).
    limits. Reach is bounded only by the slot uid and read-only areas.
    Controls are meters (run state, current tool, outbox) + human
    `steer()`/`abort()`.
-3. **The API authenticates nobody.** Anything that can reach the socket
-   can drive the agent; reachability is the control. Bind the ingress
-   interface, admit the port from the edge subnet only; dev binds
-   loopback.
+3. **The API authenticates no user — the edge is the gate, and it
+   shows a credential.** When `SERVITOR_EDGE_KEY` is set, every request
+   must carry `X-Servitor-Edge-Key` with the value the Traefik
+   `servitor-edge` headers middleware injects after the auth chain
+   (overwriting anything a client sends); the app constant-time-verifies
+   it on every route (and on websocket upgrades — fail-closed — while
+   lifespan passes through). The gate is active only when the key is set —
+   unset/empty authenticates nobody (dev/standalone; the bind is the
+   control) — while production is always keyed: baked into the image at
+   build (first boot already gated), re-injected by the sync's key
+   slice, certified by the doctor's keyed/keyless probes. Why the
+   credential: the guest firewall
+   admits the port from the WHOLE edge subnet (the proxy's source IP
+   is indistinguishable from a neighbor's), and that subnet carries the
+   public gpu fleet — a compromised neighbor must not be able to drive
+   the agent or read its files directly. Scope, honestly: it stops no
+   internet attacker (Authelia 2FA + admins-only stays the human gate)
+   and no host-side actor — its population is unauthenticated in-subnet
+   callers. Bind the ingress interface, admit the port from the edge
+   subnet only; dev binds loopback (gate off unless the dev `.env`
+   sets a key).
 4. **The producer never awaits a client.** Dropped phone connections
    never cancel, slow, or stall a run. Delivery is a separate concern
    from the run.

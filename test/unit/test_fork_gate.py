@@ -267,7 +267,7 @@ async def test_gc_orphans_syncs_a_live_driver_before_sweeping(tmp_path):
 def _client(fork_out):
     from fastapi.testclient import TestClient
 
-    from app.api.app import build_app
+    from app.api.app import EDGE_KEY_HEADER, build_app
 
     class _Row:
         state = "live"
@@ -281,8 +281,8 @@ def _client(fork_out):
         lc=SimpleNamespace(live={}, fork=AsyncMock(return_value=fork_out)),
         boot_report=0,
     )
-    app = build_app(app_state, SimpleNamespace(browser_origin=None))
-    return TestClient(app)
+    app = build_app(app_state, SimpleNamespace(browser_origin=None, edge_key="unit-test-edge-key"))
+    return TestClient(app, headers={EDGE_KEY_HEADER: "unit-test-edge-key"})
 
 
 def test_fork_endpoint_cancelled_reports_not_forked():

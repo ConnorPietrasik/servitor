@@ -3,8 +3,12 @@
 One system, one deployment: **production** (the portcullis edge — Traefik
 file-provider + Authelia 2FA forward-auth). The app binds `SERVITOR_BIND`
 on `SERVITOR_PORT`, both from the 0600 env file; the edge is an abstract
-contract (one reverse proxy routes one hostname to the VM ingress IP:port
-and is the only auth gate). Dev runs bind loopback only, same code.
+contract (one reverse proxy routes one hostname to the VM ingress IP:port,
+authenticates the user via forward-auth, AND injects the edge credential
+the app re-verifies on every route while it is set — invariant 3). Dev
+runs bind loopback only, same code — the gate is off unless the dev
+`.env` sets `SERVITOR_EDGE_KEY` (production is always keyed: baked into
+the image, the key slice, the doctor's probes).
 
 Servitor never reaches into portcullis, and portcullis never reaches into
 servitor at runtime.
@@ -34,8 +38,10 @@ deploy/
 never synced into the guest). The
 guest's copy lives at `/etc/servitor/servitor.env`, mode 0600, consumed by
 `servitor.service` (`EnvironmentFile=`). The sync pipeline owns the *key
-slice* of that file (re-injects `OMNISSIAH_API_KEY`/`EXA_API_KEY` on rotation;
-see Key rotation below).
+slice* of that file (re-injects `OMNISSIAH_API_KEY`/`EXA_API_KEY`/
+`SERVITOR_EDGE_KEY` on rotation; see Key rotation below). The edge key is
+also baked into the image at build time so the FIRST boot is already gated
+(invariant 3); the slice is what keeps it current after rotation.
 
 ## Production (portcullis)
 
@@ -67,6 +73,8 @@ host packages, `.env` template, image, state disk, the libvirt domain from
 
 ## Key rotation (portcullis's rotation does NOT reach the VM)
 
+Model/search keys (`LLM_API_KEY` / Exa):
+
 1. Edit the host `.env` (`LLM_API_KEY` / Exa).
 2. portcullis `make update` (for the host-side consumers).
 3. `deploy/sync.sh` on the host — re-injects the key slice into the guest's
@@ -74,6 +82,18 @@ host packages, `.env` template, image, state disk, the libvirt domain from
 4. Service restart (orderly: abort-then-drain) — the key is env-only per
    subprocess (invariant 5), so a restart re-reads it; no on-disk key to
    scrub.
+
+Edge key (`SERVITOR_EDGE_KEY`, invariant 3) rotates on BOTH sides, because
+the middleware's value and the guest's are separate copies that must agree
+(a drift 403s the whole UI — portcullis `make doctor` cross-checks them):
+
+1. Edit portcullis's `.env` (the middleware's source) AND the servitor host
+   `.env` (the guest's copy) with the SAME new value.
+2. portcullis `make update` (re-seds the deployed middlewares.yml).
+3. `deploy/sync.sh` — re-injects the key slice into the guest's 0600 env
+   file; the app restarts with the new key at the next idle moment.
+4. `deploy/doctor.sh` — its keyed/keyless probes certify the guest matches
+   the new value before you consider it done.
 
 ## Updates
 

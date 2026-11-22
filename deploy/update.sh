@@ -113,6 +113,18 @@ PI_FLOOR_ORIG="$SERVITOR_PI_VERSION"
 EXT_FLOOR_ORIG="$SERVITOR_PI_WEB_ACCESS_VERSION"
 : "${SERVITOR_VM_IP:?SERVITOR_VM_IP missing in $ENV_FILE (the guest edge address)}"
 : "${SERVITOR_PORT:=8787}"
+# the edge credential (invariant 3): the post-swap /healthz wait carries it
+# (the app 403s keyless requests — an unkeyed wait would time out on a
+# perfectly healthy VM). It rides a quoted curl-config line on stdin
+# (curl -K -), not argv: /proc/<pid>/cmdline is world-readable (unlike
+# environ), so a secret on argv would leak to every local uid for the life
+# of the wait — the same contract as portcullis's panel-do probe. The
+# contract value is hex (openssl rand -hex 32); a quote, backslash or
+# newline is a mis-set secret the config line can't carry — fail fast.
+: "${SERVITOR_EDGE_KEY:?SERVITOR_EDGE_KEY missing in $ENV_FILE (the edge credential, invariant 3)}"
+case "$SERVITOR_EDGE_KEY" in
+  *\"*|*\\*|*$'\n'*) echo "SERVITOR_EDGE_KEY is not a plain value (quote/backslash/newline) — the curl config line can't carry it" >&2; exit 1 ;;
+esac
 SSH_TARGET="${SSH_TARGET:-root@${SERVITOR_VM_IP}}"
 [[ -f "$DEPLOY_KEY" ]] || { echo "deploy key not found: $DEPLOY_KEY" >&2; exit 1; }
 [[ -x "$REPO/.venv/bin/python" ]] || { echo "host checkout venv missing — sudo make venv (+ the slot1 user) per INSTALL.md §10: the update gate runs in it" >&2; exit 1; }
@@ -395,7 +407,8 @@ EOF
   fi
   ok=0; t2=0
   while (( t2 < 300 )); do
-    if curl -sf -m 5 "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" > /dev/null 2>&1; then ok=1; break; fi
+    if printf '%s\n' "header = \"X-Servitor-Edge-Key: ${SERVITOR_EDGE_KEY}\"" \
+        | curl -sf -m 5 -K - "http://${SERVITOR_VM_IP}:${SERVITOR_PORT}/healthz" > /dev/null 2>&1; then ok=1; break; fi
     sleep 5; t2=$((t2 + 5))
   done
   if [[ "$ok" != "1" ]]; then

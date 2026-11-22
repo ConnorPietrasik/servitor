@@ -24,7 +24,7 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 
 import app.api.app as app_mod
-from app.api.app import build_app
+from app.api.app import EDGE_KEY_HEADER, build_app
 
 INDEX = "<html>index</html>\n"
 SECRET = "OMNISSIAH_API_KEY=super-secret-router-bearer\n"
@@ -48,7 +48,10 @@ def _client(tmp_path, monkeypatch):
         lc=SimpleNamespace(live={}),
         boot_report=0,
     )
-    return TestClient(build_app(app_state, SimpleNamespace(browser_origin=None)))
+    return TestClient(
+        build_app(app_state, SimpleNamespace(browser_origin=None, edge_key="unit-test-edge-key")),
+        headers={EDGE_KEY_HEADER: "unit-test-edge-key"},
+    )
 
 
 def test_index_and_known_files_served(tmp_path, monkeypatch):
