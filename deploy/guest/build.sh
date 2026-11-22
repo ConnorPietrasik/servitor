@@ -368,9 +368,15 @@ ssh-keygen -A >/dev/null
 # first-boot hygiene: the bootstrap ships an UNPOPULATED machine-id (empty or
 # the literal "uninitialized"), so systemd-firstboot.service would drop into
 # an interactive prompt and HANG boot, and logind refuses to start without a
-# valid id. Set the id and mask firstboot; both are certified after the
-# filesystem is quiesced (see the [6/7] artifact gate).
-systemd-machine-id-setup >/dev/null
+# valid id. The build writes the id itself, not via systemd-machine-id-setup:
+# that tool's behavior floats with the repo systemd this build just upgraded
+# (current releases treat "uninitialized" as terminal — exit 0, no write),
+# and its chroot detection (comparing /proc/1/root with /) is blind in this
+# build (host /proc, no pid namespace), so when it DOES write it reuses the
+# host's own id from the bound /run. Mask firstboot too; both are certified
+# after the filesystem is quiesced (see the [6/7] artifact gate).
+head -c 16 /dev/urandom | od -An -v -tx1 | tr -d ' \n' > /etc/machine-id
+chmod 0444 /etc/machine-id
 ln -sf /dev/null /etc/systemd/system/systemd-firstboot.service
 cat > /etc/zram-generator.conf <<'CONF'
 [zram0]

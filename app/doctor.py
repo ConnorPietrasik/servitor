@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -169,6 +170,28 @@ def check_state_mount(rep: Report, root: str) -> None:
             "state root is NOT a separate mount point — unprivileged dev is fine with "
             "this; on the guest it means the state disk is missing and all state "
             "silently lives on the 24G root disk (create + attach it, reboot)",
+        )
+
+
+def check_machine_id(rep: Report, path: str = "/etc/machine-id") -> None:
+    # logind refuses to start without a valid id, and systemd-firstboot
+    # prompts (hanging a boot nobody watches) on an empty one. The image
+    # build writes the id directly — the deployed system is certified the
+    # same way the build gate certifies the image: 32 lowercase hex chars,
+    # nothing else. No dev-mode shape is tolerated: every booted Linux box
+    # carries a valid machine-id, so a red here is a broken guest, full stop.
+    try:
+        v = Path(path).read_text().strip()
+    except OSError as e:
+        rep.add("os.machine_id", FAIL, f"machine-id unreadable ({e})")
+        return
+    if re.fullmatch(r"[0-9a-f]{32}", v):
+        rep.add("os.machine_id", PASS, "valid 128-bit id")
+    else:
+        rep.add(
+            "os.machine_id", FAIL,
+            f"machine-id is not a valid id ({v!r}) — logind cannot start and "
+            "firstboot would prompt; repair: write 32 random hex chars, reboot",
         )
 
 
@@ -1016,6 +1039,7 @@ async def main(argv: list[str]) -> int:
     check_env(rep, args)
     check_state_fs(rep, args.state)
     check_state_mount(rep, args.state)
+    check_machine_id(rep)
     check_ancestors(rep, args.state, args.toolkit)
     check_config_version(rep, f"{args.state.rstrip('/')}/config")
     check_slots(rep, args.slots + [args.probe_slot])
