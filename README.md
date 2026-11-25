@@ -22,9 +22,11 @@ steer or abort at any point.
 - **Isolation**: per-session overlay mounts on a fixed-size state volume
   (`/var/lib/servitor`, its own local disk — never overlayfs, which would
   refuse the per-session overlay uppers);
-  config, `lib/`, and the toolkit are read-only to the agent; uploads are
-  hash-verified and delivered by atomic rename (one copy, all-or-nothing
-  from the agent's view); all cleanup goes through one `release()` that
+  config, `lib/`, `inbox/` (a session's uploads), and the toolkit are
+  read-only to the agent; uploads are hash-verified, stored once in a
+  content-addressed blob store, and delivered by hardlink — one copy of the
+  bytes, all-or-nothing from the agent's view, and no session can rewrite or
+  remove what a human sent; all cleanup goes through one `release()` that
   sweeps by owner.
 - **Edge contract**: one reverse proxy routes one hostname to the VM's
   ingress port and is the only auth gate — it authenticates the user
@@ -44,25 +46,11 @@ Privilege model: **the app is privileged (root on the guest); the agent
 never is.** Each session's pi runs as a **slot uid** from a static pool of
 16. The agent's uid is never the app's uid.
 
-1. **Prompt injection is the dominant threat.** Search results, fetched
-   pages, and uploaded files steer an agent that holds credentials and a
-   network position. Mitigation ladder: VM boundary (no egress filtering
-   by design — exfiltration to the open internet is *accepted
-   residual risk*), read-only where injection could persist (config,
-   `lib/`), hash-verified uploads (staged, sha256-checked, atomically
-   renamed — all-or-nothing), context-file discovery disabled,
-   launch-line trust flags asserted in the conformance suite and
-   doctor, per-session uid + overlay + owner-sweep, `lib/` writable
-   only by a distinct human action. One further accepted residual with
-   a warning: baseline extension discovery means an extension an agent
-   plants in its own tree loads on the next respawn — visible
-   (new-extension warning), not blocked; it adds no reach the slot
-   uid doesn't already have, only an unattended trigger point.
-2. **No caps:** no path allow-lists, no iteration/wall-clock/vision
+1. **No caps:** no path allow-lists, no iteration/wall-clock/vision
    limits. Reach is bounded only by the slot uid and read-only areas.
    Controls are meters (run state, current tool, outbox) + human
    `steer()`/`abort()`.
-3. **The API authenticates no user — the edge is the gate, and it
+2. **The API authenticates no user — the edge is the gate, and it
    shows a credential.** When `SERVITOR_EDGE_KEY` is set, every request
    must carry `X-Servitor-Edge-Key` with the value the Traefik
    `servitor-edge` headers middleware injects after the auth chain
@@ -73,47 +61,68 @@ never is.** Each session's pi runs as a **slot uid** from a static pool of
    control) — while production is always keyed: baked into the image at
    build (first boot already gated), re-injected by the sync's key
    slice, certified by the doctor's keyed/keyless probes.
-4. **The producer never awaits a client.** Dropped phone connections
+3. **The producer never awaits a client.** Dropped phone connections
    never cancel, slow, or stall a run. Delivery is a separate concern
    from the run.
-5. **The key is env-only per subprocess.** `OMNISSIAH_API_KEY` is passed
+4. **The key is env-only per subprocess.** `OMNISSIAH_API_KEY` is passed
    to each pi subprocess by env only — never on argv (visible in
    `/proc/*/cmdline` to every slot), never in the synced config, never
    in a transcript or app log.
-6. **Session existence is the app's fact, not pi's.** The registry owns
+5. **Session existence is the app's fact, not pi's.** The registry owns
    sessions and records pi's `sessionFile`; empty sessions are never
    persisted by pi, so the app must not guess.
-7. **One process per session file at a time** — live run, respawn, or
+6. **One process per session file at a time** — live run, respawn, or
    probe.
-8. **Release is the only cleanup path**, used by all four triggers, and
+7. **Release is the only cleanup path**, used by all four triggers, and
    a slot is never handed out before its sweep verifies clean.
-9. **The run does not need a client.** Zero subscribers ⇒ the log keeps
+8. **The run does not need a client.** Zero subscribers ⇒ the log keeps
    growing; no stall, no cancel. Abort is an explicit POST, never a side
    effect of a socket dying.
-10. **Config reaches a session only at spawn.** A live session keeps the
+9. **Config reaches a session only at spawn.** A live session keeps the
     config it started with (copy-up/overlay semantics) — do not "fix"
     hot-reload; pi does not support it.
-11. **Artifacts leave through the outbox/download endpoint or `lib/`** —
-    and only "save this script" into `lib/` is ever a human UI action.
-    There is no agent-reachable write to any durable artifact.
-12. **No git credentials in the VM — the agent can never write to a
-    repo.** The guest ships git (clone/fetch for reading) but no keys,
-    tokens, or credential helpers; all git reconciliation is host-side.
-    The threat this closes is not exfiltration (an accepted residual,
-    invariant 1) — it is that a prompt-injected agent must never be
-    able to push to, or otherwise modify, your repositories.
-13. **The live process is the transcript's authority.** While a session's
+10. **Artifacts leave through the outbox/download endpoint, a human keep,
+    or `lib/`** — and only "keep this" / "save this into `lib/`" are ever
+    human UI actions (as are rename, delete, and attach). There is no
+    agent-reachable write to any durable area: the agent's writable areas are
+    its overlay workdir, its `outbox/` bind, and `/tmp`. A keep is a hardlink
+    to the app's copy of the bytes, so it costs nothing and no session can
+    rewrite what was kept.
+11. **The live process is the transcript's authority.** While a session's
     process is alive the app reads the transcript only through pi RPC;
     it parses the JSONL itself only when the process is dead — the boot
     crash signature (a run that never settled) and the dead-process
     reattach (the active branch from the file's tail). Compaction state
     is never reconstructed from the file — that is pi's contract.
+12. **A session's files are its own, and root reads them only through that
+    fact.** The app runs as root and CAN read any inode on the volume; every
+    list/read/delete path requires `st_uid == slot.uid` — or, for a delivered
+    upload (root-owned by design, which is what makes it un-deletable by the
+    agent), that the inode *is* the blob for the sha the app computed at
+    upload time. `find / -user` does not follow hardlinks and neither does
+    "the path is inside the directory": without this gate, one `ln /etc/shadow
+    outbox/x` would advertise, hash, and serve a file the session never wrote.
+    (A session whose slot this host cannot resolve has no uid to bind to:
+    interactive reads keep a dev/no-slot fallback, and the background sweep
+    skips it rather than read unbounded.)
+13. **A transfer is resumable, and an archive is streamed.** Uploads arrive in
+    chunks written at the offset the client names — a lost response costs one
+    chunk, not the file, and a resume that would splice two different files is
+    refused. Directory downloads are deflated straight out of the session's
+    gated listing with no staging copy: an archive must not need room for the
+    archive. Both are byte-metered and cancellable, because the phone is on a
+    metered link.
+14. **The UI pays for change, not for waiting.** No route is polled: the
+    session's stream carries file deltas, the app-wide stream carries
+    lifecycle/run state, listings are ETag'd, per-version sha/MIME are
+    computed once, and a hidden tab closes its stream. Byte meters exist to
+    be read, never to limit.
 
 ## Repo layout
 
 | path | what |
 |---|---|
-| `app/` | the guest-side app: API, lifecycle, isolation core, pi rpc driver, doctor |
+| `app/` | the guest-side app: API, lifecycle, isolation core, pi rpc driver, delivery (blob store, keep shelf, file watch, byte meters), doctor |
 | `ui/` | chat UI (React/Vite, static, served by the app on the same port) |
 | `agent-config/` | agent system prompt, model config, skills — synced read-only |
 | `lib/` | durable human-curated library — synced read-only to the agent |

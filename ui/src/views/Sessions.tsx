@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import * as api from "../api";
-import type { SessionRow } from "../types";
+import type { SessionRow, UsageResp } from "../types";
+import { fmtBytes } from "../format";
 
 function fmtAgo(ts: number | null | undefined): string {
   if (!ts) return "—";
@@ -10,6 +11,31 @@ function fmtAgo(ts: number | null | undefined): string {
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
+}
+
+// "4.1 GB held · GC in 3d" — the two numbers that make pin-or-download a
+// decision instead of a surprise. A release sweeps the session's files with
+// everything else, so an unpinned session holding something you care about
+// has to be pinned (or downloaded) BEFORE the idle GC reaches it.
+function bytesLine(s: SessionRow, u: UsageResp | null): string | null {
+  const mine = u?.by_session?.[s.id];
+  if (!mine) return null;
+  // every per-session area the server bills (the same set release deletes
+  // and area_footprint counts) — sum them all except the file count, so a
+  // new area on the server can never silently drop out of this number
+  const bytes = Object.entries(mine)
+    .filter(([k]) => k !== "files")
+    .reduce((n, [, v]) => n + v, 0);
+  const parts: string[] = [];
+  if (bytes > 0) parts.push(`${fmtBytes(bytes)} held`);
+  const idleDays = u?.gc_idle_days ?? null;
+  if (!s.stable && idleDays && s.last_activity) {
+    const left = idleDays * 86400 - (Date.now() / 1000 - s.last_activity);
+    if (left > 0 && left < 4 * 86400) {
+      parts.push(left > 86400 ? `GC in ${Math.ceil(left / 86400)}d` : `GC in ${Math.ceil(left / 3600)}h`);
+    }
+  }
+  return parts.length ? parts.join(" · ") : null;
 }
 
 function stateChip(s: SessionRow): { label: string; cls: string } {
@@ -26,30 +52,62 @@ function stateChip(s: SessionRow): { label: string; cls: string } {
 
 export default function Sessions() {
   const [rows, setRows] = useState<SessionRow[] | null>(null);
+  const [use, setUse] = useState<UsageResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const nav = useNavigate();
-  const timer = useRef<number | null>(null);
+  const unsub = useRef<(() => void) | null>(null);
+  const pending = useRef<number | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const d = await api.listSessions();
+      const [d, u] = await Promise.all([
+        api.listSessions(),
+        api.usage().catch(() => null), // meters are the one thing allowed to fail
+      ]);
       setRows(d.sessions);
+      api.pruneGoneSessionStorage(d.sessions.map((s) => s.id));
+      if (u) setUse(u);
       setErr(null);
     } catch (e) {
       setErr(String(e));
     }
   }, []);
 
-  // meters update without a live socket: poll the list (O(1) registry
-  // read server-side) — no SSE needed on the list screen
-  useEffect(() => {
-    load();
-    timer.current = window.setInterval(load, 5000);
-    return () => {
-      if (timer.current) window.clearInterval(timer.current);
-    };
+  // The list follows reality on the app-wide stream — no polling. A burst of
+  // events (an update touches every session) coalesces into ONE refetch, and
+  // a hidden screen closes its stream instead of holding the radio awake.
+  const refetchSoon = useCallback(() => {
+    if (pending.current !== null) return;
+    pending.current = window.setTimeout(() => {
+      pending.current = null;
+      void load();
+    }, 600);
   }, [load]);
+
+  useEffect(() => {
+    void load();
+    const attach = () => {
+      if (unsub.current) return;
+      unsub.current = api.subscribeGlobal(refetchSoon, () => void load());
+    };
+    attach();
+    const onVis = () => {
+      if (document.hidden) {
+        unsub.current?.();
+        unsub.current = null;
+      } else {
+        void load();
+        attach();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      unsub.current?.();
+      document.removeEventListener("visibilitychange", onVis);
+      if (pending.current !== null) window.clearTimeout(pending.current);
+    };
+  }, [load, refetchSoon]);
 
   async function create() {
     setCreating(true);
@@ -76,9 +134,14 @@ export default function Sessions() {
     <div className="page">
       <header className="topbar">
         <h1>Servitor</h1>
-        <button className="btn primary" onClick={create} disabled={creating}>
-          + New session
-        </button>
+        <div className="actions">
+          <Link className="btn ghost" to="/kept" title="files you kept past their session">
+            kept
+          </Link>
+          <button className="btn primary" onClick={create} disabled={creating}>
+            + New session
+          </button>
+        </div>
       </header>
 
       {err && <div className="banner err">{err}</div>}
@@ -93,6 +156,7 @@ export default function Sessions() {
       <ul className="list">
         {rows?.map((s) => {
           const chip = stateChip(s);
+          const held = bytesLine(s, use);
           return (
             <li key={s.id} className="card">
               <Link className="card-main" to={`/s/${s.id}`}>
@@ -106,6 +170,13 @@ export default function Sessions() {
                   <span title="config version">cfg {s.config_version ?? "—"}</span>
                   <span title="last activity">{fmtAgo(s.last_activity)}</span>
                 </div>
+                {held && (
+                  <div className="card-notes">
+                    <span title="bytes this session holds; a release deletes them">
+                      {held}
+                    </span>
+                  </div>
+                )}
                 {(s.update_waiting || s.new_extensions.length > 0) && (
                   <div className="card-notes">
                     {s.update_waiting && <span>update waiting for idle</span>}

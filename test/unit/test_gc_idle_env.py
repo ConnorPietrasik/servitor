@@ -17,6 +17,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+from app.api.sse import EVENT_BUFFER_CAP
+from app.delivery.watch import FileWatch
 from app.main import App
 
 
@@ -24,7 +26,16 @@ class _FakeLifecycle:
     def __init__(self) -> None:
         # mirrors the CLI-fed defaults: this is the value that would have
         # silently won without the env wiring
-        self.cfg = SimpleNamespace(sse_ring_bytes=None, gc_idle_days=14.0)
+        self.cfg = SimpleNamespace(
+            sse_ring_bytes=None,
+            gc_idle_days=14.0,
+            files_sweep_sec=4.0,
+            stable_grace_sec=60.0,
+        )
+        # minted at init with the pre-env cap, like the real Lifecycle:
+        # the assertion below is that run_http re-applies the tuned cap
+        self.global_hub = SimpleNamespace(cap=EVENT_BUFFER_CAP)
+        self.files = FileWatch()
 
     def start_update_tick(self) -> None:
         pass
@@ -93,7 +104,25 @@ def test_gc_idle_days_defaults_to_14_without_env(monkeypatch):
 
 def test_sse_ring_bytes_env_reaches_lifecycle(monkeypatch):
     """The sibling wiring that already worked (the pattern this fix
-    mirrors) — keeps both caps asserted in one place."""
+    mirrors) — keeps both caps asserted in one place. The global stream's
+    hub is the one minted BEFORE the env lands on cfg: without the
+    re-apply in run_http it would keep the 50 MB default while every
+    session hub honoured the tuned value."""
     monkeypatch.setenv("SERVITOR_SSE_RING_BYTES", "123")
     app = _run_http(monkeypatch)
     assert app.lc.cfg.sse_ring_bytes == 123
+    assert app.lc.global_hub.cap == 123
+
+
+def test_file_sweep_knobs_reach_lifecycle(monkeypatch):
+    """Same boundary, the file-watch knobs: the sweep interval drives the
+    loop and the grace drives the `stable` badge — both must land, or the
+    documented .env lines are decoration. ``grace`` reaching the FileWatch
+    matters as much as the cfg field (the badge reads the watch, not the
+    config)."""
+    monkeypatch.setenv("SERVITOR_FILES_SWEEP_SEC", "11")
+    monkeypatch.setenv("SERVITOR_STABLE_GRACE_SEC", "120")
+    app = _run_http(monkeypatch)
+    assert app.lc.cfg.files_sweep_sec == 11
+    assert app.lc.cfg.stable_grace_sec == 120
+    assert app.lc.files.grace == 120.0

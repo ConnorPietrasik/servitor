@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.iso import configswap, mounts as M
-from app.iso.layout import SessionMountPaths, state_paths
+from app.iso.layout import STATE_AREAS, SessionMountPaths, state_paths
 from app.iso.release import release_session
 from app.iso.slots import SlotPool
 from app.iso.spawn import SlotIdentity, slot_identity
@@ -66,7 +66,7 @@ class Harness:
         self.root.mkdir(parents=True, exist_ok=True)
         self.root.chmod(0o755)  # slot uid must traverse (mkdtemp gives 0700)
         self.state = state_paths(str(self.root))
-        for area in ("config", "lib", "inbox", "scratch", "sessions"):
+        for area in STATE_AREAS:
             (Path(self.state.root) / area).mkdir(parents=True, exist_ok=True)
         # the fake toolkit: what /opt/toolkit would be on the guest
         self._toolkit = self.root / "toolkit"

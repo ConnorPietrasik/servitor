@@ -51,10 +51,25 @@ export interface OutboxFile {
   size: number;
   mtime: number;
   sha256: string | null; // null while the background hash runs
-  mime: string;
+  mime: string | null; // null until the same background pass lands (the UI does not render outbox mime; downloads get the blocking value)
+  // false while the agent is probably still writing it (a METER: an unstable
+  // file downloads the same; the badge only tells you what you are about to
+  // catch mid-write)
+  stable?: boolean;
+}
+
+// A file-change delta from the server's sweep — the only thing the file
+// lists consume after their first fetch (the UI never polls them).
+export interface FilesChanged {
+  added: OutboxFile[];
+  changed: OutboxFile[];
+  removed: string[];
+  at: number;
 }
 
 export interface UploadRow {
+  // the path the file LANDED under: a folder upload keeps its tree
+  // ("photos/a.jpg"), a single file is its name ("a.jpg")
   name: string;
   sha256: string;
   size: number;
@@ -65,6 +80,37 @@ export interface UploadRow {
 export interface FilesResp {
   outbox: OutboxFile[];
   uploads: UploadRow[];
+}
+
+// --- the kept shelf (bytes a human chose to keep past a session) ------
+export interface KeepRow {
+  path: string; // relpath under the shelf, e.g. "s1/report.md"
+  size: number;
+  mtime: number;
+  sha256?: string | null; // the store's name for the bytes; null while the background hash runs
+  mime: string;
+}
+
+export interface KeptResp {
+  keep: KeepRow[];
+}
+
+// --- state-volume byte meters (a report, never a limit) ---------------
+export interface UsageArea {
+  bytes: number;
+  files: number;
+}
+
+export interface UsageResp {
+  areas: Record<string, UsageArea>;
+  by_session: Record<string, Record<string, number>>;
+  shared_bytes: number;
+  loose_bytes: number;
+  fs: { total?: number; free?: number; used?: number };
+  at: number;
+  // the idle-GC threshold the server is running: shown next to a session's
+  // bytes so "pin it or lose it" is visible before it happens
+  gc_idle_days?: number | null;
 }
 
 // --- extension dialogs (the run blocks until the human answers or

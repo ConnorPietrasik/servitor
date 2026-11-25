@@ -342,6 +342,73 @@ def test_list_outbox_skips_planted_links(tmp_path):
     assert secret.read_text() == "SECRET" * 100
 
 
+# ---------------------------------------------------------------------- #
+# in-area links: a link is not the file its target has
+# ---------------------------------------------------------------------- #
+
+
+def test_outbox_path_refuses_a_link_into_the_area(tmp_path):
+    """A link resolving INSIDE the outbox passes the containment and the
+    uid gate (same area, same owner) — but it is not the file its target
+    has. The gate runs on the LITERAL name before the resolve, so a
+    link name is refused and the target keeps its name and bytes."""
+    sf = _sfiles(tmp_path)
+    sf.outbox.mkdir(parents=True)
+    (sf.outbox / "real.txt").write_text("do not delete me")
+    (sf.outbox / "link.txt").symlink_to("real.txt")
+
+    with pytest.raises(FileNotDelivered):
+        sf.outbox_path("link.txt")
+    # the target, under its own name, still resolves
+    assert sf.outbox_path("real.txt") == (sf.outbox / "real.txt").resolve()
+
+
+def test_delete_outbox_of_a_link_into_the_area_leaves_both(tmp_path):
+    """The resolve-first shape would have unlinked the TARGET's name and
+    reported the link's, leaving the target's bytes orphaned behind a
+    name the listing never shows. The link name is refused instead; the
+    human names the real file."""
+    sf = _sfiles(tmp_path)
+    sf.outbox.mkdir(parents=True)
+    (sf.outbox / "real.txt").write_text("do not delete me")
+    (sf.outbox / "link.txt").symlink_to("real.txt")
+
+    with pytest.raises(FileNotDelivered):
+        sf.delete_outbox("link.txt")
+
+    assert (sf.outbox / "real.txt").read_text() == "do not delete me"
+    assert (sf.outbox / "link.txt").is_symlink()
+
+
+def test_delete_outbox_through_a_linked_dir_is_refused(tmp_path):
+    """A symlinked dir is a link too: a name that crosses it answers for
+    the dir's target, which is not what was named."""
+    sf = _sfiles(tmp_path)
+    real = sf.outbox / "realdir"
+    real.mkdir(parents=True)
+    (real / "inner.txt").write_text("keep me")
+    (sf.outbox / "linkdir").symlink_to("realdir")
+
+    with pytest.raises(FileNotDelivered):
+        sf.delete_outbox("linkdir/inner.txt")
+
+    assert (real / "inner.txt").read_text() == "keep me"
+
+
+def test_rename_outbox_of_a_link_is_refused(tmp_path):
+    sf = _sfiles(tmp_path)
+    sf.outbox.mkdir(parents=True)
+    (sf.outbox / "real.txt").write_text("keep me")
+    (sf.outbox / "link.txt").symlink_to("real.txt")
+
+    with pytest.raises(FileNotDelivered):
+        sf.rename_outbox("link.txt", "renamed.txt")
+
+    assert (sf.outbox / "real.txt").read_text() == "keep me"
+    assert (sf.outbox / "link.txt").is_symlink()
+    assert not (sf.outbox / "renamed.txt").exists()
+
+
 async def test_start_failure_releases_slot_and_row(tmp_path, monkeypatch):
     """A failure at ANY start step (config missing, dir creation, mount —
     the tamper gate included — spawn) rolls back through release_session

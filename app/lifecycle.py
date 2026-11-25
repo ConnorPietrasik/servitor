@@ -21,13 +21,15 @@ from app.iso.layout import SessionMountPaths, StatePaths
 from app.iso.slots import NoFreeSlot, SlotOutsidePool, SlotPool
 from app.iso.spawn import slot_identity
 from app.iso.sweep import kill_strays_by_uid
-from app.iso.release import release_session
+from app.iso.release import area_footprint, release_session
 from app.api.sse import SseHub
 from app.api.transcript import (
     active_branch,
     entry_to_message,
     read_entries,
 )
+from app.delivery.usage import UsageMeter
+from app.delivery.watch import FileWatch
 from app.registry import (
     ALLOCATED,
     CLEANING,
@@ -46,6 +48,7 @@ PROBE_CACHE_TTL = 30.0
 PROBES = ("messages", "stats")
 
 # GC grace for orphaned fork transcripts (a fork is confirmed by the next write)
+BLOB_GRACE_SEC = 3600.0  # a blob stays until nothing has linked it this long
 ORPHAN_IDLE_GRACE_SEC = 86_400.0
 
 #: disk pressure: release oldest non-stable until usage is below this
@@ -53,6 +56,42 @@ DISK_PRESSURE_FRACTION = 0.90
 
 #: FREE-row retention (rows are API-gone; kept for operator/doctor visibility, then registry GC drops them)
 FREE_ROW_RETENTION_SEC = 7 * 86_400.0
+
+#: The one contract for the app-wide stream: what the sessions list is
+#: entitled to receive. Every ingress point mirrors a record to the global
+#: hub ONLY when its type is listed here — the driver's run-state sink and
+#: the app event feed — so a new kind is session-local until deliberately
+#: listed here AND in the UI's subscribeGlobal list (ui/src/api.ts; the
+#: pairing is linted by make check). A SUBSCRIPTION may view a subset of
+#: the set (?kinds= on the route; subscribeGlobal's third arg) — the
+#: stream's capability stays this list, the view is the client's choice.
+#: This stream is held open on a metered phone for the process's life, so
+#: it carries run state, lifecycle transitions, dialogs, update progress,
+#: and file actions — never per-token/per-message chatter.
+GLOBAL_EVENTS = (
+    "started",
+    "released",
+    "release_start",
+    "respawned",
+    "idle_killed",
+    "interrupted",
+    "drained",
+    "spawn_fatal",
+    "slot_quarantined",
+    "new_extension",
+    "extension_dialog",
+    "extension_dialog_resolved",
+    "agent_start",
+    "agent_end",
+    "agent_settled",
+    "file_uploaded",
+    "file_kept",
+    "file_deleted",
+    "file_renamed",
+    "keep_deleted",
+    "update_applying",
+    "update_restarted",
+)
 
 
 @dataclass
@@ -102,6 +141,8 @@ class LifecycleConfig:
     shutdown_grace_sec: float = 90.0  # strictly < the unit's TimeoutStopSec
     gc_idle_days: float = 14.0
     gc_interval_sec: float = 300.0
+    files_sweep_sec: float = 4.0  # outbox sweep (metadata only)
+    stable_grace_sec: float = 60.0  # mtime age after which a file is 'stable'
     delivery: "Delivery | None" = None
     sse_ring_bytes: int | None = None  # None = 50 MB default
     update_pending_path: str | None = None  # flag file, written by sync/update
@@ -158,12 +199,22 @@ class _AbortStartHooks:
 
 class EventFeed:
     """Bounded in-memory event feed; app events are also published to the
-    session's SseHub, the single per-session event source."""
+    session's SseHub, the single per-session event source.
 
-    def __init__(self, maxlen: int = 1000, hub_getter=None):
+    A feed event ALSO lands on the global stream — the sessions list's
+    "did anything change" notifier — only when its kind is in
+    GLOBAL_EVENTS. Mirroring is allow-listed, never blanket: that stream is
+    held open on a metered phone for the process's life, so a kind the list
+    does not render is not worth putting on the wire. An event with no
+    session id (``session_id`` None or the ``"*"`` app-wide marker) has no
+    session hub of its own; for it the global stream is the only stream.
+    """
+
+    def __init__(self, maxlen: int = 1000, hub_getter=None, global_hub=None):
         self._items: list[dict] = []
         self._maxlen = maxlen
         self._hub_getter = hub_getter
+        self.global_hub = global_hub
 
     def add(self, session_id: str | None, kind: str, detail: str = "") -> None:
         item = {
@@ -172,13 +223,20 @@ class EventFeed:
         self._items.append(item)
         if len(self._items) > self._maxlen:
             self._items = self._items[-self._maxlen :]
-        if self._hub_getter is not None and session_id:
+        if self._hub_getter is not None and session_id and session_id != "*":
             try:
                 hub = self._hub_getter(session_id)
                 if hub is not None:
                     hub.publish(kind, {"detail": detail, "ts": item["ts"]})
             except Exception:
                 log.exception("hub publish failed for %s/%s", session_id, kind)
+        if self.global_hub is not None and kind in GLOBAL_EVENTS:
+            try:
+                self.global_hub.publish(
+                    kind, {"session_id": session_id, "detail": detail, "ts": item["ts"]}
+                )
+            except Exception:
+                log.exception("global hub publish failed for %s", kind)
 
     def items(self, since: float = 0.0) -> list[dict]:
         return [i for i in self._items if i["ts"] >= since]
@@ -189,7 +247,14 @@ class Lifecycle:
         self.cfg = cfg
         self.live: dict[str, Live] = {}
         self._hubs: dict[str, "SseHub"] = {}
-        self.events = EventFeed(hub_getter=self.hub)
+        # the app-wide stream (sessions list, no per-session ring churn):
+        # NEVER in _hubs — that dict is per-session and release must drain
+        # it back to empty (test_hub_lifecycle pins that)
+        self.global_hub = SseHub("*", cap_bytes=cfg.sse_ring_bytes)
+        self.events = EventFeed(hub_getter=self.hub, global_hub=self.global_hub)
+        self.files = FileWatch(cfg.stable_grace_sec)
+        self.usage = UsageMeter(cfg.state.root)
+        self._files_task: Optional[asyncio.Task] = None
         self.hooks = LifecycleHooks(cfg.registry, cfg.pool, self.events)
         self._probe_locks: dict[str, asyncio.Future] = {}
         self._probe_cache: dict[tuple[str, str], tuple[float, Any]] = {}
@@ -222,12 +287,24 @@ class Lifecycle:
         self._hubs[session_id] = h
         return h
 
+    def hub_if_present(self, session_id: str) -> "SseHub | None":
+        """The session's hub WITHOUT minting one — for a publisher that has
+        no business opening a stream nobody asked for: the listing fetch,
+        whose delta matters only to watchers that already are. A fresh hub
+        would park a ring (up to the cap) of deltas a later subscriber never
+        needs — it starts from a full listing, not from a replay.
+
+        (The events route keeps the minting getter — a client that asked for
+        a stream wants it — and the feed does too, though for a started
+        session the hub exists from its first event anyway.)"""
+        return self._hubs.get(session_id)
+
     def close_streams(self) -> None:
-        """Close every session hub (idempotent). A streaming response never
-        ends on its own and uvicorn does not cancel one, so it would hold
-        the unit stop open to TimeoutStopSec. Reconnecting clients get 503
-        until restart."""
-        for h in list(self._hubs.values()):
+        """Close every session hub (and the global one) — idempotent. A
+        streaming response never ends on its own and uvicorn does not cancel
+        one, so it would hold the unit stop open to TimeoutStopSec.
+        Reconnecting clients get 503 until restart."""
+        for h in [*list(self._hubs.values()), self.global_hub]:
             try:
                 h.close()
             except Exception:
@@ -367,13 +444,37 @@ class Lifecycle:
             raise RuntimeError(
                 f"{session_id}: no event hub at spawn (row missing or "
                 f"not allocated/live)")
-        driver.on_event = hub.on_event
+        driver.on_event = self._record_sink(session_id, hub)
         # dialogs park in the driver (the child blocks until answered or aborted)
         driver.on_dialog = lambda _d, rec: self._on_dialog(session_id, rec)
         driver.on_dialog_resolved = lambda _d, rids: self._on_dialog_resolved(
             session_id, rids
         )
         return driver
+
+    def _record_sink(self, session_id: str, hub: "SseHub"):
+        """The driver's event sink: the session's hub always, and the global
+        stream for the types in GLOBAL_EVENTS — the same contract the feed
+        mirrors under (so the list follows run state without polling)."""
+
+        def _sink(record: dict[str, Any]) -> None:
+            hub.on_event(record)
+            name = str(record.get("type", ""))
+            if name in GLOBAL_EVENTS:
+                try:
+                    # the feed's ingress carries a human-readable `detail`
+                    # (it has one); a run-state record has none, so its
+                    # global payload is {session_id, ts} — the list reads
+                    # only session_id and the gap flag, and both shapes
+                    # satisfy that. (detail, when present, is what a UI
+                    # shows for keep_deleted; run-state events have none.)
+                    self.global_hub.publish(
+                        name, {"session_id": session_id, "ts": time.time()}
+                    )
+                except Exception:
+                    log.exception("global publish failed for %s", name)
+
+        return _sink
 
     def _on_dialog(self, session_id: str, rec: dict) -> None:
         """An extension dialog parked (select/confirm/input/editor); the run
@@ -753,6 +854,9 @@ class Lifecycle:
         if self._gc_task is not None:
             self._gc_task.cancel()
             self._gc_task = None
+        if self._files_task is not None:
+            self._files_task.cancel()
+            self._files_task = None
         grace = self.cfg.shutdown_grace_sec
         term_grace = min(10.0, grace)
         probe_cap = min(10.0, grace)
@@ -870,6 +974,75 @@ class Lifecycle:
     def start_gc(self) -> None:
         if self._gc_task is None:
             self._gc_task = asyncio.get_running_loop().create_task(self._gc_loop())
+
+    # ------------------------------------------------------------------ #
+    # file sweep (deltas for the UI; never a poll from the client)        #
+    # ------------------------------------------------------------------ #
+
+    def start_files(self) -> None:
+        """Start the outbox sweep loop (idempotent). Only the HTTP front
+        door needs it — stdio has no SSE consumers to feed."""
+        if self._files_task is None:
+            self._files_task = asyncio.get_running_loop().create_task(
+                self._files_loop()
+            )
+
+    async def _files_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self.cfg.files_sweep_sec)
+            try:
+                await self.files_tick()
+            except Exception:
+                log.exception("file sweep failed")
+
+    async def files_tick(self) -> list[str]:
+        """Sweep the outboxes someone is actually watching; publish deltas.
+
+        A session is swept only while its hub has a subscriber — a delta
+        nobody can receive is pure waste. Metadata only: no file bytes are
+        read here beyond the once-per-version sha/mime caches. Returns the
+        sessions that published something.
+        """
+        if self.shutting_down:
+            return []
+        noisy: list[str] = []
+        for sid, hub in list(self._hubs.items()):
+            if hub.consumer_count == 0 or hub.closed:
+                continue
+            row = self.cfg.registry.get(sid)
+            if row is None or row.state != LIVE:
+                continue
+            sfiles = self._sfiles_for(sid)
+            if sfiles is None:
+                continue
+            try:
+                _entries, delta = await asyncio.to_thread(self.files.sweep, sid, sfiles)
+            except OSError:
+                continue
+            if delta is not None:
+                hub.publish("files_changed", delta)
+                noisy.append(sid)
+        return noisy
+
+    def _sfiles_for(self, session_id: str):
+        """The session's delivery views, or None if its slot is unknown (a
+        row on a slot this host cannot resolve has nothing to sweep).
+
+        The sweep runs on a timer with root privileges: without the slot's
+        uid there is no gate to bind the reads to, so it skips rather than
+        list/hash/serve inodes unbounded (the API path keeps its dev/no-slot
+        fallback for interactive reads; the timer must not).
+        """
+        if self.cfg.delivery is None:
+            return None
+        row = self.cfg.registry.get(session_id)
+        if row is None:
+            return None
+        try:
+            slot = slot_identity(row.slot)
+        except Exception:
+            return None
+        return self.cfg.delivery.files(self.cfg.state, session_id, slot)
 
     # ------------------------------------------------------------------ #
     # update-pending tick                                                    #
@@ -1035,12 +1208,17 @@ class Lifecycle:
 
     async def gc_tick(self) -> list[str]:
         """Release sessions idle > gc_idle_days (not stable, not running);
-        sweep abandoned fork transcripts past the orphan grace; disk
-        pressure releases the oldest non-stable until headroom; registry
-        GC drops FREE rows past the retention."""
+        reclaim unreferenced blobs and staged uploads past their TTL; sweep
+        abandoned fork transcripts past the orphan grace; disk pressure
+        releases the oldest non-stable until headroom; registry GC drops FREE
+        rows past the retention."""
         if self.shutting_down:
             return []
         released: list[str] = []
+        # blob reclaim FIRST: a release below deletes a session's links, and
+        # the bytes are only truly back once nothing links them
+        await self.gc_blobs()
+        await self.gc_staged()
         # rows on slots outside this app's pool are never releasable from
         # here (release would raise SlotOutsidePool and skip the rest of the
         # tick): skip them in both release passes
@@ -1061,15 +1239,24 @@ class Lifecycle:
             res = await self.release(row.id, reason="idle GC")
             if res.released:
                 released.append(row.id)
-        # disk pressure
+        # disk pressure: release by what a session HOLDS, largest first.
+        # Age alone is the wrong order — freeing 3 MB from the oldest session
+        # when the volume is 20 GB short destroys a session for nothing.
+        # Stable and running sessions are never candidates, and a keep is
+        # never a candidate either: it lives outside every session area and
+        # release cannot reach it.
         if await asyncio.to_thread(self._disk_near_full):
-            for row in sorted(
-                (r for r in self.cfg.registry.list_sessions()
-                 if r.state == LIVE and r.slot in owned and not r.stable and not self._is_running(r.id)),
-                key=lambda r: r.last_activity,
-            ):
+            candidates = [
+                r for r in self.cfg.registry.list_sessions()
+                if r.state == LIVE and r.slot in owned and not r.stable and not self._is_running(r.id)
+            ]
+            for row, (files, nbytes) in await asyncio.to_thread(self._eviction_order, candidates):
                 if not await asyncio.to_thread(self._disk_near_full):
                     break
+                log.info(
+                    "disk pressure: releasing %s (holds %d file(s), %d bytes)",
+                    row.id, files, nbytes,
+                )
                 res = await self.release(row.id, reason="disk pressure")
                 if res.released:
                     released.append(row.id)
@@ -1207,6 +1394,33 @@ class Lifecycle:
                             os.path.join(sdir, name), exc_info=True)
         return swept
 
+    async def gc_blobs(self) -> int:
+        """The blob store's reclaim, on the tick (see
+        :meth:`app.delivery.blobs.Blobs.gc` for the refcount rule): a
+        release's unlink turns into free space without a second bookkeeping
+        layer."""
+        if self.cfg.delivery is None:
+            return 0
+        n = await asyncio.to_thread(self.cfg.delivery.gc_blobs, BLOB_GRACE_SEC)
+        if n:
+            self.usage.invalidate()
+        return n
+
+    async def gc_staged(self) -> list[str]:
+        """Sweep staged uploads nobody has touched past their TTL.
+
+        The boot sweep only sees what was already dead at boot: a client that
+        walks away while the app is up must not leave its part in staging
+        until the next restart — on a long-running service the tick is where
+        the TTL actually bites.
+        """
+        if self.cfg.delivery is None:
+            return []
+        gone = await asyncio.to_thread(self.cfg.delivery.gc_staged)
+        if gone:
+            self.usage.invalidate()
+        return gone
+
     async def gc_orphaned_files(self) -> int:
         """Sweep orphaned transcripts in sessions past the orphan grace
         (forks never confirmed by a write). Safe with a live process:
@@ -1276,6 +1490,34 @@ class Lifecycle:
             await self._sync_session_file(session_id, driver)
         return out
 
+    def _eviction_order(self, rows: list[SessionRow]) -> list[tuple[SessionRow, tuple[int, int]]]:
+        """Candidates sorted by what releasing them would free (largest
+        first), least recently active among equals.
+
+        Deduped within a session; bytes a session shares with another are
+        counted for both, which is optimistic for ordering and never a reason
+        to skip a candidate — the volume's own meter, not this estimate,
+        decides when the pass stops.
+        """
+        st = self.cfg.state
+        scored = [
+            (
+                row,
+                area_footprint(
+                    (
+                        st.inbox_for(row.id),
+                        st.outbox_for(row.id),
+                        st.staging_for(row.id),
+                        st.scratch_for(row.id),
+                        st.sessions_for(row.id),
+                    )
+                ),
+            )
+            for row in rows
+        ]
+        scored.sort(key=lambda it: (-it[1][1], it[0].last_activity))
+        return scored
+
     def _disk_near_full(self) -> bool:
         try:
             st = os.statvfs(self.cfg.state.scratch)
@@ -1319,6 +1561,10 @@ class Lifecycle:
         hub = self._hubs.pop(session_id, None)
         if hub is not None:
             hub.close()
+        # the file snapshot and the usage meter both describe a session that
+        # no longer exists: drop the first, force the second to re-walk
+        self.files.forget(session_id)
+        self.usage.invalidate()
         for which in PROBES:
             self._probe_cache.pop((session_id, which), None)
 

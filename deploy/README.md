@@ -148,6 +148,25 @@ host gates), a shut-off VM is SKIPPED — the tick never starts a VM the
 operator stopped on purpose (the swap would); the float then lands on the
 next tick after the VM is back, or via a manual run above.
 
+## Backing up the kept shelf
+
+```bash
+make pull                       # guest:/var/lib/servitor/keep -> $SERVITOR_PULL_DIR
+make pull ARGS=--new-only       # report what the host lacks, then pull only that
+make pull ARGS=--dry-run        # bytes only, nothing moved
+```
+
+`keep/` is the one state area with no session attached and no expiry — it
+outlives every release and is deleted only by an explicit delete in the UI, so
+it is the one part of the guest with no other copy. `deploy/pull.sh` is
+host-side and one-way (guest → host) over the deploy key `sync` uses: the guest holds no host credentials (the
+deploy key lives on the host only) and the agent has no route here —
+reconciliation stays host-side, as invariant 12 requires for git. It
+LISTS the shelf through the API first (so the run reports its byte count before
+moving any of them, over a link that may be metered) and rsyncs changed bytes
+only. Files the shelf no longer has stay on the host unless `--mirror` says
+otherwise.
+
 ## Runbook
 
 See `deploy/portcullis/RUNBOOK.md` (provisioning, sync, release, GC, drills).

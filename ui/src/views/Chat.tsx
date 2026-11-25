@@ -1,9 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
-import type { ExtensionDialog, Msg, SessionRow, ToolCall } from "../types";
+import type {
+  ExtensionDialog,
+  FilesChanged,
+  Msg,
+  SessionRow,
+  ToolCall,
+} from "../types";
 import Message from "../components/Message";
-import Outbox from "../components/Outbox";
+import Files, { type FileEvent } from "../components/Files";
 import Dialogs from "../components/Dialogs";
 import { fmtBytes } from "../format";
 
@@ -51,15 +57,33 @@ export default function Chat() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [tools, setTools] = useState<ToolLine[]>([]);
   const [running, setRunning] = useState(false);
-  const [subview, setSubview] = useState<"chat" | "outbox">("chat");
+  const [subview, setSubview] = useState<"chat" | "files">("chat");
+  // the last file-change from this session's stream, handed to the Files
+  // view: a delta to fold in, or null meaning "revalidate" (the phone itself
+  // deleted something, or the ring gapped). The Files view never polls.
+  const [fileEv, setFileEv] = useState<FileEvent | null>(null);
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [composerPrefill, setComposerPrefill] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const [dialogs, setDialogs] = useState<ExtensionDialog[]>([]);
-  const [uploads, setUploads] = useState<
-    { name: string; status: "uploading" | "done" | "failed"; size: number }[]
+  // one row per upload in this tab: progress is in LANDED bytes (what the
+  // radio paid for), cancel is explicit, and a failed row keeps its File so
+  // "retry" continues from the server's offset instead of starting over
+  const [dropping, setDropping] = useState(false);
+  const [jobs, setJobs] = useState<
+    {
+      id: string;
+      name: string;
+      total: number;
+      sent: number;
+      status: "uploading" | "done" | "failed" | "cancelled";
+      error?: string;
+    }[]
   >([]);
+  const jobFiles = useRef<Record<string, File>>({});
+  const jobTasks = useRef<Record<string, api.UploadTask>>({});
+  const [pending, setPending] = useState<api.StagedRecord[]>([]);
 
   const msgsRef = useRef<Msg[]>([]);
   msgsRef.current = msgs;
@@ -75,6 +99,22 @@ export default function Chat() {
   const applyEvent = useCallback((name: string, data: unknown) => {
     const d = (data ?? {}) as Record<string, any>;
     switch (name) {
+      case "files_changed":
+        setFileEv((c) => ({ seq: (c?.seq ?? 0) + 1, delta: d as unknown as FilesChanged }));
+        break;
+      case "file_kept":
+        // the listing is untouched by a keep; what may go stale is a
+        // kept-badge (a keep from another tab). Named, so the Files view
+        // refreshes the shelf it is showing instead of revalidating rows
+        setFileEv((c) => ({ seq: (c?.seq ?? 0) + 1, delta: null, kind: "file_kept" }));
+        break;
+      case "file_deleted":
+      case "file_uploaded":
+      case "file_renamed":
+        // what changed is not in these events (they carry a name, not a row):
+        // revalidate — an unchanged listing answers 304 for ~200 bytes
+        setFileEv((c) => ({ seq: (c?.seq ?? 0) + 1, delta: null }));
+        break;
       case "agent_start":
         setRunning(true);
         break;
@@ -299,8 +339,10 @@ export default function Chat() {
         },
         () => {
           // the ring evicted past our position: re-fetch + re-attach
-          // (never partial data)
+          // (never partial data) — and revalidate the file listing: its
+          // deltas were in the evicted window and will not be re-published
           void attach();
+          setFileEv((c) => ({ seq: (c?.seq ?? 0) + 1, delta: null }));
         },
       );
     } catch (e) {
@@ -315,6 +357,24 @@ export default function Chat() {
       if (flushTimer.current !== null) window.clearTimeout(flushTimer.current);
     };
   }, [attach, sid]);
+
+  // A hidden tab holds its socket open (and the radio with it) — the cost
+  // that matters. Close the stream when hidden; on show, re-attach from the
+  // snapshot (fetch + cursor) and revalidate the file listing — the same
+  // path a reconnect takes.
+  useEffect(() => {
+    const onVis = () => {
+      if (document.hidden) {
+        unsubRef.current?.();
+        unsubRef.current = null;
+      } else {
+        void attach();
+        setFileEv((c) => ({ seq: (c?.seq ?? 0) + 1, delta: null }));
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [attach]);
 
   // ---- composer ---------------------------------------------------------
   const [text, setText] = useState("");
@@ -336,11 +396,20 @@ export default function Chat() {
     setTools([]);
     setRunning(false);
     setDialogs([]);
-    setUploads([]);
+    // an upload belongs to the session it was started in; the rows go with it
+    setJobs([]);
+    setPending([]);
+    // the refs key job state by id and would otherwise pin the last
+    // session's File handles (and their tasks) for the tab's life: an
+    // in-flight pump keeps its own file closure, and a half-finished
+    // upload is re-offered from its staged record on the next visit
+    jobFiles.current = {};
+    jobTasks.current = {};
     setBanner(null);
     setText("");
     setClosing(false);
     setComposerPrefill(null);
+    setFileEv(null);
   }, [sid]);
 
   async function send(mode: "auto" | "followup") {
@@ -394,25 +463,146 @@ export default function Chat() {
     }
   }
 
-  function onFiles(files: FileList | null) {
-    if (!files || !sid) return;
-    for (const f of Array.from(files)) {
-      const entry = { name: f.name, status: "uploading" as const, size: f.size };
-      setUploads((cur) => [...cur, entry]);
-      api
-        .uploadFile(sid, f.name, f)
-        .then(() =>
-          setUploads((cur) =>
-            cur.map((u) => (u.name === f.name ? { ...u, status: "done" } : u)),
-          ),
-        )
-        .catch(() =>
-          setUploads((cur) =>
-            cur.map((u) => (u.name === f.name ? { ...u, status: "failed" } : u)),
-          ),
-        );
+  function runJob(id: string, file: File, resume?: api.StagedRecord) {
+    const patch = (p: Partial<(typeof jobs)[number]>) =>
+      setJobs((cur) => cur.map((j) => (j.id === id ? { ...j, ...p } : j)));
+    const go = resume
+      ? api.resumeStaged(sid!, resume, file, progress, task)
+      : api.uploadResumable(sid!, file, progress, task, api.relName(file));
+    function progress(sent: number, total: number) {
+      patch({ sent, total });
+    }
+    function task(task: api.UploadTask) {
+      // the registration is async (the POST /staged round-trip): a session
+      // switch in the window has already cleared the table this id belonged
+      // to, and writing into the new one would register a dead job
+      if (idRef.current !== sid) return;
+      jobTasks.current[id] = task;
+    }
+    go.then(
+      () => patch({ status: "done", sent: file.size }),
+      (e) => {
+        const cancelled = e instanceof api.UploadCancelled;
+        if (e instanceof api.StagedGone) {
+          // the server's upload id is dead: the next retry must open a fresh
+          // staged upload (retryJob reads this table), not resume the ghost
+          delete jobTasks.current[id];
+        }
+        patch({
+          status: cancelled ? "cancelled" : "failed",
+          error: cancelled ? undefined : String((e as Error).message ?? e),
+        });
+        // a cancelled upload's record follows the server's drop (cancelStaged
+        // forgets it only once the DELETE is confirmed): if the drop failed,
+        // the bytes are still on the server and the next visit re-offers the
+        // resume instead of re-sending the file
+      },
+    );
+  }
+
+  function sendFiles(files: File[]) {
+    if (!sid || files.length === 0) return;
+    for (const f of files) {
+      // the upload name is the file's path within its pick: a folder pick
+      // (webkitdirectory) arrives as the tree the human organized, a single
+      // file as its name
+      const name = api.relName(f);
+      // two files with the same name are two rows, so the key cannot be a name
+      const id = `${name}:${f.size}:${Math.random().toString(36).slice(2, 8)}`;
+      jobFiles.current[id] = f;
+      setJobs((cur) => [
+        ...cur,
+        { id, name, total: f.size, sent: 0, status: "uploading" },
+      ]);
+      runJob(id, f);
     }
   }
+
+  function onFiles(files: FileList | null) {
+    if (!files) return;
+    sendFiles(Array.from(files));
+  }
+
+  function retryJob(id: string) {
+    const f = jobFiles.current[id];
+    if (!f) return;
+    // the pump registered the server's upload id for this job: a retry must
+    // resume from where the server actually is, not open a fresh upload and
+    // orphan the bytes that already landed. A StagedGone failure clears the
+    // registration (above), so a dead id falls through to a fresh start.
+    const t = jobTasks.current[id];
+    const resume = t
+      ? { upload_id: t.uploadId, name: api.relName(f), total: f.size }
+      : undefined;
+    setJobs((cur) => cur.map((j) => (j.id === id ? { ...j, status: "uploading", error: undefined } : j)));
+    runJob(id, f, resume);
+  }
+
+  // A half-finished upload from before this page load. The bytes the server
+  // holds are not wasted — re-pick the same file (same name, same size) and
+  // the rest goes; a different file is refused rather than spliced on.
+  useEffect(() => {
+    if (!sid) return;
+    void (async () => {
+      const local = api.localStaged(sid);
+      if (local.length === 0) {
+        setPending([]);
+        return;
+      }
+      try {
+        const held = new Set((await api.listStaged(sid)).staged.map((r) => r.upload_id));
+        setPending(local.filter((r) => held.has(r.upload_id)));
+      } catch {
+        /* offline or gone: nothing to offer */
+      }
+    })();
+  }, [sid]);
+
+  function resumePending(rec: api.StagedRecord, file: File) {
+    const id = `resume:${rec.upload_id}`;
+    jobFiles.current[id] = file;
+    setJobs((cur) => [
+      ...cur,
+      { id, name: rec.name, total: rec.total, sent: 0, status: "uploading" },
+    ]);
+    setPending((cur) => cur.filter((r) => r.upload_id !== rec.upload_id));
+    runJob(id, file, rec);
+  }
+
+  async function discardPending(rec: api.StagedRecord) {
+    const ok = await api.cancelStaged(sid!, rec.upload_id);
+    if (ok) {
+      setPending((cur) => cur.filter((r) => r.upload_id !== rec.upload_id));
+    } else {
+      // the drop did not land: the bytes are still on the server — say so
+      // and keep the row, where the resume offer stays honest
+      setBanner("could not drop the upload — it is still on the server and will expire");
+    }
+  }
+
+  // paste a screenshot or a copied file straight into the session (the
+  // composer keeps focus; a paste with no files is left alone)
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const files = e.clipboardData?.files;
+      if (!files || files.length === 0) return;
+      e.preventDefault();
+      sendFiles(Array.from(files));
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+    // sendFiles is re-created per render; re-binding it every render would
+    // re-attach the listener for no reason (sid is the only real dependency)
+  }, [sid]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // dragend fires wherever the drop lands (or the drag is cancelled) — the
+  // composer's own onDragLeave does not fire when a drag dies outside the
+  // window, so without this the "drop to upload" hint lingers
+  useEffect(() => {
+    const onDragEnd = () => setDropping(false);
+    window.addEventListener("dragend", onDragEnd);
+    return () => window.removeEventListener("dragend", onDragEnd);
+  }, []);
 
   // "edit + go from here" (user message context menu): fork the
   // conversation back to this user message, prefill the composer, and
@@ -492,7 +682,7 @@ export default function Chat() {
       </header>
 
       <nav className="tabs">
-        {(["chat", "outbox"] as const).map((t) => (
+        {(["chat", "files"] as const).map((t) => (
           <button
             key={t}
             className={`tab ${subview === t ? "on" : ""}`}
@@ -544,14 +734,89 @@ export default function Chat() {
             onChanged={() => void refreshDialogs()}
           />
 
-          <div className="composer">
-            {uploads.length > 0 && (
+          <div
+            className={`composer${dropping ? " dropping" : ""}`}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDropping(true);
+            }}
+            onDragLeave={() => setDropping(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDropping(false);
+              sendFiles(Array.from(e.dataTransfer?.files ?? []));
+            }}
+          >
+            {dropping && <div className="drop-hint">drop to upload</div>}
+            {jobs.length > 0 && (
               <div className="uploads">
-                {uploads.map((u, i) => (
-                  <span key={i} className={`up ${u.status}`}>
-                    {u.status === "uploading" ? "⬆" : u.status === "done" ? "✓" : "✗"}{" "}
-                    {u.name} ({fmtBytes(u.size)})
-                  </span>
+                {jobs.map((j) => (
+                  <div key={j.id} className={`up ${j.status}`}>
+                    <span className="up-name" title={j.name}>
+                      {j.name}
+                    </span>
+                    {j.status === "uploading" && (
+                      <>
+                        <span className="bar" aria-label="uploaded so far">
+                          <span
+                            className="fill"
+                            style={{
+                              width: `${Math.round((j.sent / Math.max(j.total, 1)) * 100)}%`,
+                            }}
+                          />
+                        </span>
+                        <span className="muted sm">
+                          {fmtBytes(j.sent)} / {fmtBytes(j.total)}
+                        </span>
+                        <button
+                          className="btn ghost xs"
+                          onClick={() => jobTasks.current[j.id]?.cancel()}
+                        >
+                          cancel
+                        </button>
+                      </>
+                    )}
+                    {j.status === "done" && <span className="muted sm">✓ uploaded</span>}
+                    {j.status === "cancelled" && (
+                      <span className="muted sm">cancelled — nothing was delivered</span>
+                    )}
+                    {j.status === "failed" && (
+                      <>
+                        <span className="muted sm" title={j.error}>
+                          stopped at {fmtBytes(j.sent)} — {j.error}
+                        </span>
+                        <button className="btn xs" onClick={() => retryJob(j.id)}>
+                          resume
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {pending.length > 0 && (
+              <div className="uploads pending">
+                {pending.map((r) => (
+                  <div key={r.upload_id} className="up pending">
+                    <span className="up-name" title={r.name}>
+                      unfinished: {r.name} ({fmtBytes(r.total)})
+                    </span>
+                    <label className="mini">
+                      <input
+                        type="file"
+                        style={{ display: "none" }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          if (f) resumePending(r, f);
+                          e.target.value = "";
+                        }}
+                      />
+                      <span className="btn xs">pick the same file to finish</span>
+                    </label>
+                    <button className="btn ghost xs" onClick={() => void discardPending(r)}>
+                      discard
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -603,12 +868,37 @@ export default function Chat() {
                   className="btn ghost sm"
                   onClick={() => {
                     const el = document.querySelector<HTMLInputElement>(
-                      '.settings-row input[type="file"]',
+                      '.settings-row input[type="file"]:not([webkitdirectory])',
                     );
                     el?.click();
                   }}
                 >
                   attach
+                </span>
+              </label>
+              {/* a whole folder, the tree shape included: the pick's relative
+                  paths are the upload names, so the inbox keeps the folders
+                  (each file uploads independently and resumes independently) */}
+              <label className="mini">
+                <input
+                  type="file"
+                  style={{ display: "none" }}
+                  {...({ webkitdirectory: "", directory: "" } as Record<string, string>)}
+                  onChange={(e) => {
+                    onFiles(e.target.files);
+                    e.target.value = "";
+                  }}
+                />
+                <span
+                  className="btn ghost sm"
+                  onClick={() => {
+                    const el = document.querySelector<HTMLInputElement>(
+                      '.settings-row input[webkitdirectory]',
+                    );
+                    el?.click();
+                  }}
+                >
+                  folder
                 </span>
               </label>
             </div>
@@ -656,7 +946,20 @@ export default function Chat() {
         </>
       )}
 
-      {subview === "outbox" && <Outbox sid={sid} />}
+      {subview === "files" && (
+        <Files
+          sid={sid}
+          ev={fileEv}
+          onAttached={(name) => {
+            setText((cur) =>
+              cur.trim().length === 0
+                ? `I put ${name} in inbox/ — start from that.`
+                : `${cur}\n\nI also put ${name} in inbox/.`,
+            );
+            setSubview("chat");
+          }}
+        />
+      )}
     </div>
   );
 }

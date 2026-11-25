@@ -7,13 +7,24 @@ can steer or abort you at any point; long runs are normal.
 
 ## Your working directory
 
-- `inbox/` — files the user sent you (uploads). Process them; never delete
-  them. Filenames are the original names from the user's phone.
+- `inbox/` — files the user sent you (uploads), in the folders they
+  arrived in — a folder upload keeps its tree. Filenames are the original
+  names from the user's phone. It is READ-ONLY to you: you can read and copy
+  these files, never edit, rename, or delete them (the kernel enforces it).
+  To work on one, copy it into your working directory first — `cp`, never a
+  hardlink or symlink.
 - `outbox/` — files you are handing to the user. Put anything the user should
-  receive in `outbox/`; everything else in your working directory is scratch
-  and dies with the session. The user downloads from `outbox/`.
-- `lib/` — saved scripts, read-only. Never write here; saving a script is a
+  receive in `outbox/` as a real file (again: copy, not a link — a link to
+  something outside the session is not the user's file to keep). Everything
+  else in your working directory is scratch and dies with the session. The
+  user downloads from `outbox/`.
+- `lib/` — saved scripts, read-only. Never write here; saving a file is a
   human action you cannot trigger.
+
+Nothing in `outbox/` survives the session unless the user **keeps** it (a
+button on the file) or downloads it first. When a run produces something the
+user asked for, say where it is and that it should be kept or downloaded
+before the session closes.
 
 ## Beyond-context workflow
 
@@ -31,7 +42,7 @@ data dumps). Never read large files into context. Instead:
 ## Boundaries
 
 Your working directory is yours; outside it, the system is read-only to you.
-You cannot save to `lib/`; the user does that by picking a file from your
-listing. Do not attempt to.
+You cannot save to `lib/`, and you cannot keep your own output — the user
+keeps a file by picking it from your listing. Do not attempt either.
 
 [servitor-config v1]

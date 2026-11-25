@@ -4,7 +4,7 @@ Mounted at allocate, before any spawn/respawn; live for the SESSION
 lifetime — pi runs a session in its recorded cwd, so idle-kill never
 unmounts; only release does (reverse order).
 
-The four real mounts:
+The five real mounts:
 
 1. **Workdir overlay** — lower = /opt/toolkit (baked, a plain directory,
    never a mount), upper/work = scratch/<s>/{upper,work}, merged at the
@@ -14,7 +14,15 @@ The four real mounts:
    upper/work = scratch/<s>/{agent-upper,agent-work}.
    PI_CODING_AGENT_DIR = merged.
 3. **inbox bind** — state/inbox/<s> into the merged workdir as ./inbox.
-4. **models.json single-file RO bind** — over the merged agent dir (the
+   The source is root-owned, in a root-owned directory: the agent reads its
+   uploads and can hardlink them, but cannot write, rename, or delete them
+   (the kernel, not the prompt, enforces "never lose what the human sent").
+4. **outbox bind** — state/outbox/<s> into the merged workdir as ./outbox.
+   Slot-owned: this is where the agent's handoffs live, and being a bind of
+   a state-volume directory (not a directory inside the overlay upper) is
+   what keeps artifacts visible while the session is unmounted and lets the
+   app hardlink them into ``keep/`` across the same filesystem.
+5. **models.json single-file RO bind** — over the merged agent dir (the
    agent could otherwise shadow it in the upper and steer the NEXT run's
    endpoint; the bearer key rides along).
 
@@ -74,9 +82,10 @@ class MountOp:
 def ensure_session_dirs(sp: SessionMountPaths, state: StatePaths) -> None:
     """Create the scratch layout (as root) before mounting.
 
-    Note: the inbox BIND TARGET (``workdir/inbox``) is created only AFTER
-    the workdir overlay is mounted (the target must exist in the merged
-    view; a bind onto a missing target fails) — see mount_session.
+    Note: the inbox and outbox BIND TARGETS (``workdir/inbox``,
+    ``workdir/outbox``) are created only AFTER the workdir overlay is mounted
+    (the target must exist in the merged view; a bind onto a missing target
+    fails) — see mount_session.
     """
     for d in (
         sp.scratch,
@@ -88,6 +97,7 @@ def ensure_session_dirs(sp: SessionMountPaths, state: StatePaths) -> None:
         sp.agent_work,
         sp.web_cache,
         state.inbox_for(sp.session_id),
+        state.outbox_for(sp.session_id),
         state.sessions_for(sp.session_id),
     ):
         os.makedirs(d, exist_ok=True)
@@ -121,15 +131,39 @@ def _chown_tree(path: str, uid: int, gid: int) -> None:
     the app chown the target. Symlink entries become slot-owned links —
     harmless, they are the slot's own. The caller guarantees ``path`` itself
     is a real directory (``_assert_real_dir``).
+
+    Entries with more than one link are LEFT alone, and that is a security
+    rule, not an optimisation: a delivered upload's inode is shared with the
+    blob store (and with other sessions' inboxes), so chown'ing it here would
+    hand every holder write access to bytes they are only meant to read.
+    Same for an outbox artifact the human kept — the keep link shares it.
     """
     os.chown(path, uid, gid)  # real dir, guaranteed by the caller
     for dirpath, dirnames, filenames in os.walk(path):
         for name in list(dirnames) + list(filenames):
             p = os.path.join(dirpath, name)
             try:
+                st = os.lstat(p)
+                # directories carry nlink > 1 by their own nature (each
+                # subdirectory adds one); only file inodes can be shared by
+                # hardlink
+                if not stat.S_ISDIR(st.st_mode) and st.st_nlink > 1:
+                    continue  # a shared inode: never re-handed to one holder
                 os.lchown(p, uid, gid)
             except OSError:
                 pass
+
+
+def _make_agent_readonly(path: str) -> None:
+    """Root-owned, world-readable, slot-unwritable — the inbox's shape.
+
+    Only the DIRECTORY is set here; existing entries keep their ownership
+    (nothing gains access it lacked). New entries are created by the app
+    (root): no write permission on the directory means no create, rename,
+    or unlink, and no write permission on the inode means no in-place edit.
+    """
+    os.chown(path, 0, 0)
+    os.chmod(path, 0o755)
 
 
 def mount_session(
@@ -163,34 +197,42 @@ def mount_session(
         sp.agent_work,
         sp.web_cache,
         state.inbox_for(sp.session_id),
+        state.outbox_for(sp.session_id),
         state.sessions_for(sp.session_id),
     ):
         _assert_real_dir(d)
     # Hand the trees to the slot: one walk per TOP-LEVEL root — every
     # per-session scratch child (upper, work, workdir, agent_*, web_cache)
     # already sits under sp.scratch, so per-child chowns would re-walk the
-    # same entries.
+    # same entries. The inbox is NOT one of them: it is the agent's read-only
+    # area, and chown'ing it would make uploads deletable by the session that
+    # received them.
     for root in (
         sp.scratch,
-        state.inbox_for(sp.session_id),
+        state.outbox_for(sp.session_id),
         state.sessions_for(sp.session_id),
     ):
         _chown_tree(root, slot_uid, slot_gid)
+    _make_agent_readonly(state.inbox_for(sp.session_id))
     ops = plan_session_mounts(sp, config_lower, state, toolkit_dir, agent_dir_ro)
     # 1: workdir overlay
     ops[0].mount()
     try:
-        # the inbox bind target, created post-overlay and handed to the slot;
-        # a planted upper/inbox link would surface here in the merged view
+        # The inbox/outbox BIND TARGETS, created post-overlay. A planted
+        # upper/inbox or upper/outbox link would surface here in the merged
+        # view, so both are gated before anything is mounted on them.
         inbox_target = f"{sp.workdir}/inbox"
         os.makedirs(inbox_target, exist_ok=True)
         _assert_real_dir(inbox_target)
         os.chown(inbox_target, slot_uid, slot_gid)
-        # 2-4: agent-dir overlay, inbox bind, models.json RO bind
-        outbox = f"{sp.workdir}/outbox"  # the workdir convention (SYSTEM.md)
-        os.makedirs(outbox, exist_ok=True)
-        _assert_real_dir(outbox)
-        os.chown(outbox, slot_uid, slot_gid)
+        # The outbox target is covered by the bind a few lines below, so its
+        # own ownership is moot; a pre-upgrade run that left files in the
+        # upper's outbox/ has them shadowed by the bind — invisible to the
+        # agent AND the UI, and gone with the scratch at release.
+        outbox_target = f"{sp.workdir}/outbox"
+        os.makedirs(outbox_target, exist_ok=True)
+        _assert_real_dir(outbox_target)
+        # 2-5: agent-dir overlay, inbox bind, outbox bind, models.json RO bind
         for op in ops[1:]:
             op.mount()
     except Exception:
@@ -214,7 +256,7 @@ def plan_session_mounts(
     toolkit_dir: str = TOOLKIT_DIR,
     agent_dir_ro: bool = False,
 ) -> list[MountOp]:
-    """The four mounts, in mount order (teardown is the reverse).
+    """The five mounts, in mount order (teardown is the reverse).
 
     ``toolkit_dir`` defaults to the image-baked constant; tests inject a
     scratch toolkit (the production path always uses the constant).
@@ -242,6 +284,11 @@ def plan_session_mounts(
             kind="bind",
             target=f"{sp.workdir}/inbox",
             options=state.inbox_for(sp.session_id),
+        ),
+        MountOp(
+            kind="bind",
+            target=f"{sp.workdir}/outbox",
+            options=state.outbox_for(sp.session_id),
         ),
         MountOp(
             kind="ro-bind-file",

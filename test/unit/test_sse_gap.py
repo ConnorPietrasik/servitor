@@ -120,3 +120,75 @@ def test_subscribe_after_eviction_is_a_gap_not_partial():
         assert replay2 == []
 
     asyncio.run(go())
+
+
+def test_kinds_view_delivers_only_the_asked_kinds_and_consumes_the_rest():
+    """The app-wide stream can be viewed down to a subset of kinds (a
+    screen that needs two kinds must not pay the wire bytes for the rest).
+    The view must not change the TRANSPORT: a filtered event still advances
+    the cursor and is consumed — pinning it here, because an unconsumed
+    event pins the ring at its cap behind events this subscriber will never
+    read, and position (hence gap detection and Last-Event-ID resume)
+    counts every event, filtered or not."""
+
+    async def go():
+        hub = SseHub("*")
+        hub.publish("agent_start", {"session_id": "s1"})  # id 1, replay side
+        hub.publish("keep_deleted", "s1/a.md")            # id 2, replay side
+        sub, replay, gap = hub.subscribe(0)
+        assert gap is False and len(replay) == 2
+
+        async def is_disconnected() -> bool:
+            return False
+
+        gen = stream_events(
+            hub, sub, 0, replay, gap, is_disconnected, 15,
+            kinds=frozenset({"keep_deleted"}),
+        )
+        # only the asked kind is delivered (from the replay), with its real id
+        name, data, eid = await asyncio.wait_for(anext(gen), 1)
+        assert name == "keep_deleted" and eid == 2
+        assert data == "s1/a.md"
+
+        # resume the generator: the replay loop finishes and consumes through
+        # it, then the view waits live. A filtered event now arrives — it
+        # must be CONSUMED even though it is never yielded. (The pending
+        # anext stays blocked on the next, never-arriving event; asyncio.run
+        # cancels it at shutdown.)
+        pending = asyncio.ensure_future(anext(gen))
+        await asyncio.sleep(0.2)
+        assert hub._consumers[sub] == 2
+        hub.publish("agent_end", {"session_id": "s1"})  # id 3, filtered
+        await asyncio.sleep(0.2)
+        assert hub._consumers[sub] == 3, (
+            "a filtered event is still consumed — unconsumed, it pins the "
+            "ring at its cap behind events this subscriber will never read"
+        )
+
+    asyncio.run(go())
+
+
+def test_a_kinds_view_still_gets_its_gap():
+    """``gap`` is the stream's own frame, not a ring event: it is not a kind
+    and rides whatever view the subscription asked for — or a client that
+    filtered the feed kinds would never learn to re-sync."""
+
+    async def go():
+        hub = SseHub("*", cap_bytes=300)
+        for i in range(50):
+            hub.publish("agent_start", {"i": i, "pad": "x" * 60})
+        sub, replay, gap = hub.subscribe(0)  # evicted position
+        assert gap is True and replay
+
+        async def is_disconnected() -> bool:
+            return False
+
+        gen = stream_events(
+            hub, sub, 0, replay, gap, is_disconnected, 15,
+            kinds=frozenset({"keep_deleted"}),
+        )
+        name, data, eid = await asyncio.wait_for(anext(gen), 1)
+        assert name == "gap" and eid is None
+        assert json.loads(data)["after"] == 0
+
+    asyncio.run(go())

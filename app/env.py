@@ -34,6 +34,8 @@ ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_DRAIN_GRACE_SECS",
     "SERVITOR_HEARTBEAT_SECS",
     "SERVITOR_SSE_RING_BYTES",  # per-session SSE delivery cap (memory bound; default 50 MB)
+    "SERVITOR_FILES_SWEEP_SEC",  # watched-outbox sweep (deltas to the UI; no client polling)
+    "SERVITOR_STABLE_GRACE_SEC",  # mtime age after which an artifact is 'stable'
     # version selections (version FLOORS — deploy/update.sh floats them in-major)
     "SERVITOR_PI_VERSION",
     "SERVITOR_PI_WEB_ACCESS_VERSION",
@@ -54,6 +56,7 @@ HOST_DEPLOY_ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_VM_IP",  # the VM's edge address (ssh target; baked into the image)
     "SERVITOR_HOST_BRIDGE_IP",  # host edge-bridge IP; the guest firewall admits 22 from its /32
     "SERVITOR_DNS_UPSTREAM",  # guest public DNS upstreams (baked into the image)
+    "SERVITOR_PULL_DIR",  # host directory `make pull` mirrors the kept shelf into
     # update-run knobs (deploy/update.sh only; empty in .env = its header default):
     "UPDATE_DOCTOR",
     "IMAGE_MAX_AGE_DAYS",
@@ -92,6 +95,8 @@ class Config:
     gc_idle_days: int = 14
     heartbeat_secs: int = 15
     sse_ring_bytes: int | None = None  # None = 50 MB default
+    files_sweep_sec: int = 4
+    stable_grace_sec: int = 60
     # machine credentials (may be absent at app boot; spawn fails closed
     # without OMNISSIAH_API_KEY — model.id == "unknown")
     omnissiah_api_key: str | None = None
@@ -164,6 +169,8 @@ def load_http_config(env: Mapping[str, str] | None = None, *, root: str) -> Conf
         gc_idle_days=_int(env, "SERVITOR_GC_IDLE_DAYS", 14),
         heartbeat_secs=_int(env, "SERVITOR_HEARTBEAT_SECS", 15),
         sse_ring_bytes=_optional_int(env, "SERVITOR_SSE_RING_BYTES"),
+        files_sweep_sec=_int(env, "SERVITOR_FILES_SWEEP_SEC", 4),
+        stable_grace_sec=_int(env, "SERVITOR_STABLE_GRACE_SEC", 60),
         omnissiah_api_key=_optional(env, "OMNISSIAH_API_KEY"),
         exa_api_key=_optional(env, "EXA_API_KEY"),
     )

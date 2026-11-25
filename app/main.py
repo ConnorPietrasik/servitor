@@ -273,6 +273,7 @@ class App:
         import uvicorn
 
         from app.api.app import build_app
+        from app.api.sse import ring_cap
         from app.env import load_http_config
 
         env = dict(os.environ)
@@ -284,6 +285,14 @@ class App:
         # CLI default would silently win and the env file's
         # SERVITOR_GC_IDLE_DAYS override would be a no-op
         self.lc.cfg.gc_idle_days = cfg.gc_idle_days
+        self.lc.cfg.files_sweep_sec = cfg.files_sweep_sec
+        self.lc.cfg.stable_grace_sec = cfg.stable_grace_sec
+        self.lc.files.grace = float(cfg.stable_grace_sec)
+        # the global stream's hub was minted at Lifecycle init, before this
+        # env value could land on cfg (session hubs are lazy and read it
+        # fresh) — re-apply the cap there, or a tuned ring is the 50 MB
+        # default on exactly the one hub that grows with every session
+        self.lc.global_hub.cap = ring_cap(cfg.sse_ring_bytes)
         # start_update_tick is idempotent; the ASGI lifespan starts the GC
         self.lc.start_update_tick()
         asgi = build_app(self, cfg)

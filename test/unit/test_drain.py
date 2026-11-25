@@ -24,6 +24,9 @@ import asyncio
 import time
 from types import SimpleNamespace
 
+from app.api.sse import SseHub
+from app.delivery.usage import UsageMeter
+from app.delivery.watch import FileWatch
 from app.lifecycle import Lifecycle
 from app.registry import LIVE, Registry
 
@@ -171,6 +174,13 @@ def _lc(tmp_path, grace: float, events: list | None = None) -> Lifecycle:
     lc.live = {}
     lc._hubs = {}
     lc._gc_task = None
+    # __init__ is skipped, so every attribute the shutdown path touches must
+    # be declared here: the global stream is closed with the session hubs, and
+    # the sweep loop is cancelled with the GC loop.
+    lc.global_hub = SseHub("*")
+    lc._files_task = None
+    lc.files = FileWatch()
+    lc.usage = UsageMeter(str(tmp_path))
     return lc
 
 

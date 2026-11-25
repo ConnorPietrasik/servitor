@@ -283,8 +283,16 @@ for i in \$(seq 0 16); do
   useradd -u \$((9000 + i)) -m -s /usr/sbin/nologin "slot\$i" 2>/dev/null || true
   chmod 0700 "/home/slot\$i"
 done
-# state volume dirs (root fs; the state DISK mounts over /var/lib/servitor)
-mkdir -p /var/lib/servitor/{config,lib,inbox,scratch,sessions}
+# state volume dirs (root fs; the state DISK mounts over /var/lib/servitor):
+# derived from the app's STATE_AREAS — the image creates the WHOLE set at
+# build time (the service also creates each area on first use, so a new
+# area is never missing; deriving keeps this line and the tuple in lockstep
+# instead of drift apart)
+AREAS="\$(/opt/servitor/app/.venv/bin/python -c 'import sys; sys.path.insert(0, "/opt/servitor/app"); from app.iso.layout import STATE_AREAS; print(" ".join(STATE_AREAS))')"
+[ -n "\$AREAS" ] || { echo "FATAL: could not derive the state areas from the app" >&2; exit 1; }
+for a in \$AREAS; do
+  mkdir -p "/var/lib/servitor/\$a"
+done
 # /opt/pi-ext: empty — the sync pipeline installs pi-web-access (it is NOT
 # in the image)
 mkdir -p /opt/pi-ext

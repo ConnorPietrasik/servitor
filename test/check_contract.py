@@ -32,6 +32,12 @@ Asserts the interface contract before any runtime code exists:
    image-capable model declared; no ``auth.json``/``models-store.json``
    (a stale stored credential would silently beat the env var); no
    context-file names; SYSTEM.md carries the config-gate marker.
+6. **Global event contract** — the app-wide stream carries exactly
+   ``GLOBAL_EVENTS`` (``app/lifecycle.py``), and the UI's ``subscribeGlobal``
+   names list (``ui/src/api.ts``) is its other half: every emitted kind is
+   subscribed, and the UI subscribes to no kind that is never emitted (the
+   transport's ``gap`` resync signal excepted). The halves live in different
+   languages — a rename is a silent "the list lags" bug without this.
 
 Exit 0 = green. Run: `make check` (stdlib + PyYAML from the venv).
 """
@@ -82,7 +88,11 @@ def env_read_sites(paths: list[Path]) -> tuple[set[str], dict[str, list[str]]]:
     """AST-scan ``paths`` for env var reads; return (names, name -> locations).
 
     Catches ``os.environ["X"]``, ``os.getenv("X")``, ``os.environ.get("X")``
-    with a constant name. (Non-constant reads are invisible — none exist.)
+    with a constant name. Non-constant reads are invisible to the scan — the
+    only ones are the operator-named credential envs (the CLI's
+    ``--api-key-env`` / ``--exa-key-env``) read in ``app/main.py`` and
+    ``app/doctor.py``: their names are passed in at invocation, so they are
+    deliberately not contracted here.
     """
     names: set[str] = set()
     sites: dict[str, list[str]] = {}
@@ -403,6 +413,51 @@ def main() -> int:
     check(
         settings.get("compaction", {}).get("enabled") is True,
         "settings.json: compaction on",
+    )
+
+    # --- 5. global event contract (python <-> ui) ---------------------------
+    print("\n[5] global event contract")
+    # The app-wide stream carries exactly GLOBAL_EVENTS, and the UI's
+    # subscribeGlobal list is the other half of the same contract — in a
+    # second language, so nothing else would notice a rename: an emitted
+    # kind nobody subscribes to is bytes burned on a metered phone, and a
+    # subscribed name the backend never emits shows up only as "the list
+    # lags". "gap" is the transport's resync signal (the ring evicted past
+    # Last-Event-ID), not a feed kind — the one allowed extra.
+    lc_tree = ast.parse((REPO / "app" / "lifecycle.py").read_text())
+    kinds: set[str] = set()
+    for node in ast.walk(lc_tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "GLOBAL_EVENTS" for t in node.targets
+        ):
+            kinds = {
+                el.value
+                for el in node.value.elts
+                if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            }
+    check(bool(kinds), "lifecycle.py: GLOBAL_EVENTS is a literal tuple of names")
+    ui_src = (REPO / "ui" / "src" / "api.ts").read_text()
+    fn = re.search(r"export function subscribeGlobal", ui_src)
+    check(bool(fn), "ui/src/api.ts: subscribeGlobal found")
+    names_block = (
+        re.search(r"const names = \[(.*?)\];", ui_src[fn.start():], re.S) if fn else None
+    )
+    check(bool(names_block), "ui/src/api.ts: the subscribeGlobal names list")
+    ui_names = (
+        set(re.findall(r'"([A-Za-z0-9_]+)"', names_block.group(1)))
+        if names_block
+        else set()
+    )
+    check(
+        kinds <= ui_names,
+        "every GLOBAL_EVENTS kind is subscribed by the UI",
+        "never received by the list: " + str(sorted(kinds - ui_names)),
+    )
+    extra = ui_names - kinds
+    check(
+        extra <= {"gap"},
+        "the UI subscribes to no kind the backend never emits (gap excepted)",
+        "dead or renamed: " + str(sorted(extra - {"gap"})),
     )
 
     # --- summary ------------------------------------------------------------

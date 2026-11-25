@@ -132,9 +132,13 @@ def _make_lc(tmp_path, monkeypatch):
     return lc, state, pool, reg, calls
 
 
-def _areas(state) -> tuple[str, str, str]:
+def _areas(state) -> tuple[str, ...]:
+    """Every per-session area release deletes (and the excludes it hands the
+    owner sweep, which additionally spares ``keep/``)."""
     return (
         state.inbox_for(SID),
+        state.outbox_for(SID),
+        state.staging_for(SID),
         state.scratch_for(SID),
         state.sessions_for(SID),
     )
@@ -178,11 +182,15 @@ async def test_failed_start_after_spawn_cleans_and_frees(tmp_path, monkeypatch):
     assert driver.close_calls == 1
     # the mounts went down via release (reverse order, reported)
     assert all(op.unmounted for op in mounted["ops"])
-    # strays killed for the slot uid; the sweep excluded the three areas
+    # strays killed for the slot uid; the sweep excluded the areas release
+    # deletes itself, plus keep/ (its contents are the store's root-owned
+    # blob inodes — a keep links the app's copy, never the session's file —
+    # which the sweep walking by slot uid cannot see; the area is root-owned
+    # so nothing else can be in it)
     assert calls["kill"] == [UID]
     uid, excludes, kw = calls["sweep"][0]
     assert uid == UID
-    assert excludes == _areas(state)
+    assert excludes == _areas(state) + (state.keep,)
     assert kw == {"keep_dir": pool.get(SLOT).home_path}
     # the state areas are GONE (deleted wholesale, not just the row)
     for area in _areas(state):

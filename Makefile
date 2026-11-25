@@ -29,7 +29,7 @@ VENV_STAMP := .venv/.stamp_$(PYVER)
 # file keeps this POSIX-sh safe (no process substitution).
 ENV_LOAD := if [ -f .env ]; then set -a; grep -E '^[A-Za-z_][A-Za-z0-9_]*=' ./.env > .env.sh; . ./.env.sh; rm -f ./.env.sh; set +a; fi
 
-.PHONY: venv check test test-stage2 sandbox-smoke guest sync update doctor deploy
+.PHONY: venv check test test-stage2 sandbox-smoke guest sync pull update doctor deploy
 
 $(VENV_STAMP): pyproject.toml
 	$(PY_BOOT) -m venv .venv
@@ -68,6 +68,13 @@ guest:
 ## host-side one-way sync (config/lib -> guest, key slice, doctor)
 sync:
 	deploy/sync.sh
+
+## host-side pull of the kept shelf (guest -> host, one-way, rsync).
+## Flags ride a variable: `make pull -- flag` cannot work, because make
+## parses everything after `--` as more goals — so the flag is a value,
+## not a goal:  make pull ARGS=--dry-run
+pull:
+	deploy/pull.sh $(ARGS)
 
 ## single day-2 update path (float in-major + freshness-floor image
 ## rebuild + swap + automatic rollback, image included)

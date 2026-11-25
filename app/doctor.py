@@ -37,7 +37,8 @@ import uuid
 
 from app.env import deployment_env, optional_env
 from app.iso import mounts as M
-from app.iso.layout import SessionMountPaths, StatePaths, state_paths
+from app.iso.layout import STATE_AREAS, SessionMountPaths, StatePaths, state_paths
+from app.registry import LIVE
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -110,6 +111,10 @@ def check_env(rep: Report, args: argparse.Namespace) -> None:
         rep.add("env.exa_key", PASS, "EXA_API_KEY present")
     else:
         rep.add("env.exa_key", WARN, "EXA_API_KEY absent — live search disabled")
+
+
+_HEX2 = re.compile(r"^[0-9a-f]{2}$")
+_HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def check_state_fs(rep: Report, root: str) -> None:
@@ -451,8 +456,11 @@ def check_ui(rep: Report) -> None:
 
 
 def check_disk(rep: Report, root: str) -> None:
+    # every state area, so an operator sees WHERE the volume went; du counts a
+    # hardlinked blob once per tree it appears in, so blobs (where the bytes
+    # live) plus near-zero links elsewhere is the expected shape, not a bug
     sizes = {}
-    for sub in ("scratch", "inbox", "sessions"):
+    for sub in STATE_AREAS:
         code, out = _sh(["du", "-sk", f"{root}/{sub}"])
         if code == 0 and out.strip():
             sizes[sub] = int(out.strip().split()[0]) * 1024
@@ -463,6 +471,193 @@ def check_disk(rep: Report, root: str) -> None:
         rep.add("disk.headroom", FAIL, f"only {avail // (1024 * 1024)}MB free on the state volume")
     else:
         rep.add("disk.headroom", PASS, f"{avail // (1024 * 1024)}MB free; {detail}")
+
+
+def check_delivery(rep: Report, root: str) -> None:
+    """The blob store, the kept shelf, and the durability of each.
+
+    Three facts only the filesystem can answer:
+
+    - a blob's NAME is its content address: a blob sitting in the wrong bucket
+      or named for something other than its own sha256 can never be found
+      again (an upload that "vanished" while its bytes sit unreclaimable);
+    - a blob nothing links to is reclaimable, and a pile of them that keeps
+      growing past the GC's grace window means the reclaim tick is not running;
+    - ``keep/`` is the one area with no expiry and no session attached, so it
+      must live on the state volume itself — a keep on the overlay or on a
+      tmpfs is a keep that disappears on the next boot.
+    """
+    state = state_paths(root)
+    misfiled: list[str] = []
+    blob_bytes = files = orphan_bytes = 0
+    stale_orphans = 0
+    now = time.time()
+    from app.lifecycle import BLOB_GRACE_SEC  # the same grace the reclaim uses
+
+    try:
+        prefixes = sorted(os.listdir(state.blobs))
+    except OSError:
+        prefixes = []
+    for prefix in prefixes:
+        # the in-flight/crash temp shape of ``adopt_hashed`` (``.adopt-*``
+        # under the blobs root, not in a bucket): a live keep is copying a
+        # multi-GB artifact right now, or the last process died mid-copy —
+        # the boot sweep takes it. It is not a blob, so it is not a misfile.
+        if prefix.startswith(".adopt-"):
+            continue
+        if not _HEX2.fullmatch(prefix):
+            misfiled.append(f"blobs/{prefix} (bucket is not 2 hex chars)")
+            continue
+        pdir = os.path.join(state.blobs, prefix)
+        if not os.path.isdir(pdir):
+            misfiled.append(f"blobs/{prefix} (not a directory)")
+            continue
+        for name in os.listdir(pdir):
+            files += 1
+            if not _HEX64.fullmatch(name) or not name.startswith(prefix):
+                misfiled.append(f"blobs/{prefix}/{name}")
+                continue
+            try:
+                st = os.lstat(os.path.join(pdir, name))
+            except OSError:
+                continue
+            blob_bytes += st.st_size
+            if st.st_nlink <= 1:
+                orphan_bytes += st.st_size
+                # young and unlinked is normal (just adopted, or just released:
+                # the grace window is what keeps a race from deleting bytes a
+                # keep is about to link). Old and unlinked means the reclaim
+                # tick has not run — the service is down, or it is broken.
+                # The clock is the GC's own (max of mtime and ctime): link
+                # churn bumps ctime without touching mtime, and the GC holds
+                # such a blob — blaming the tick on mtime alone would.
+                if now - max(st.st_mtime, st.st_ctime) > BLOB_GRACE_SEC * 4:
+                    stale_orphans += 1
+    if misfiled:
+        rep.add(
+            "delivery.blobs", FAIL,
+            "blob store entries that are not their own address (unfindable, "
+            f"unreclaimable): {', '.join(misfiled[:5])}"
+            + (f" (+{len(misfiled) - 5} more)" if len(misfiled) > 5 else ""),
+        )
+    else:
+        detail = f"{files} blob(s), {blob_bytes // (1024 * 1024)}MB; "
+        if orphan_bytes:
+            detail += f"{orphan_bytes // (1024 * 1024)}MB unlinked"
+            if stale_orphans:
+                detail += (
+                    f", {stale_orphans} past the grace window — the reclaim tick is not "
+                    "running (is the service up?)"
+                )
+            else:
+                detail += " inside the grace window, reclaimable at the next GC tick"
+        else:
+            detail += "every blob linked by a session or a keep"
+        rep.add("delivery.blobs", PASS, detail)
+
+    # the kept shelf: durable, and on the same device as the state root
+    try:
+        keep_dev = os.stat(state.keep).st_dev
+        root_dev = os.stat(root).st_dev
+    except FileNotFoundError:
+        rep.add(
+            "delivery.keep", WARN,
+            f"{state.keep} does not exist yet — the service creates it at boot; on a "
+            "volume that has run, this means the state areas are not where they should be",
+        )
+        return
+    except OSError as e:
+        rep.add("delivery.keep", FAIL, f"{state.keep} unreadable: {e}")
+        return
+    if not os.path.isdir(state.keep):
+        rep.add(
+            "delivery.keep", FAIL,
+            f"{state.keep} is not a directory — the shelf cannot hold anything "
+            "(restore the area; kept files are the one thing with no other copy here)",
+        )
+        return
+    if keep_dev != root_dev:
+        rep.add(
+            "delivery.keep", FAIL,
+            f"{state.keep} is on a different device than {root} — a kept file is the "
+            "one thing that must outlive everything, and this one lives on whatever "
+            "is mounted there instead (fix the mount, do not move the files by hand)",
+        )
+        return
+    kept = kbytes = 0
+    for dirpath, _dirs, names in os.walk(state.keep):
+        for name in names:
+            try:
+                kept += 1
+                kbytes += os.lstat(os.path.join(dirpath, name)).st_size
+            except OSError:
+                continue
+    rep.add(
+        "delivery.keep", PASS,
+        f"{kept} kept file(s), {kbytes // (1024 * 1024)}MB on the state volume"
+        " (no expiry; deleted only by an explicit delete)",
+    )
+
+
+def check_outbox_mounts(rep: Report, root: str, registry) -> None:
+    """Every LIVE session's workdir must have its outbox bind up.
+
+    The outbox is the agent's handoff directory, and it is a bind of
+    ``<state>/outbox/<sid>`` into the workdir overlay. If the overlay is
+    mounted and the bind is not, the agent is writing into the overlay upper:
+    the app never sees the artifacts (the listing reads the bind source), and
+    they die with the scratch instead of waiting for a keep. That is a broken
+    mount plan, not a preference — so it FAILs when a session is mounted
+    without it, and says nothing when the session is simply not mounted
+    (unprivileged dev, or a session killed and released).
+    """
+    missing = []
+    for row in registry.list_sessions():
+        if row.state != LIVE or not row.slot:
+            continue
+        m = SessionMountPaths.for_session(row.id, f"{root.rstrip('/')}/scratch")
+        if not os.path.isdir(m.workdir) or not os.path.ismount(m.workdir):
+            continue  # not mounted at all: nothing to say
+        if not os.path.ismount(f"{m.workdir}/outbox"):
+            missing.append(row.id)
+    if missing:
+        rep.add(
+            "mounts.outbox", FAIL,
+            "live session(s) mounted WITHOUT the outbox bind — artifacts would "
+            f"land in the overlay and be lost at release: {', '.join(missing[:5])}"
+            + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
+        )
+    else:
+        rep.add("mounts.outbox", PASS, "every mounted session has its outbox bind")
+
+
+def check_usage_meters(rep: Report, root: str) -> None:
+    """What the app's own byte meters say (the numbers the UI shows).
+
+    A second walk after ``disk.headroom``'s ``du`` is worth it: ``du`` counts a
+    hardlinked blob once per tree it appears in, and these meters count it once
+    in the store. The difference IS the dedup, and an operator comparing the
+    two lines is exactly the person who should see both.
+    """
+    from app.delivery.usage import UsageMeter
+
+    snap = UsageMeter(root).report()
+    if snap.get("error"):
+        rep.add("delivery.meters", FAIL, f"state volume unreadable: {snap['error']}")
+        return
+    areas = snap["areas"]
+    total = sum(a["bytes"] for a in areas.values())
+    files = sum(a["files"] for a in areas.values())
+    busiest = ", ".join(
+        f"{name}={areas[name]['bytes'] // (1024 * 1024)}MB/{areas[name]['files']}f"
+        for name in sorted(areas, key=lambda n: -areas[n]["bytes"])
+        if areas[name]["files"]
+    ) or "empty"
+    rep.add(
+        "delivery.meters", PASS,
+        f"{files} file(s), {total // (1024 * 1024)}MB counted once, "
+        f"{snap['shared_bytes'] // (1024 * 1024)}MB saved by hardlink; {busiest}",
+    )
 
 
 def check_keys_absent(rep: Report, args: argparse.Namespace, root: str) -> None:
@@ -631,7 +826,12 @@ async def reap_stale_probes(state: StatePaths, probe_uid: int) -> list[tuple[str
         for target in (sp.workdir, sp.agent_dir):
             if target in mounted:
                 subprocess.run(["umount", "-l", target], capture_output=True, timeout=10)
-        for area in (str(d), state.inbox_for(d.name), state.sessions_for(d.name)):
+        for area in (
+            str(d),
+            state.inbox_for(d.name),
+            state.outbox_for(d.name),
+            state.sessions_for(d.name),
+        ):
             if os.path.lexists(area):
                 shutil.rmtree(area, ignore_errors=True)
         items.append(("tree", f"stale probe tree {d.name} removed (previous doctor died mid-probe)"))
@@ -674,7 +874,12 @@ async def _probe_cleanup(
         still = [op.target for op in ops if op.target in M.mounted_targets()]
         if still:
             errors.append(f"probe mounts still up: {still}")
-    for area in (sp.scratch, state.inbox_for(sp.session_id), state.sessions_for(sp.session_id)):
+    for area in (
+        sp.scratch,
+        state.inbox_for(sp.session_id),
+        state.outbox_for(sp.session_id),
+        state.sessions_for(sp.session_id),
+    ):
         if os.path.lexists(area):
             try:
                 shutil.rmtree(area)
@@ -1052,6 +1257,9 @@ async def main(argv: list[str]) -> int:
     check_firewall_rules(rep)
     check_ui(rep)
     check_disk(rep, args.state)
+    check_delivery(rep, args.state)
+    check_outbox_mounts(rep, args.state, registry)
+    check_usage_meters(rep, args.state)
     check_keys_absent(rep, args, args.state)
     check_update_waiting(rep, args)
     if args.skip_spawn:

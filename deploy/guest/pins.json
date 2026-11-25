@@ -19,6 +19,7 @@
     "python",
     "python-pip",
     "ripgrep",
+    "rsync",
     "uv",
     "yt-dlp",
     "zram-generator"

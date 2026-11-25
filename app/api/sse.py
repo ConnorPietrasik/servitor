@@ -41,6 +41,16 @@ class SseEvent:
     nbytes: int
 
 
+def ring_cap(cap_bytes: int | None) -> int:
+    """The replay cap for a hub: the configured value, or the default.
+
+    One helper so the cap an operator tunes (SERVITOR_SSE_RING_BYTES) lands
+    on EVERY hub — including the app-wide one, which is minted before the
+    env lands on the lifecycle config and is re-applied there.
+    """
+    return int(cap_bytes) if cap_bytes else EVENT_BUFFER_CAP
+
+
 class SseHub:
     """Bounded per-session event ring with resume + gap semantics.
 
@@ -50,7 +60,7 @@ class SseHub:
 
     def __init__(self, session_id: str, cap_bytes: int | None = None) -> None:
         self.session_id = session_id
-        self.cap = int(cap_bytes) if cap_bytes else EVENT_BUFFER_CAP
+        self.cap = ring_cap(cap_bytes)
         self._next_id = 1
         self._ring: deque[SseEvent] = deque()
         self._bytes = 0
@@ -239,6 +249,7 @@ async def stream_events(
     gap: bool,
     is_disconnected,
     heartbeat_secs: float,
+    kinds: frozenset[str] | None = None,
 ):
     """The live SSE tail for one subscription — the endpoint's streaming
     body. Yields ``(name, data, id_or_None)`` tuples; the endpoint formats
@@ -253,6 +264,15 @@ async def stream_events(
     arrive on this stream (the cursor is snapshotted before the yield).
     Ends when the request disconnects or the hub is closed (the client's
     EventSource auto-reconnects, ?after= resumes).
+
+    ``kinds`` (the app-wide stream only) is a per-subscription VIEW: this
+    subscriber is delivered only the named kinds. The view never changes
+    the transport — a filtered event still advances the cursor and is
+    consumed, or a long-lived filtered stream pins the ring at its cap
+    behind events it will never read, and position (hence gap detection
+    and Last-Event-ID resume) counts every event, filtered or not.
+    ``gap`` and the heartbeat are the stream's own frames, not ring
+    events: they ride whatever the view is.
     """
     if gap:
         # the requested position was evicted: the client must re-sync from the API
@@ -264,7 +284,8 @@ async def stream_events(
         for e in replay:
             if await is_disconnected():
                 return
-            yield (e.name, e.data, e.id)
+            if kinds is None or e.name in kinds:
+                yield (e.name, e.data, e.id)
             cursor = e.id
         hub.consume(sub_id, cursor)
     while True:
@@ -294,7 +315,8 @@ async def stream_events(
         for e in batch:
             if await is_disconnected():
                 return
-            yield (e.name, e.data, e.id)
+            if kinds is None or e.name in kinds:
+                yield (e.name, e.data, e.id)
         if batch:
             hub.consume(sub_id, batch[-1].id)
             cursor = batch[-1].id
