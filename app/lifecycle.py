@@ -1215,8 +1215,6 @@ class Lifecycle:
         if self.shutting_down:
             return []
         released: list[str] = []
-        # blob reclaim FIRST: a release below deletes a session's links, and
-        # the bytes are only truly back once nothing links them
         await self.gc_blobs()
         await self.gc_staged()
         # rows on slots outside this app's pool are never releasable from

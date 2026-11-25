@@ -533,6 +533,18 @@ def check_delivery(rep: Report, root: str) -> None:
                 # such a blob — blaming the tick on mtime alone would.
                 if now - max(st.st_mtime, st.st_ctime) > BLOB_GRACE_SEC * 4:
                     stale_orphans += 1
+    detail = f"{files} blob(s), {blob_bytes // (1024 * 1024)}MB; "
+    if orphan_bytes:
+        detail += f"{orphan_bytes // (1024 * 1024)}MB unlinked"
+        if stale_orphans:
+            detail += (
+                f", {stale_orphans} past the grace window — the reclaim tick is not "
+                "running (is the service up?)"
+            )
+        else:
+            detail += " inside the grace window, reclaimable at the next GC tick"
+    else:
+        detail += "every blob linked by a session or a keep"
     if misfiled:
         rep.add(
             "delivery.blobs", FAIL,
@@ -540,19 +552,12 @@ def check_delivery(rep: Report, root: str) -> None:
             f"unreclaimable): {', '.join(misfiled[:5])}"
             + (f" (+{len(misfiled) - 5} more)" if len(misfiled) > 5 else ""),
         )
+    elif stale_orphans:
+        # WARN rather than PASS: the pile says the reclaim tick is not
+        # running. Not FAIL — the service may legitimately be down while
+        # doctor runs (the detail names that reading)
+        rep.add("delivery.blobs", WARN, detail)
     else:
-        detail = f"{files} blob(s), {blob_bytes // (1024 * 1024)}MB; "
-        if orphan_bytes:
-            detail += f"{orphan_bytes // (1024 * 1024)}MB unlinked"
-            if stale_orphans:
-                detail += (
-                    f", {stale_orphans} past the grace window — the reclaim tick is not "
-                    "running (is the service up?)"
-                )
-            else:
-                detail += " inside the grace window, reclaimable at the next GC tick"
-        else:
-            detail += "every blob linked by a session or a keep"
         rep.add("delivery.blobs", PASS, detail)
 
     # the kept shelf: durable, and on the same device as the state root

@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.doctor import FAIL, PASS, Report, check_delivery, check_outbox_mounts
+from app.doctor import FAIL, PASS, WARN, Report, check_delivery, check_outbox_mounts
 from app.iso.layout import state_paths
 
 
@@ -106,7 +106,7 @@ def test_a_blob_old_on_both_clocks_flags_the_reclaim_tick(tmp_path, monkeypatch)
     rep = Report()
     check_delivery(rep, str(tmp_path))
     status, detail = _one(rep, "delivery.blobs")
-    assert status == PASS
+    assert status == WARN
     assert "unlinked" in detail and "reclaim tick is not running" in detail
 
 
