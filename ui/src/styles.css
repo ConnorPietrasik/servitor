@@ -733,6 +733,16 @@ a {
   word-break: break-word;
   line-height: 1.45;
 }
+
+.sheet-error {
+  padding: 8px 10px;
+  font-size: 13px;
+  background: rgba(224, 95, 95, 0.12);
+  border: 1px solid var(--err);
+  border-radius: 10px;
+  color: #f0b9b9;
+  word-break: break-word;
+}
 /* ---- uploads: progress, cancel, resume (a phone pays per byte) ---- */
 .uploads {
   flex-direction: column;

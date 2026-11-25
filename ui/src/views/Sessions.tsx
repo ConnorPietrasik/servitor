@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import * as api from "../api";
 import type { SessionRow, UsageResp } from "../types";
 import { fmtBytes } from "../format";
+import Confirm from "../components/Confirm";
 
 function fmtAgo(ts: number | null | undefined): string {
   if (!ts) return "—";
@@ -38,6 +39,15 @@ function bytesLine(s: SessionRow, u: UsageResp | null): string | null {
   return parts.length ? parts.join(" · ") : null;
 }
 
+// The sheet's "exact consequence" line. bytesLine may be a bare "GC in …"
+// countdown (zero bytes held) — only a byte count belongs in "swept (…)",
+// so the countdown stays on the list row, not in the consequence.
+function confirmDetail(s: SessionRow, u: UsageResp | null): string {
+  const held = bytesLine(s, u);
+  const swept = held?.includes("held") ? ` (${held})` : "";
+  return `${s.display_name || s.id.slice(0, 8)}\n\nReleased now: any active run is aborted, and its files${swept} and transcript are deleted. Files you kept (the kept shelf) survive.`;
+}
+
 function stateChip(s: SessionRow): { label: string; cls: string } {
   if ((s.dialogs_pending ?? 0) > 0)
     return { label: `awaiting reply (${s.dialogs_pending})`, cls: "chip warn" };
@@ -55,6 +65,9 @@ export default function Sessions() {
   const [use, setUse] = useState<UsageResp | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [askDelete, setAskDelete] = useState<SessionRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteErr, setDeleteErr] = useState<string | null>(null);
   const nav = useNavigate();
   const unsub = useRef<(() => void) | null>(null);
   const pending = useRef<number | null>(null);
@@ -130,6 +143,37 @@ export default function Sessions() {
     }
   }
 
+  // release() is the single cleanup path and kills any live run itself, so
+  // a running session needs no separate abort before a manual delete
+  async function doDelete(s: SessionRow) {
+    setDeleting(true);
+    setDeleteErr(null);
+    try {
+      const out = await api.releaseSession(s.id, "user delete");
+      if (out.quarantined || !out.released) {
+        // sweep could not verify the slot clean: the row stays draining and
+        // the slot is quarantined — the release is retryable, not done; the
+        // error goes IN the sheet (the page banner hides behind the scrim)
+        setDeleteErr(
+          out.errors.join("; ") ||
+            "sweep could not verify the slot clean; the session is still draining",
+        );
+      } else {
+        setAskDelete(null);
+      }
+      await load();
+      // after load(): a clean load clears the banner, and a released-
+      // with-errors release (a leftover the sweep could not delete) must still
+      // say so
+      if (out.released && !out.quarantined && out.errors.length)
+        setErr(out.errors.join("; "));
+    } catch (e) {
+      setDeleteErr(String(e));
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="page">
       <header className="topbar">
@@ -193,10 +237,33 @@ export default function Sessions() {
               >
                 {s.stable ? "unpin" : "pin"}
               </button>
+              <button
+                className="btn ghost"
+                onClick={() => setAskDelete(s)}
+                disabled={deleting && askDelete?.id === s.id}
+                title="release this session now"
+              >
+                delete
+              </button>
             </li>
           );
         })}
       </ul>
+
+      {askDelete && (
+        <Confirm
+          title="Delete this session?"
+          detail={confirmDetail(askDelete, use)}
+          confirmLabel="delete session"
+          busy={deleting}
+          error={deleteErr}
+          onCancel={() => {
+            setAskDelete(null);
+            setDeleteErr(null);
+          }}
+          onConfirm={() => void doDelete(askDelete)}
+        />
+      )}
     </div>
   );
 }

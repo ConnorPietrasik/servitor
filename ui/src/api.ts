@@ -44,7 +44,10 @@ export const createSession = (display_name?: string) =>
     display_name,
   });
 export const releaseSession = (sid: string, reason = "user close") =>
-  jpost<{ released: boolean }>(`/api/v1/sessions/${sid}/release`, { reason });
+  jpost<{ released: boolean; quarantined: boolean; errors: string[] }>(
+    `/api/v1/sessions/${sid}/release`,
+    { reason },
+  );
 export const setStable = (sid: string, stable: boolean) =>
   jpost<{ ok: boolean }>(`/api/v1/sessions/${sid}/stable`, { stable });
 

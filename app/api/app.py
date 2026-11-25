@@ -469,11 +469,13 @@ def build_app(app_state, cfg) -> FastAPI:
 
     @app.get(f"/api/{API_VERSION}/sessions")
     async def list_sessions():
-        # released sessions are GONE (404 everywhere); the list shows live sessions only
-        return {
-            "sessions": [_row_dict(r, app_state.lc) for r in
-                         app_state.registry.list_sessions(include_released=False)]
-        }
+        # released sessions are GONE (404 everywhere); the list shows live
+        # sessions only, most recent first: last_activity descending, with
+        # created_at as the tiebreak so two rows touched in the same instant
+        # fall back to mint order (newest first)
+        rows = app_state.registry.list_sessions(include_released=False)
+        rows.sort(key=lambda r: (r.last_activity, r.created_at), reverse=True)
+        return {"sessions": [_row_dict(r, app_state.lc) for r in rows]}
 
     @app.post(f"/api/{API_VERSION}/sessions")
     async def create_session(body: StartBody):

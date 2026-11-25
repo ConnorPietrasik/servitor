@@ -9,6 +9,9 @@ interface Props {
   detail: string;
   confirmLabel: string;
   busy?: boolean;
+  // a failed attempt: shown IN the sheet — the page banner behind the scrim
+  // is not visible while it is open
+  error?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
 }
@@ -18,6 +21,7 @@ export default function Confirm({
   detail,
   confirmLabel,
   busy,
+  error,
   onConfirm,
   onCancel,
 }: Props) {
@@ -40,6 +44,7 @@ export default function Confirm({
       >
         <div className="sheet-title">{title}</div>
         <div className="sheet-detail">{detail}</div>
+        {error && <div className="sheet-error">{error}</div>}
         <button className="btn wide" onClick={onCancel} autoFocus disabled={busy}>
           cancel
         </button>

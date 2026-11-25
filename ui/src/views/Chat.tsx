@@ -670,7 +670,7 @@ export default function Chat() {
               const s = window.confirm(
                 running
                   ? "Close this session? A run is active — it will be aborted first, then the session released."
-                  : "Close this session? It will be released (transcript kept until GC).",
+                  : "Close this session? It will be released: its files and transcript are deleted.",
               );
               if (s) void closeSession();
             }}
