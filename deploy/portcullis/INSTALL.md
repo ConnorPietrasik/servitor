@@ -196,10 +196,19 @@ sudo virsh define /tmp/servitor-domain.xml
 
 sudo virsh start servitor
 sudo virsh console servitor   # watch the first boot (serial); Ctrl-] to leave
-sudo virsh autostart servitor  # survive a host reboot — the domain template
-                               # ships WITHOUT autostart (a stopped VM is
-                               # otherwise just a WARN), and the update's
-                               # image swap preserves the flag once set
+
+# Boot persistence: `virsh autostart` is NOT the mechanism here — it fires
+# when libvirtd initializes, BEFORE docker has created the edge bridge the
+# domain is wired to (libvirt does not create external bridges), so the
+# early start attempt fails and the domain sits "shut off" after a host
+# reboot. The host-side unit owns boot-start instead: ordered after
+# docker.service, idempotent, loud on failure (unit file header carries the
+# full contract). The domain template ships WITHOUT autostart (a
+# stopped VM is otherwise just a WARN in the portcullis doctor):
+sudo cp /opt/servitor-repo/deploy/servitor-vm-boot.service \
+    /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable servitor-vm-boot
 ```
 
 While waiting for sshd, verify from the host (as root — the key is in root's

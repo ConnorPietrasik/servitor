@@ -1,4 +1,3 @@
-Fix servitor VM not actually coming up on boot
 Add a way to delete sessions manually
 Add a stricter sandbox mode; read-only tools and no internet access for the model
 Add model switching

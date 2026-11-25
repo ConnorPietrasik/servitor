@@ -1,0 +1,39 @@
+# servitor-vm-boot.service — boot-time start of the servitor domain.
+#
+# HOST-side unit (the guest's own unit is servitor.service). Why it
+# exists: libvirt's autostart hook fires when libvirtd initializes —
+# before docker has created the edge bridge the domain's <interface
+# type='bridge'> is wired to. libvirt does not create external
+# bridges, so that early start attempt fails and the domain sits
+# "shut off" after a host reboot. This unit owns boot-start instead —
+# it is THE mechanism (the domain ships without autostart): ordered
+# after docker.service (docker's sd-notify ready comes after its
+# network creation, so the bridge exists by then) and after libvirtd,
+# idempotent (a domain already running is left alone), and loud on
+# failure (systemctl --failed) — a stopped VM after boot is never a
+# silent outcome.
+#
+# Install (one-time, on the server — INSTALL.md §6):
+#   sudo cp /opt/servitor-repo/deploy/servitor-vm-boot.service \
+#       /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable servitor-vm-boot
+# If `command -v virsh` is not /usr/bin/virsh, fix the ExecStart path
+# before enabling.
+
+[Unit]
+Description=Servitor agent VM — boot start after the edge bridge (docker) is up
+After=docker.service libvirtd.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Idempotent: exit 0 when the domain is already running (started by
+# other means); otherwise start it — and let virsh's own error be the
+# unit's failure message (domain missing, unexpected state, bridge
+# still absent).
+ExecStart=/bin/sh -c '/usr/bin/virsh domstate servitor 2>/dev/null | grep -qx running || /usr/bin/virsh start servitor'
+
+[Install]
+WantedBy=multi-user.target

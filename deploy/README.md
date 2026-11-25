@@ -23,6 +23,9 @@ deploy/
 │   ├── traefik-dynamic/servitor.yml   # the route (→ compose/traefik/dynamic/)
 │   └── panel-do/servitor_actions.go   # record of the merged panel-do actions
 │                                      #   (PORTCULLIS's main.go is canonical)
+├── servitor-vm-boot.service  # HOST-side systemd unit: boot-start of the VM
+│                             #   after the edge bridge (docker) is up — the
+│                             #   only boot-start mechanism (INSTALL.md §6)
 ├── sync.sh         # host-side one-way sync: config/lib push,
 │                   #   key slice, extension install, update-waiting flag
 ├── update.sh       # host orchestrator: resolve -> float -> provision ->

@@ -294,9 +294,12 @@ swap_image() { # $1 = image name (manifest name, includes .qcow2)
     echo "swap: image files missing for $name" >&2
     return 1
   fi
-  # capture the autostart flag NOW: the virsh undefine below drops it
-  # (the template does not set it — an operator may have; re-applied after
-  # define). `virsh dominfo`: `virsh autostart` has no --query option.
+  # detect the autostart flag NOW: the virsh undefine below drops it, and
+  # it is NOT re-applied — autostart is superseded (it fires before the
+  # edge bridge exists and never boots the VM; the servitor-vm-boot host
+  # unit owns boot-start). An old install may still carry it; the loss
+  # must not be SILENT. `virsh dominfo`: `virsh autostart` has no
+  # --query option.
   local autostart=0
   if virsh dominfo servitor 2>/dev/null | grep -q '^Autostart:.*enable'; then autostart=1; fi
   local state0
@@ -387,11 +390,14 @@ EOF
         fi
         return 1; }
   if (( autostart )); then
-    # warn, don't fail: the swap itself is done (the VM is about to start);
-    # a lost flag is a boot-behavior gap, not a swap failure — but it must
-    # not be lost SILENTLY.
-    virsh autostart servitor \
-      || echo "    WARNING: could not re-apply the autostart flag — run: virsh autostart servitor (the VM will not start on the next host boot until then)" >&2
+    # the flag is dropped, not preserved: it never booted the VM on this
+    # host anyway (it fires before the edge bridge exists) — boot-start is
+    # owned by the servitor-vm-boot host unit. The swap is unaffected; the
+    # note is the loud half of not losing the flag SILENTLY.
+    echo "    NOTE: the domain had autostart set — the flag is DROPPED, not preserved:" >&2
+    echo "          autostart fires before the edge bridge exists and never boots the VM." >&2
+    echo "          Boot-start is owned by the servitor-vm-boot host unit (deploy/servitor-vm-boot.service, INSTALL.md §6)." >&2
+    echo "          Install/enable it if not present — otherwise the VM will not start on the next host boot." >&2
   fi
   virsh start servitor \
     || { echo "swap: virsh start failed — the domain is defined on $name (check: virsh console servitor, journalctl -u libvirtd; re-run make update retries the swap)" >&2; return 1; }
