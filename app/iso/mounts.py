@@ -383,6 +383,31 @@ def mounted_targets() -> set[str]:
     return out
 
 
+def overlay_lower_dirs() -> set[str]:
+    """Every overlay lowerdir currently mounted (one /proc/mounts read).
+
+    A session's agent-dir overlay has lowerdir = the config version it
+    booted from, so this is the authoritative "a session still runs on
+    version v" check — the mount outlives the process and the app (an
+    idle-killed or crashed session keeps its lower pinned until
+    release). A version is prunable only when no mount still names it.
+    """
+    out: set[str] = set()
+    try:
+        with open("/proc/mounts", "r", encoding="ascii") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) >= 4 and parts[0] == "overlay":
+                    for opt in parts[3].split(","):
+                        if opt.startswith("lowerdir="):
+                            out.update(
+                                p for p in opt[len("lowerdir="):].split(":") if p
+                            )
+    except OSError:
+        pass
+    return out
+
+
 def overlay_lower_dir(mountpoint: str) -> str | None:
     """The lowerdir of the overlay mounted at ``mountpoint`` (None if no
     such overlay mount). The MOUNT is the session's config truth: a

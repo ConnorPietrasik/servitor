@@ -102,7 +102,7 @@ def _install_fake_release(monkeypatch, holder: SimpleNamespace) -> None:
         await holder.gate.wait()        # the real first await (shutdown/sweep)
         pool.verify_free(session_id)    # step 7: sweep verified clean
         hooks.mark_released(session_id, quarantined=False, detail="done")
-        return SimpleNamespace(released=True, quarantined=False, errors=[])
+        return SimpleNamespace(released=True, quarantined=False, errors=[], config_pruned=[])
 
     monkeypatch.setattr(lcmod, "release_session", fake_release_session)
 
@@ -246,7 +246,7 @@ def test_double_release_across_both_routes_returns_200_not_500(tmp_path, monkeyp
     r1, r2 = _run(scenario())
     assert r1.status_code == 200, r1.text
     assert r2.status_code == 200, r2.text  # not a 500 SlotQuarantined
-    assert r1.json() == {"released": True, "quarantined": False, "errors": []}
+    assert r1.json() == {"released": True, "quarantined": False, "errors": [], "config_pruned": []}
     assert r2.json() == r1.json()  # idempotent: same outcome, no re-run
     assert holder.calls == [("s1", "user close")]
     assert lc.cfg.pool.get(SLOT).state == "free"

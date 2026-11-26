@@ -28,7 +28,9 @@
 #   - run active     -> the flag survives, the sync exits 0 immediately
 #                       ("update-waiting": the tick applies at the first
 #                       idle moment; doctor then runs on the new instance)
-# When nothing changed: NO-OP — nothing is touched, no restart, exit 0.
+# When nothing changed: NO-OP — nothing is deployed, no restart, exit 0
+# (a stale swap marker from a crashed sync is removed: it is debris no
+# live run can own past the app's TTL).
 #
 # Usage (host, from a checkout with the .env):
 #   deploy/sync.sh [--env .env] [--ssh root@<vm-edge-ip>] [--deploy-key ~/.srv/deploy_key]
@@ -233,7 +235,15 @@ CHANGED=()
 [[ -n "$LIB_SHA" && "$LIB_SHA" != "$GUEST_LIB_SHA" ]] && CHANGED+=("lib")
 
 if [[ ${#CHANGED[@]} -eq 0 ]]; then
-  echo "sync: NO-OP (config=$CONFIG_VERSION ext=${EXT_VERSION:-none} app+env unchanged) — nothing touched, no restart"
+  # crash debris: a sync that died after its pointer flip but before its
+  # own `rm -f .swapping-*` leaves the marker behind, and a same-content
+  # re-sync is exactly the NO-OP that never re-runs the config block —
+  # remove it once it is past the app's TTL (a FRESH one may belong to a
+  # concurrent live run; no swap takes an hour, so -mmin +60 — strictly
+  # older than the TTL — never removes what the app still fences on). The
+  # app ignores stale markers itself; this keeps config/ clean.
+  run_guest "find /var/lib/servitor/config -maxdepth 1 -name '.swapping-*' -mmin +60 -delete 2>/dev/null || true"
+  echo "sync: NO-OP (config=$CONFIG_VERSION ext=${EXT_VERSION:-none} app+env unchanged) — nothing deployed, no restart"
   exit 0
 fi
 echo "sync: shape changed: ${CHANGED[*]}"
@@ -281,7 +291,16 @@ run_guest "
 # boot-time _stage_config uses its own vN naming only when NO version
 # exists yet: first boot stages v1; the first sync replaces it.) The
 # previous active version is recorded in .previous-active; the update's
-# automatic rollback flips back to it.
+# automatic rollback flips back to it — and the app's version prune keeps
+# exactly that (plus active, plus every version a live session's mount or
+# registry row pins): the unreferenced rest is reclaimed, so old versions
+# do not accumulate. This script's flip is another process's, so it fences
+# the prune with a .swapping-<version> marker around the rename-then-flip
+# (the app skips a prune pass while a fresh marker exists; a crash-stale
+# one stops blocking after the app's one-hour TTL — a re-sync that pushes
+# anything re-runs this block and removes it, the rm -rf below replacing
+# the half-swapped version, and the NO-OP cleanup removes it once it is
+# stale when nothing pushes).
 PREV_ACTIVE="$(run_guest "readlink /var/lib/servitor/config/active 2>/dev/null" || true)"
 tar -C "$WORK/config" -cf "$WORK/config.tar" .
 SCp "$WORK/config.tar" "$SSH_TARGET:/tmp/servitor-config.tar"
@@ -293,8 +312,10 @@ run_guest "
   tar -xf /tmp/servitor-config.tar -C \$ROOT/.incoming
   rm -f /tmp/servitor-config.tar
   rm -rf \$ROOT/$CONFIG_VERSION   # idempotent: replace any same-named version
+  touch \$ROOT/.swapping-$CONFIG_VERSION   # fence: the app's config prune skips its pass while this is fresh
   mv \$ROOT/.incoming \$ROOT/$CONFIG_VERSION   # atomic: same filesystem
   ln -s $CONFIG_VERSION \$ROOT/.active-tmp-\$\$ && mv -T \$ROOT/.active-tmp-\$\$ \$ROOT/active
+  rm -f \$ROOT/.swapping-$CONFIG_VERSION
 "
 NEW_VERSION="$CONFIG_VERSION"
 echo "    config active -> $NEW_VERSION"

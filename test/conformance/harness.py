@@ -290,7 +290,7 @@ class Harness:
 
     async def release(self, live: LiveSession, *, reason: str = "test release"):
 
-        hooks = _FakeHooks(self.released, live.session_id)
+        hooks = _FakeHooks(self, live.session_id)
         outcome = await release_session(
             session_id=live.session_id,
             slot=live.slot,
@@ -330,10 +330,16 @@ class Harness:
 
 
 class _FakeHooks:
-    """Test stand-in for the registry seam."""
+    """Test stand-in for the registry seam.
 
-    def __init__(self, store: dict, session_id: str):
-        self._store = store
+    The harness plays the registry (module docstring): the pin is the
+    versions the OTHER live sessions booted from — the mounted lowers
+    release() unions in itself (the mount is the session's config truth).
+    """
+
+    def __init__(self, harness: "Harness", session_id: str):
+        self._harness = harness
+        self._store = harness.released
         self._session_id = session_id
 
     def mark_draining(self, session_id: str, reason: str) -> None:
@@ -343,6 +349,13 @@ class _FakeHooks:
         self._store.setdefault(session_id, {})["released"] = True
         self._store[session_id]["quarantined"] = quarantined
         self._store[session_id]["detail"] = detail
+
+    def pinned_config_versions(self) -> set[str]:
+        return {
+            os.path.basename(l.config_lower)
+            for sid, l in self._harness.sessions.items()
+            if sid != self._session_id and l.config_lower
+        }
 
 
 def require_root() -> None:

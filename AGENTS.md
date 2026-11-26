@@ -40,7 +40,14 @@ changes:
    at a time. `release()` is the *only* cleanup path (all four triggers go
    through it); a slot is never handed out before its sweep verifies clean.
 6. **Config reaches a session only at spawn.** No hot-reload — pi does not
-   support it. Do not "fix" this.
+   support it. Do not "fix" this. A session's boot version is recorded on
+   its registry row at spawn (a respawn — incl. after a reboot, when the
+   mount is gone — must resolve the same lower). A version dir is kept only
+   while pinned: `active`, the `.previous-active` rollback target, a
+   live row's `config_version`, or a mounted overlay lowerdir. `release()`
+   (step 6.5) and the GC tick prune the unreferenced rest — do not add a
+   retention cap or a second copy of the pin set, and never prune a version
+   a mount or a live row still names.
 7. **The live process is the transcript's authority.** Read the transcript via
    pi RPC while the process is alive; parse the JSONL yourself only when it is
    dead. Never reconstruct compaction state from the file.
@@ -129,6 +136,9 @@ changes:
 - Add capability caps, path allow-lists, or rate/iteration limits.
 - Give the app a way to trust a client-sent edge credential when a key is set.
 - Let session cleanup bypass `release()`.
+- Prune a config version a mounted lower or a live row still pins (or
+  `active` / `.previous-active`): the pin set is release step 6.5's, and a
+  mount outlives the process and the app.
 - Parse the transcript JSONL while a session process is alive.
 - Chown a shared (nlink > 1) inode to a slot, or read/serve a session file the
   session's uid does not own.

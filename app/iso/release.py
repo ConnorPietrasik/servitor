@@ -21,6 +21,15 @@ goes through this one function. Steps, in order:
    bill dead bytes for 72 h. Deleting a link is all this is for shared
    bytes: a delivered upload's bytes live in the blob store and survive
    until nothing links them; a kept artifact's bytes live on in keep/.
+6.5. Reclaim config versions no live session pins. This session's own
+   lower is already unmounted (step 4) and its row is DRAINING (step 1),
+   so the version it ran on is prunable from THIS pass. The pin set is
+   the other sessions' recorded versions plus every mounted overlay
+   lowerdir (the mount is a session's config truth — it outlives the
+   process and the app); active and the .previous-active rollback target
+   are kept by the prune itself. A prune failure is recorded, never
+   quarantining: the slot's cleanliness is independent, and the version
+   retries on the next release/GC.
 7. Free the slot ONLY when the sweep verified empty. A slot that fails
    its sweep is quarantined: visible in the panel, retryable, never
    reused.
@@ -35,8 +44,10 @@ import os
 import shutil
 import stat
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
+from app.iso import configswap
 from app.iso import mounts as M
 from app.iso.layout import StatePaths
 from app.iso.slots import Slot, SlotPool
@@ -52,6 +63,13 @@ class ReleaseHooks(Protocol):
 
     def mark_released(self, session_id: str, *, quarantined: bool, detail: str) -> None: ...
 
+    def pinned_config_versions(self) -> set[str]:
+        """The config versions rows in ALLOCATED/LIVE recorded — the
+        sessions that may still respawn onto their version. release()
+        unions the mounted lowers before pruning (the registry knows its
+        rows; the kernel knows the mounts)."""
+        ...
+
 
 @dataclass
 class ReleaseOutcome:
@@ -63,7 +81,29 @@ class ReleaseOutcome:
     unmounted: list[str] = field(default_factory=list)
     swept: list[str] = field(default_factory=list)
     discarded: tuple[int, int] = (0, 0)  # (files, bytes) deleted with the session
+    config_pruned: list[str] = field(default_factory=list)  # config versions reclaimed
     errors: list[str] = field(default_factory=list)
+
+
+def pinned_versions(config_root: str, row_pinned: set[str]) -> set[str]:
+    """The config versions a prune must keep: the rows' pins plus every
+    mounted overlay lowerdir under the config root. The row is the
+    durable pin (it outlives a reboot, when the mount is gone); the
+    mount the immediate one (a dead but unreleased session keeps its
+    lower until release). The row query knows no pool: an off-pool row
+    pins its version too — unreleasable from this host, for the row's
+    whole life."""
+    pinned = set(row_pinned)
+    root = Path(config_root)
+    pinned.update(
+        # the lowerdir is ``<config_root>/<version>``; the pin is the
+        # version NAME (what version_dirs / the registry column carry),
+        # not the full path
+        Path(v).name
+        for v in M.overlay_lower_dirs()
+        if Path(v).is_relative_to(root)
+    )
+    return pinned
 
 
 def area_footprint(paths: tuple[str, ...]) -> tuple[int, int]:
@@ -191,6 +231,27 @@ async def release_session(
                 shutil.rmtree(area)
             except OSError as exc:
                 outcome.errors.append(f"rmtree {area}: {exc}")
+
+    # 6.5: reclaim config versions no live session pins. The session's own
+    # version is prunable from this pass (its lower is unmounted, its row
+    # DRAINING — the pin set is the OTHER sessions'); a failure is
+    # recorded, never fatal: slot cleanliness is independent, and the
+    # version retries on the next release/GC
+    try:
+        pinned = pinned_versions(state.config, hooks.pinned_config_versions())
+        cprune = await asyncio.to_thread(configswap.prune, state.config, pinned)
+        outcome.config_pruned = list(cprune.pruned)
+        outcome.errors.extend(
+            f"config prune {v}: {why}" for v, why in cprune.errors
+        )
+        if cprune.pruned:
+            log.info(
+                "release %s: pruned config version(s) %s",
+                session_id, ", ".join(cprune.pruned),
+            )
+    except Exception as exc:
+        outcome.errors.append(f"config prune: {exc}")
+        log.exception("release %s: config prune failed", session_id)
 
     # 7: free the slot only when the sweep verified clean; else quarantine
     footprint = f"; discarded {outcome.discarded[0]} file(s) {_human(outcome.discarded[1])}"

@@ -272,6 +272,32 @@ class Registry:
         )
         self.db.commit()
 
+    def set_config_version(self, session_id: str, version: Optional[str]) -> None:
+        """Record the config version the session booted from (spawn-time
+        only — config reaches a session only at spawn, and a respawn must
+        resolve the SAME lower the session booted from). The column is
+        also the prune pin: a version is deleted only when no live row
+        records it (and no mount names it)."""
+        self.db.execute(
+            "UPDATE sessions SET config_version=?, updated_at=? WHERE id=?",
+            (version, time.time(), session_id),
+        )
+        self.db.commit()
+
+    def pinned_config_versions(self) -> set[str]:
+        """The config versions a not-yet-released session may still need:
+        every ALLOCATED/LIVE row's recorded version. Terminal rows
+        (DRAINING/CLEANING/FREE) pin nothing — release unmounts the lower
+        before it frees the slot, and no respawn ever comes for a terminal
+        row. NULLs (a row upserted before its lower was resolved) pin
+        nothing either: such a session never mounted a version."""
+        rows = self.db.execute(
+            "SELECT config_version FROM sessions"
+            " WHERE state IN (?, ?) AND config_version IS NOT NULL",
+            (ALLOCATED, LIVE),
+        ).fetchall()
+        return {r["config_version"] for r in rows}
+
     def set_stable(self, session_id: str, stable: bool) -> None:
         self.db.execute(
             "UPDATE sessions SET stable=?, updated_at=? WHERE id=?",

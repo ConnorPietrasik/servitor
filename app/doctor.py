@@ -222,7 +222,7 @@ def check_ancestors(rep: Report, root: str, toolkit: str) -> None:
 
 
 def check_config_version(rep: Report, config_root: str) -> None:
-    from app.iso.configswap import active_dir, active_version
+    from app.iso.configswap import active_dir, active_version, version_dirs
 
     v = active_version(config_root)
     if v is None:
@@ -234,6 +234,13 @@ def check_config_version(rep: Report, config_root: str) -> None:
     else:
         rep.add("config.active", FAIL, f"active pointer -> {v} but {d} missing")
         return  # the dir is gone; the per-file checks would be noise
+    rep.add(
+        "config.versions",
+        PASS,
+        f"{len(version_dirs(config_root))} version dir(s) under config/ "
+        "(active + rollback target + live-session lowers are kept; "
+        "unreferenced versions are pruned by release/GC)",
+    )
     for name in ("SYSTEM.md", "STRICT_SYSTEM.md", "models.json", "settings.json"):
         if not (Path(d) / name).exists():
             rep.add(f"config.file.{name}", FAIL, f"{d}/{name} missing from the active config")

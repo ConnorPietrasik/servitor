@@ -118,6 +118,7 @@ def _make_lc(tmp_path, monkeypatch, idle_kill_sec=3600.0) -> Lifecycle:
         released = True
         quarantined = False
         errors = []
+        config_pruned = []
 
     async def fake_release_session(*, session_id, slot, state, pool, hooks,
                                    driver=None, mount_ops=None, reason=""):
@@ -269,6 +270,7 @@ def test_quarantined_release_never_recreates_hub(tmp_path, monkeypatch):
         released = False
         quarantined = True
         errors = ["sweep not verified clean"]
+        config_pruned = []
 
     # the quarantine path of release_session: the REAL hooks in the real
     # order — mark_released(quarantined=True) keeps the row DRAINING
@@ -438,6 +440,7 @@ def _quarantine(lc: Lifecycle, monkeypatch, sid: str):
         released = False
         quarantined = True
         errors = ["sweep not verified clean"]
+        config_pruned = []
 
     async def fake_release_session(*, session_id, slot, state, pool, hooks,
                                    driver=None, mount_ops=None, reason=""):

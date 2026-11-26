@@ -94,7 +94,7 @@ def _install_fake_release(monkeypatch, holder: SimpleNamespace) -> None:
         await asyncio.sleep(0)          # the real first await shape
         pool.verify_free(session_id)    # step 7: sweep verified clean
         hooks.mark_released(session_id, quarantined=False, detail="done")
-        return SimpleNamespace(released=True, quarantined=False, errors=[])
+        return SimpleNamespace(released=True, quarantined=False, errors=[], config_pruned=[])
 
     monkeypatch.setattr(lcmod, "release_session", fake_release_session)
 

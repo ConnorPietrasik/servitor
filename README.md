@@ -38,7 +38,12 @@ steer or abort at any point.
   gate, the bind is the control) or set it to exercise the same check.
 - **Config** (`agent-config/`) and the library (`lib/`) are synced one-way
   from this repo to the guest — versioned, doctor-gated, swap-based with
-  rollback.
+  rollback. A config version is useful only as long as some session runs
+  on it (config reaches a session only at spawn, invariant 9): unreferenced
+  versions are pruned — by `release()` as a session's last lower goes, and
+  by the GC tick for orphans — keeping `active`, the recorded rollback
+  target (`.previous-active`), and every version a live session's mount or
+  registry row pins.
 
 ## Invariants (load-bearing — a build that breaks these is wrong)
 
@@ -80,7 +85,12 @@ never is.** Each session's pi runs as a **slot uid** from a static pool of
    effect of a socket dying.
 9. **Config reaches a session only at spawn.** A live session keeps the
     config it started with (copy-up/overlay semantics) — do not "fix"
-    hot-reload; pi does not support it.
+    hot-reload; pi does not support it. The version a session booted from
+    is recorded on its registry row at spawn (a respawn — including one
+    after a reboot, when the mount is gone — resolves the same lower),
+    and the version is kept exactly until the session's last release
+    (invariant 7's prune keeps it while the row or the mounted lower
+    pins it; nothing older is retained).
 10. **Artifacts leave through the outbox/download endpoint, a human keep,
     or `lib/`** — and only "keep this" / "save this into `lib/`" are ever
     human UI actions (as are rename, delete, and attach). There is no

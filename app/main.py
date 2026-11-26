@@ -215,6 +215,7 @@ class App:
                 "released": out.released,
                 "quarantined": out.quarantined,
                 "errors": out.errors,
+                "config_pruned": out.config_pruned,
             }
         if cmd == "set_stable":
             self.registry.set_stable(args["session_id"], bool(args.get("stable", True)))

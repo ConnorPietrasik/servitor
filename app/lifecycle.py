@@ -16,12 +16,13 @@ from typing import Any, Optional
 from app.iso import mounts as M
 from app.env import optional_env
 from app.iso.configswap import active_dir as config_active_dir
+from app.iso.configswap import prune as prune_config_versions
 from app.iso.configswap import require_active_dir
 from app.iso.layout import SessionMountPaths, StatePaths
 from app.iso.slots import NoFreeSlot, SlotOutsidePool, SlotPool
 from app.iso.spawn import slot_identity
 from app.iso.sweep import kill_strays_by_uid
-from app.iso.release import area_footprint, release_session
+from app.iso.release import area_footprint, pinned_versions, release_session
 from app.api.sse import SseHub
 from app.api.transcript import (
     active_branch,
@@ -176,6 +177,9 @@ class LifecycleHooks:
         self.reg.set_state(session_id, FREE, cause="sweep verified empty")
         self.events.add(session_id, "released", detail)
 
+    def pinned_config_versions(self) -> set[str]:
+        return self.reg.pinned_config_versions()
+
 
 class _AbortStartHooks:
     """ReleaseHooks for failed-start rollback: the registry transitions run
@@ -197,6 +201,9 @@ class _AbortStartHooks:
             self.events.add(session_id, "slot_quarantined", detail)
             return
         # the abort deletes the row: a failed start was never a session
+
+    def pinned_config_versions(self) -> set[str]:
+        return self.reg.pinned_config_versions()
 
 
 class EventFeed:
@@ -632,6 +639,10 @@ class Lifecycle:
             version = _config_version_of(lower)
             live.config_version = version
             live.config_lower = lower
+            # the row's pin, durable: a respawn after a reboot (mounts
+            # gone) must resolve the SAME lower the session booted from,
+            # and the prune keeps a version while a live row records it
+            self.cfg.registry.set_config_version(session_id, version)
             await asyncio.to_thread(M.ensure_session_dirs, sp, self.cfg.state)
             live.mount_ops = await asyncio.to_thread(
                 M.mount_session, sp, lower, self.cfg.state, slot.uid, slot.gid, self.cfg.toolkit_dir
@@ -1285,15 +1296,17 @@ class Lifecycle:
 
     async def gc_tick(self) -> list[str]:
         """Release sessions idle > gc_idle_days (not stable, not running);
-        reclaim unreferenced blobs and staged uploads past their TTL; sweep
-        abandoned fork transcripts past the orphan grace; disk pressure
-        releases the oldest non-stable until headroom; registry GC drops FREE
-        rows past the retention."""
+        reclaim unreferenced blobs and staged uploads past their TTL, and
+        config versions no session pins (release step 6.5 prunes per
+        release; this is the orphan sweep); sweep abandoned fork transcripts
+        past the orphan grace; disk pressure releases the oldest non-stable
+        until headroom; registry GC drops FREE rows past the retention."""
         if self.shutting_down:
             return []
         released: list[str] = []
         await self.gc_blobs()
         await self.gc_staged()
+        await self.gc_config_versions()
         # rows on slots outside this app's pool are never releasable from
         # here (release would raise SlotOutsidePool and skip the rest of the
         # tick): skip them in both release passes
@@ -1495,6 +1508,31 @@ class Lifecycle:
         if gone:
             self.usage.invalidate()
         return gone
+
+    async def gc_config_versions(self) -> list[str]:
+        """Reclaim config versions no session pins and that are neither
+        active nor the rollback target (see app.iso.configswap.prune).
+
+        release() already prunes as each session's last lower goes (its
+        step 6.5); this tick is the orphan sweeper — a version whose
+        session died mid-release (unmounted, but the release's prune
+        never ran), a version the latest sync retired from the rollback
+        target, a failed app-side swap's debris. Same pin set as the
+        release pass: the live rows' versions plus the mounted
+        lowers."""
+        pinned = pinned_versions(
+            str(self.cfg.state.config),
+            self.cfg.registry.pinned_config_versions(),
+        )
+        res = await asyncio.to_thread(
+            prune_config_versions, str(self.cfg.state.config), pinned
+        )
+        for v, why in res.errors:
+            log.warning("config prune %s: %s", v, why)
+        if res.pruned:
+            log.info("config prune: reclaimed %s", ", ".join(res.pruned))
+            self.usage.invalidate()
+        return res.pruned
 
     async def gc_orphaned_files(self) -> int:
         """Sweep orphaned transcripts in sessions past the orphan grace

@@ -623,6 +623,7 @@ def build_app(app_state, cfg) -> FastAPI:
             "released": out.released,
             "quarantined": out.quarantined,
             "errors": out.errors,
+            "config_pruned": out.config_pruned,
         }
 
     # ------------------------------------------------------------------ #
@@ -1451,6 +1452,7 @@ def build_app(app_state, cfg) -> FastAPI:
                 "released": out.released,
                 "quarantined": out.quarantined,
                 "errors": out.errors,
+                "config_pruned": out.config_pruned,
             }
         raise HTTPException(status_code=400, detail="unreachable")
 
