@@ -33,6 +33,7 @@ Routes:
                                                      a mid-body drop answers 499
                                                      and leaves the part resumable)
     POST   /api/v1/sessions/{id}/files/keep        (a hardlink into keep/<sid>/)
+    POST   /api/v1/sessions/{id}/files/lib         (save into the shared library, lib/)
     POST   /api/v1/sessions/{id}/files/attach      (another session's file, or "keep")
     GET    /api/v1/sessions/{id}/files/archive     (streamed zip; repeated path=)
     GET    /api/v1/sessions/{id}/files/{path}      (outbox/... | uploads/...)
@@ -48,6 +49,9 @@ Routes:
     GET    /api/v1/files                           (the kept shelf, across sessions)
     GET    /api/v1/files/keep/{path}               (download a kept file)
     DELETE /api/v1/files/keep/{path}               (un-keep; the only keep deletion)
+    GET    /api/v1/files/lib                       (the shared library, ETag/304)
+    GET    /api/v1/files/lib/{path}                (download a library file)
+    DELETE /api/v1/files/lib/{path}                (delete from the library)
     GET    /api/v1/usage                           (state-volume byte meters)
     POST   /panel/sessions/{id}/action             (whitelist)
 
@@ -110,7 +114,13 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.api.sse import HEARTBEAT, stream_events
 from app.delivery.archive import ArchiveError, stream_zip
-from app.delivery.store import DeliveryError, FileNotDelivered, mime_for, sniff_mime
+from app.delivery.store import (
+    DeliveryError,
+    FileNotDelivered,
+    mime_for,
+    safe_relpath,
+    sniff_mime,
+)
 from app.delivery.upload import OffsetMismatch, StagedError
 from app.iso.spawn import slot_identity
 from app.lifecycle import GLOBAL_EVENTS, PROBES, Lifecycle, SessionNotResumable
@@ -239,10 +249,12 @@ class RenameBody(BaseModel):
 
 class KeepBody(BaseModel):
     # "outbox/report.md" or "uploads/photos/dataset.csv" — the same
-    # addressing the download route uses, so a keep can only ever name a
-    # file the human can already see and download.
+    # addressing the download route uses, so a keep or a save can only
+    # ever name a file the human can already see and download.
     path: str
-    as_name: str | None = None  # keep it under a different path in the shelf
+    # land it under a different path — the shelf's bucket (keep) or the
+    # library (save); the safe form of free text, dots and all stripped
+    as_name: str | None = None
 
 
 class AttachBody(BaseModel):
@@ -1111,15 +1123,20 @@ def build_app(app_state, cfg) -> FastAPI:
                 # already recorded, an artifact's may already be hashed in the
                 # background — otherwise the keep pass computes it once
                 sha = sfiles.sha_for_outbox(rel)
-                keep_name = body.as_name or rel
+                # the default name is the gated relpath itself — the gate
+                # resolved it in-area, so it is safe as-is and a dot file
+                # keeps its dots; only a typed as_name gets the safe form
+                keep_name = safe_relpath(body.as_name) if body.as_name else rel
             elif body.path.startswith("uploads/"):
                 name = body.path[len("uploads/") :]
                 src = sfiles.upload_path(name)
                 sha = sfiles.manifest_sha(name)
-                # the path the file LANDED under (a raw-dot ask resolves to
-                # its safe form): keeping keeps the folder it arrived in
+                # the path the file LANDED under (already its safe form):
+                # keeping keeps the folder it arrived in
                 keep_name = (
-                    body.as_name or src.relative_to(sfiles.inbox.resolve()).as_posix()
+                    safe_relpath(body.as_name)
+                    if body.as_name
+                    else src.relative_to(sfiles.inbox.resolve()).as_posix()
                 )
             else:
                 raise FileNotDelivered(body.path)
@@ -1129,6 +1146,57 @@ def build_app(app_state, cfg) -> FastAPI:
         except (FileNotDelivered, DeliveryError) as e:
             raise HTTPException(status_code=404, detail=f"no such file: {e}")
         app_state.lc.events.add(sid, "file_kept", row["path"])
+        app_state.lc.usage.invalidate()
+        return JSONResponse(status_code=201, content=row)
+
+    @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/files/lib")
+    async def save_to_lib_file(sid: str, body: KeepBody):
+        """Save a file into the shared library (the store-hop rationale is in
+        :meth:`app.delivery.service.Delivery.save_to_lib`). ``body.path`` is
+        addressed exactly like a download — a save can only ever name a file
+        the human can already see and download. The bytes land under the
+        store's inode: every session's read-only ``lib/`` mount shows them
+        the moment the link exists."""
+        _row, sfiles = _session_files(sid)
+        try:
+            if body.path.startswith("outbox/"):
+                rel = body.path[len("outbox/") :]
+                src = sfiles.outbox_path(rel)
+                # the sha is the save's address in the store; an upload's is
+                # already recorded, an artifact's may already be hashed in
+                # the background — otherwise the save pass computes it once
+                sha = sfiles.sha_for_outbox(rel)
+                # the default name is the gated relpath itself — safe as-is,
+                # and a dot file keeps its dots; only a typed as_name gets
+                # the safe form
+                save_name = safe_relpath(body.as_name) if body.as_name else rel
+            elif body.path.startswith("uploads/"):
+                name = body.path[len("uploads/") :]
+                src = sfiles.upload_path(name)
+                sha = sfiles.manifest_sha(name)
+                # the path the file LANDED under (already its safe form): a
+                # save keeps the folder it arrived in
+                save_name = (
+                    safe_relpath(body.as_name)
+                    if body.as_name
+                    else src.relative_to(sfiles.inbox.resolve()).as_posix()
+                )
+            else:
+                raise FileNotDelivered(body.path)
+            row = await asyncio.to_thread(
+                app_state.delivery.save_to_lib, str(src), save_name, sha
+            )
+        except (FileNotDelivered, DeliveryError) as e:
+            raise HTTPException(status_code=404, detail=f"no such file: {e}")
+        # the event carries the source→library mapping (JSON in the string
+        # detail): a save from another tab sets the in-lib badge in this one
+        # with no fetch — the library listing cannot map a lib path back to
+        # the source that produced it
+        app_state.lc.events.add(
+            sid,
+            "lib_saved",
+            json.dumps({"source": body.path, "path": row["path"]}, ensure_ascii=False, separators=(",", ":")),
+        )
         app_state.lc.usage.invalidate()
         return JSONResponse(status_code=201, content=row)
 
@@ -1257,6 +1325,52 @@ def build_app(app_state, cfg) -> FastAPI:
         app_state.lc.events.add(None, "keep_deleted", path)
         app_state.lc.usage.invalidate()
         return {"deleted": f"keep/{path}", "size": size}
+
+    @app.get(f"/api/{API_VERSION}/files/lib")
+    async def list_lib(request: Request):
+        """The shared library (``lib/`` — what every session's agent reads
+        from its workdir), newest first. ETag/304 like the kept shelf."""
+        rows = await asyncio.to_thread(app_state.delivery.list_lib)
+        body = (
+            json.dumps({"lib": rows}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        )
+        etag = '"' + hashlib.blake2b(body, digest_size=16).hexdigest() + '"'
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag})
+        return Response(
+            content=body,
+            media_type="application/json",
+            headers={"ETag": etag, "Cache-Control": "no-cache"},
+        )
+
+    @app.get(f"/api/{API_VERSION}/files/lib/{{path:path}}")
+    async def download_lib_file(path: str):
+        try:
+            p = app_state.delivery.lib_path(path)
+            st = os.lstat(p)
+        except (FileNotFoundError, FileNotDelivered, DeliveryError):
+            # the lstat runs after the gate: a delete landing in the window
+            # is the gate's own 404 shape, never a 500 off the vanished path
+            raise HTTPException(status_code=404, detail="no such library file")
+        # the library listing's per-version cache (same key): a file the
+        # human just saw listed is not sniffed a second time
+        mime = await asyncio.to_thread(
+            mime_for, ("lib", p, st.st_size, st.st_mtime), p, st.st_size
+        )
+        return FileResponse(p, media_type=mime, filename=os.path.basename(p))
+
+    @app.delete(f"/api/{API_VERSION}/files/lib/{{path:path}}")
+    async def delete_lib_file(path: str):
+        """Delete from the library. Repo-pushed files re-land on the next
+        sync (the push is additive over UI saves); a file saved from the UI
+        is gone for good. Explicit call, explicit answer, as in un-keep."""
+        try:
+            size = await asyncio.to_thread(app_state.delivery.delete_lib, path)
+        except (FileNotDelivered, DeliveryError):
+            raise HTTPException(status_code=404, detail="no such library file")
+        app_state.lc.events.add(None, "lib_deleted", path)
+        app_state.lc.usage.invalidate()
+        return {"deleted": f"lib/{path}", "size": size}
 
     # ------------------------------------------------------------------ #
     # extension dialogs (the run waits on the human; the dialog dies with

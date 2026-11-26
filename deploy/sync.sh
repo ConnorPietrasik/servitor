@@ -5,7 +5,14 @@
 #   1. config  -> versioned dir under /var/lib/servitor/config + atomic
 #                 active-pointer swap (the app picks it up at next spawn;
 #                 live sessions keep their config until respawn)
-#   2. lib/    -> /var/lib/servitor/lib (durable, git-backed, never GC'd)
+#   2. lib/    -> /var/lib/servitor/lib (durable, git-backed; pushed
+#                 ADDITIVELY when the repo's content moved since the last
+#                 push — the guest's STAMP of the last push is the
+#                 comparison, because the guest tree also holds UI saves:
+#                 repo files always land (a save re-occupying a freed path
+#                 is moved to a free suffixed name and survives), a file a
+#                 human saved from the UI survives, and a repo deletion
+#                 propagates through the previous push's manifest)
 #   3. app     -> /opt/servitor/app (code only; the venv is preserved,
 #                 previous tree retained for the update rollback)
 #   4. key slice -> the guest's 0600 env file (OMNISSIAH_API_KEY /
@@ -123,6 +130,9 @@ state_read "extension installed" GUEST_EXT_INSTALLED "node -e \"try{console.log(
 state_read "app tree hash" GUEST_APP_SHA "cd /opt/servitor/app && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1"
 state_read "ui dist hash" GUEST_UI_SHA "cd /opt/servitor/app/ui/dist 2>/dev/null && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1"
 state_read "env key slice" GUEST_ENV_SHA "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_EDGE_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1"
+# the stamp of the last lib push (NOT the guest tree — the library also
+# holds UI saves, which must never re-trigger a push)
+state_read "lib push stamp" GUEST_LIB_SHA "cat /var/lib/servitor/.lib-manifest.sha 2>/dev/null"
 
 # ---- artifacts (host) ----------------------------------------------------
 # config version: CONTENT-addressed (the directory's file set + bytes), so
@@ -152,6 +162,15 @@ fi
 # content-addressed like the config (find|sort|sha256): independent of tar
 # metadata (owner name vs numeric uid, mtime, traversal order).
 APP_SHA="$(cd "$REPO" && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1)"
+
+# lib: content-addressed like the app (find|sort|sha256). Compared against
+# the stamp the last push wrote on the guest, not the guest tree: the
+# library also holds UI saves (different inodes by design), and only a
+# change in the REPO's files re-triggers a push.
+LIB_SHA=""
+if [[ -d "$REPO/lib" ]]; then
+  LIB_SHA="$(cd "$REPO" && find lib -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)"
+fi
 
 # UI: build host-side when the ui/ source moved since the last build
 # (stamp: ui/.ui-src-sha), then hash the dist — the same content
@@ -209,6 +228,9 @@ CHANGED=()
 [[ "$APP_SHA" != "$GUEST_APP_SHA" ]] && CHANGED+=("app")
 [[ "$UI_DIST_SHA" != "$GUEST_UI_SHA" ]] && CHANGED+=("ui")
 [[ "$KEYS_SHA" != "$GUEST_ENV_SHA" ]] && CHANGED+=("env")
+# no lib/ in the repo: nothing to push, the guest keeps its library — the
+# comparison is skipped, not "empty != stamp" (which would re-push forever)
+[[ -n "$LIB_SHA" && "$LIB_SHA" != "$GUEST_LIB_SHA" ]] && CHANGED+=("lib")
 
 if [[ ${#CHANGED[@]} -eq 0 ]]; then
   echo "sync: NO-OP (config=$CONFIG_VERSION ext=${EXT_VERSION:-none} app+env unchanged) — nothing touched, no restart"
@@ -277,11 +299,98 @@ run_guest "
 NEW_VERSION="$CONFIG_VERSION"
 echo "    config active -> $NEW_VERSION"
 
-# lib/ (durable, human-curated; pushed as-is)
-if [[ -d "$REPO/lib" ]]; then
+# lib/ (durable, human-curated; pushed ADDITIVELY over the guest's tree,
+# and only when the repo's content moved since the last push — see LIB_SHA)
+# The rm-then-extract of the old shape made the guest's lib an exact copy of
+# the repo — anything the repo did not hold died on the next sync. The UI's
+# save-to-lib needs the opposite (a save must SURVIVE the next sync), so the
+# push is additive: the repo's files always land, a file never pushed
+# from the repo survives, and a repo deletion propagates through the
+# PREVIOUS push's manifest. A deletion never touches a LINK at the freed
+# path (a tar file is nlink 1; a save is the store's inode, nlink >= 2 —
+# a save that re-occupied the freed path survives), and a re-land moves a
+# save out of the way to a free suffixed name instead of clobbering it
+# (the repo keeps its path). The manifest lives OUTSIDE the lib dir: the agent's ./lib view
+# is exactly the library, and the state root is app territory, not session
+# territory. First run after the shape change has no manifest: a plain
+# additive extract (the old rm-then-extract guarantees guest == repo).
+# The stamp (.lib-manifest.sha, beside the manifest) records the repo's
+# CONTENT for the next NO-OP comparison: a UI save moves no stamp, a repo
+# edit does.
+if [[ -d "$REPO/lib" && "$LIB_SHA" != "$GUEST_LIB_SHA" ]]; then
   tar -C "$REPO" -cf "$WORK/lib.tar" lib
   SCp "$WORK/lib.tar" "$SSH_TARGET:/tmp/servitor-lib.tar"
-  run_guest "rm -rf /var/lib/servitor/lib && tar -xf /tmp/servitor-lib.tar -C /var/lib/servitor && rm -f /tmp/servitor-lib.tar"
+  run_guest "
+    set -e
+    ROOT=/var/lib/servitor/lib
+    MAN=/var/lib/servitor/.lib-manifest
+    mkdir -p \$ROOT
+    # verify the archive is READABLE before anything is deleted: a corrupt
+    # scp must abort here, not after the deletion pass ran on an empty list
+    tar -tf /tmp/servitor-lib.tar > /dev/null
+    NEW=\$(mktemp)
+    # || true: an empty lib (no file entries) makes the last grep exit 1 —
+    # legitimate, and not a failure to die on
+    tar -tf /tmp/servitor-lib.tar | sed -n 's|^lib/||p' | grep -v '/\$' | grep -v '^\$' > \$NEW || true
+    if [[ -f \$MAN ]]; then
+      # a path the repo freed dies only if it still holds the PLAIN tar
+      # file (nlink 1) this mechanism writes. A link there is a human
+      # save (the store's inode, nlink >= 2) that took the freed path —
+      # the save survives, as the additive push promises
+      comm -23 <(LC_ALL=C sort \$MAN) <(LC_ALL=C sort \$NEW) | while IFS= read -r p; do
+        [[ -n \$p ]] || continue
+        if [[ ! -e \"\$ROOT/\$p\" ]]; then
+          continue  # already gone: nothing to do
+        fi
+        if [[ \$(stat -c %h \"\$ROOT/\$p\") -eq 1 ]]; then
+          rm -f \"\$ROOT/\$p\"
+        else
+          echo \"    lib: kept \$p (a human save holds the path the repo freed)\"
+        fi
+      done
+    fi
+    # a repo file landing on a path a HUMAN SAVE re-occupied (the repo freed
+    # it, the save took it, the repo puts a file back) would be clobbered by
+    # the extract, which overwrites whatever is there. Move the save to a
+    # free suffixed name (the app's x.1.ext scheme) so the repo file lands
+    # and the save survives. Fails closed: no free name aborts BEFORE the
+    # extract, never a silent clobber
+    /opt/servitor/app/.venv/bin/python - \$ROOT \$NEW <<'PYEOF'
+import os, stat, sys
+
+root, new_path = sys.argv[1], sys.argv[2]
+for line in open(new_path):
+    p = line.strip()
+    if not p:
+        continue
+    t = os.path.join(root, p)
+    try:
+        st = os.lstat(t)
+    except OSError:
+        continue
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink <= 1:
+        continue  # nothing, or the plain tar file the extract replaces
+    d, base = os.path.split(p)
+    stem, dot, ext = base.partition('.')
+    for i in range(1, 100_000):
+        cand = os.path.join(d, f'{stem}.{i}{dot}{ext}')
+        if not os.path.lexists(os.path.join(root, cand)):
+            os.rename(t, os.path.join(root, cand))
+            print(f'    lib: save at {p} moved to {cand} so the repo file can land')
+            break
+    else:
+        raise SystemExit(f'lib: no free name for the save at {p} — aborting before the clobber')
+PYEOF
+    tar -xf /tmp/servitor-lib.tar -C /var/lib/servitor
+    # AFTER the extract: the tar records the checkout's empty dirs (an
+    # uncommitted file deletion leaves the dir on the host), so a pre-extract
+    # prune would be undone by it. Only empties go — a dir a save still fills
+    # is never touched, and -mindepth 1 keeps the lib root itself
+    find \$ROOT -mindepth 1 -depth -type d -empty -delete 2>/dev/null || true
+    mv \$NEW \$MAN && chmod 600 \$MAN
+    printf '%s' $LIB_SHA > \$MAN.sha && chmod 600 \$MAN.sha
+    rm -f /tmp/servitor-lib.tar
+  "
 fi
 
 # key slice + version selections: merge into the 0600 env file (atomic).

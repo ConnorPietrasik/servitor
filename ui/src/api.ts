@@ -4,6 +4,7 @@ import type {
   FilesResp,
   KeepRow,
   KeptResp,
+  LibResp,
   MessagesResp,
   OutboxFile,
   SessionRow,
@@ -398,7 +399,7 @@ export function pruneGoneSessionStorage(liveIds: string[]): void {
   try {
     const live = new Set(liveIds);
     for (const key of Object.keys(localStorage)) {
-      const m = /^servitor-(?:kept|staged):(.+)$/.exec(key);
+      const m = /^servitor-(?:kept|staged|lib):(.+)$/.exec(key);
       if (m && !live.has(m[1])) localStorage.removeItem(key);
     }
   } catch {
@@ -533,6 +534,48 @@ export async function deleteKept(path: string): Promise<number> {
 
 export const keptDownloadUrl = (path: string) => `/api/v1/files/keep/${encodePath(path)}`;
 
+// ---- the shared library (lib/) ----
+// The library is global (one per app, mounted read-only into every
+// session's workdir), so it is one listing with the same ETag/304
+// treatment as the kept shelf: a revalidation that comes back unchanged
+// costs ~200 bytes, not the whole tree.
+let libEtag = "";
+let libRows: LibResp["lib"] = [];
+
+export async function listLib(): Promise<LibResp> {
+  const headers: Record<string, string> = {};
+  if (libEtag) headers["if-none-match"] = libEtag;
+  const r = await fetch(`/api/v1/files/lib`, { headers });
+  if (r.status === 304) return { lib: libRows };
+  if (!r.ok) throw new Error(`/files/lib -> ${r.status}`);
+  const data = (await r.json()) as LibResp;
+  libEtag = r.headers.get("etag") ?? "";
+  libRows = data.lib;
+  return data;
+}
+
+export async function saveToLib(
+  sid: string,
+  path: string,
+  asName?: string,
+): Promise<{ path: string; sha256: string; size: number; ts: number }> {
+  const r = await fetch(`/api/v1/sessions/${sid}/files/lib`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ path, as_name: asName ?? null }),
+  });
+  if (!r.ok) throw new Error(`save-to-lib ${path} -> ${r.status}`);
+  return await r.json();
+}
+
+export async function deleteLibFile(path: string): Promise<number> {
+  const r = await fetch(`/api/v1/files/lib/${encodePath(path)}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(`delete lib ${path} -> ${r.status}`);
+  return ((await r.json()) as { size: number }).size;
+}
+
+export const libDownloadUrl = (path: string) => `/api/v1/files/lib/${encodePath(path)}`;
+
 // ---- byte meters (a report, never a limit) ----
 export const usage = () => jget<UsageResp>("/api/v1/usage");
 
@@ -576,6 +619,8 @@ export function subscribeGlobal(
     "agent_settled",
     "file_uploaded",
     "file_kept",
+    "lib_saved",
+    "lib_deleted",
     "file_deleted",
     "file_renamed",
     "keep_deleted",
@@ -658,6 +703,7 @@ export function subscribeEvents(
     "extension_dialog_resolved",
     "file_uploaded",
     "file_kept",
+    "lib_saved",
     "files_changed",
     "file_deleted",
     "file_renamed",

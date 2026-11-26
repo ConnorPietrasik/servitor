@@ -10,9 +10,11 @@ Two distinct kinds of path live here, and only here:
 2. **State-volume areas** — relative to the state-volume root (the
    CLI's ``--state``). Computed by :func:`state_paths`; never hardcoded
    elsewhere. Every per-session area is one directory named by session id:
-   ``inbox/`` and ``outbox/`` are the two BIND SOURCES the agent sees as
-   ``./inbox`` (read-only: root-owned, in a root-owned directory) and
-   ``./outbox`` (its handoff area); ``blobs/`` holds one copy of every
+   ``inbox/`` and ``outbox/`` are two of the three BIND SOURCES the agent
+   sees as ``./inbox`` (read-only: root-owned, in a root-owned directory)
+   and ``./outbox`` (its handoff area); ``lib/`` is the third — the shared
+   library, root-owned, mounted read-only as ``./lib`` in every session;
+   ``blobs/`` holds one copy of every
    delivered file's bytes, hardlinked into whichever sessions need them;
    ``keep/`` holds the bytes a human chose to keep, outside every session
    area so ``release()`` cannot reach them.
@@ -95,7 +97,7 @@ class StatePaths:
 
     root: str
     config: str  # versioned dirs config/v<N>/ + active pointer
-    lib: str  # durable, human-curated; never GC'd
+    lib: str  # durable, human-curated; never GC'd; the RO bind source for ./lib
     inbox: str  # inbox/<session>/ (bind source; root-owned, agent read-only)
     outbox: str  # outbox/<session>/ (bind source; the agent's handoff area)
     staging: str  # staging/<session>/ (resumable uploads in flight)

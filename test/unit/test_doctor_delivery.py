@@ -21,7 +21,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
-from app.doctor import FAIL, PASS, WARN, Report, check_delivery, check_outbox_mounts
+from app.doctor import FAIL, PASS, WARN, Report, check_delivery, check_session_mounts
 from app.iso.layout import state_paths
 
 
@@ -161,7 +161,7 @@ def test_a_keep_on_another_device_fails(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------- #
-# the outbox bind on live sessions
+# the outbox + lib binds on live sessions
 # ---------------------------------------------------------------------- #
 
 
@@ -174,8 +174,9 @@ def test_an_unmounted_session_says_nothing(tmp_path):
     all is not a broken mount plan."""
     reg = SimpleNamespace(list_sessions=lambda: [_row("s1")])
     rep = Report()
-    check_outbox_mounts(rep, str(tmp_path), reg)
+    check_session_mounts(rep, str(tmp_path), reg)
     assert _one(rep, "mounts.outbox")[0] == PASS
+    assert _one(rep, "mounts.lib")[0] == PASS
 
 
 def test_a_workdir_mounted_without_the_outbox_bind_fails(tmp_path, monkeypatch):
@@ -185,8 +186,25 @@ def test_a_workdir_mounted_without_the_outbox_bind_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(os.path, "ismount", lambda p: p.endswith("workdir"))
     reg = SimpleNamespace(list_sessions=lambda: [_row("s1")])
     rep = Report()
-    check_outbox_mounts(rep, str(tmp_path), reg)
+    check_session_mounts(rep, str(tmp_path), reg)
     status, detail = _one(rep, "mounts.outbox")
+    assert status == FAIL and "s1" in detail
+
+
+def test_a_workdir_mounted_without_the_lib_bind_fails(tmp_path, monkeypatch):
+    """The mounted plan that predates the lib bind: the overlay and the
+    outbox are up, lib/ is not — the agent's prompt advertises a library
+    that is missing from its workdir."""
+    scratch = Path(tmp_path) / "scratch" / "s1"
+    (scratch / "workdir" / "outbox").mkdir(parents=True)
+    monkeypatch.setattr(
+        os.path, "ismount", lambda p: "workdir" in p and not p.endswith("/lib")
+    )
+    reg = SimpleNamespace(list_sessions=lambda: [_row("s1")])
+    rep = Report()
+    check_session_mounts(rep, str(tmp_path), reg)
+    assert _one(rep, "mounts.outbox")[0] == PASS
+    status, detail = _one(rep, "mounts.lib")
     assert status == FAIL and "s1" in detail
 
 
@@ -196,5 +214,6 @@ def test_a_session_with_both_mounts_passes(tmp_path, monkeypatch):
     monkeypatch.setattr(os.path, "ismount", lambda p: "/workdir" in p)
     reg = SimpleNamespace(list_sessions=lambda: [_row("s1"), _row("s2", state="free")])
     rep = Report()
-    check_outbox_mounts(rep, str(tmp_path), reg)
+    check_session_mounts(rep, str(tmp_path), reg)
     assert _one(rep, "mounts.outbox")[0] == PASS
+    assert _one(rep, "mounts.lib")[0] == PASS

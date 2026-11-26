@@ -574,6 +574,29 @@ def test_keep_and_attach_preserve_the_folder_the_file_lived_in(tmp_path):
     assert (root / "inbox/s2" / "videos" / "a.jpg").read_bytes() == b"\xff\xd8\xff\xe0b"
 
 
+def test_keep_keeps_the_dots_of_a_dot_file(tmp_path):
+    """The default landing name is the source's own gated relpath — a dot
+    file the agent wrote (outbox/.hidden/…) keeps its dots on the shelf; the
+    safe-form renaming is for names a human TYPES, so an explicit as_name
+    still resolves to its safe form, as an upload does."""
+    c, _state, root = make_client(tmp_path)
+    (root / "outbox/s1" / ".hidden").mkdir(parents=True, exist_ok=True)
+    (root / "outbox/s1" / ".hidden" / "notes.md").write_bytes(b"n\n")
+    r = c.post(
+        "/api/v1/sessions/s1/files/keep",
+        json={"path": "outbox/.hidden/notes.md"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["path"] == "s1/.hidden/notes.md"
+    (root / "outbox/s1" / "plain.md").write_bytes(b"p\n")
+    r = c.post(
+        "/api/v1/sessions/s1/files/keep",
+        json={"path": "outbox/plain.md", "as_name": ".secret.md"},
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["path"] == "s1/secret.md"
+
+
 # ---------------------------------------------------------------------- #
 # reclaim (the filesystem's own refcount)
 # ---------------------------------------------------------------------- #

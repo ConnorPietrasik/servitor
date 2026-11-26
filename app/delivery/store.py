@@ -156,12 +156,11 @@ def _process_outbox_version(key: tuple, path: str) -> None:
     listing never blocks on either read and the delta diff sees both
     fill-ins at once.
 
-    The sniff runs only for the outbox namespace: the keep shelf's rows
-    render their MIME and keep it synchronous (a small, human-curated
-    area), and the shelf keys its mime by the link's absolute path while
-    its sha key — the one this pass receives — is a RELPATH, so a sniff
-    here would land under a key nobody reads (a double read on every
-    shelf listing).
+    The sniff runs only for the outbox namespace: the keep shelf's and the
+    library's rows render their MIME and keep it synchronous (small,
+    human-curated areas), and both key their mime by the ABSOLUTE path
+    while this pass's sha key is a RELPATH — a sniff here would land under
+    a key nobody reads (a double read on every listing).
     """
     try:
         lst = os.lstat(path)
@@ -175,7 +174,7 @@ def _process_outbox_version(key: tuple, path: str) -> None:
         with _sha_lock:
             need_sha = key not in _SHA_CACHE
         with _mime_lock:
-            need_mime = key[0] != "keep" and bool(key[2]) and key not in _MIME_CACHE
+            need_mime = key[0] not in ("keep", "lib") and bool(key[2]) and key not in _MIME_CACHE
         if need_sha:
             h = hashlib.sha256()
             with open(path, "rb") as f:
@@ -1064,6 +1063,19 @@ def _safe_relpath(name: str) -> str:
     if not parts:
         raise DeliveryError(f"unsafe upload path: {name!r}")
     return "/".join(parts)
+
+
+def safe_relpath(name: str) -> str:
+    """``_safe_relpath`` for FREE TEXT — the name a human types (an
+    ``as_name`` on a keep/save) before it lands in a durable area.
+
+    Do NOT run a name through this that the source's own gate already
+    resolved (a download's relpath): it would rename what is on disk
+    (outbox/.env is a dot file the agent wrote, not ``env``). Those paths
+    are safe as-is — the gate proved they resolve in-area, link-free and
+    NUL-free — and the durable-area routes hand them to the service
+    unchanged."""
+    return _safe_relpath(name)
 
 
 def _safe_name(name: str) -> str:

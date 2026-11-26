@@ -131,10 +131,10 @@ never is.** Each session's pi runs as a **slot uid** from a static pool of
 
 | path | what |
 |---|---|
-| `app/` | the guest-side app: API, lifecycle, isolation core, pi rpc driver, delivery (blob store, keep shelf, file watch, byte meters), doctor |
+| `app/` | the guest-side app: API, lifecycle, isolation core, pi rpc driver, delivery (blob store, keep shelf, library save, file watch, byte meters), doctor |
 | `ui/` | chat UI (React/Vite, static, served by the app on the same port) |
 | `agent-config/` | agent system prompt, model config, skills — synced read-only |
-| `lib/` | durable human-curated library — synced read-only to the agent |
+| `lib/` | durable human-curated library — synced read-only to the agent, mounted RO in every session's workdir; the UI can save an outbox/upload file there |
 | `deploy/` | guest image build, systemd units, firewall, sync/update/doctor, portcullis install |
 | `test/` | the gate stack: contract lint, unit, conformance, stage2, sandbox-smoke |
 

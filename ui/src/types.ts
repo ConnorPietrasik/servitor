@@ -96,6 +96,20 @@ export interface KeptResp {
   keep: KeepRow[];
 }
 
+// --- the shared library (lib/): human-curated, mounted read-only into
+// every session's workdir; the agent reads it, humans save into it ------
+export interface LibRow {
+  path: string; // relpath under lib, e.g. "scripts/foo.sh"
+  size: number;
+  mtime: number;
+  sha256?: string | null; // the store's name for the bytes (a save is a blob link); null for a repo-pushed file — the listing never hashes it
+  mime: string;
+}
+
+export interface LibResp {
+  lib: LibRow[];
+}
+
 // --- state-volume byte meters (a report, never a limit) ---------------
 export interface UsageArea {
   bytes: number;

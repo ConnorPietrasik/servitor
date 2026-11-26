@@ -4,7 +4,7 @@ Mounted at allocate, before any spawn/respawn; live for the SESSION
 lifetime — pi runs a session in its recorded cwd, so idle-kill never
 unmounts; only release does (reverse order).
 
-The five real mounts:
+The six real mounts:
 
 1. **Workdir overlay** — lower = /opt/toolkit (baked, a plain directory,
    never a mount), upper/work = scratch/<s>/{upper,work}, merged at the
@@ -22,11 +22,19 @@ The five real mounts:
    a state-volume directory (not a directory inside the overlay upper) is
    what keeps artifacts visible while the session is unmounted and lets the
    app hardlink them into ``keep/`` across the same filesystem.
-5. **models.json single-file RO bind** — over the merged agent dir (the
+5. **lib bind (RO)** — state/lib (the shared, human-curated library) into
+   the merged workdir as ./lib, bind + ``remount,ro``. One source for ALL
+   sessions — no copy per session. The ro remount, not the mode bits, is
+   the read-only control: the lib tree's modes arrive from a host tar
+   (sync), and any future 0666 must not open a write path. A workdir a
+   pre-lib plan left mounted across an app update gets it late, where the
+   session is revisited (:func:`ensure_lib_bind`).
+6. **models.json single-file RO bind** — over the merged agent dir (the
    agent could otherwise shadow it in the upper and steer the NEXT run's
    endpoint; the bearer key rides along).
 
-Read-only to the agent = root-owned, slot-uid-unwritable.
+Read-only to the agent = root-owned, slot-uid-unwritable — and, for the lib
+and models.json binds, a kernel RO remount on top of that.
 """
 from __future__ import annotations
 
@@ -47,7 +55,7 @@ class MountError(RuntimeError):
 class MountOp:
     """One mount, with its exact teardown. Order in the plan matters."""
 
-    kind: str  # "overlay" | "bind" | "ro-bind-file"
+    kind: str  # "overlay" | "bind" | "ro-bind"
     target: str
     options: str  # the -o string ("" for plain bind)
 
@@ -67,8 +75,9 @@ class MountOp:
             )
         elif self.kind == "bind":
             self._run(["mount", "--bind", self.options, self.target])
-        elif self.kind == "ro-bind-file":
-            # options = "source:target" split by the caller via a marker
+        elif self.kind == "ro-bind":
+            # options = "source::target" split by the caller via a marker;
+            # file or directory — the ro remount works the same on both
             source, target = self.options.split("::")
             self._run(["mount", "--bind", source, target])
             self._run(["mount", "-o", "remount,ro,bind", target])
@@ -99,6 +108,9 @@ def ensure_session_dirs(sp: SessionMountPaths, state: StatePaths) -> None:
         state.inbox_for(sp.session_id),
         state.outbox_for(sp.session_id),
         state.sessions_for(sp.session_id),
+        # the lib bind source: the image and the sync both create it, but a
+        # bind onto a missing source would fail the whole mount plan
+        state.lib,
     ):
         os.makedirs(d, exist_ok=True)
 
@@ -232,7 +244,11 @@ def mount_session(
         outbox_target = f"{sp.workdir}/outbox"
         os.makedirs(outbox_target, exist_ok=True)
         _assert_real_dir(outbox_target)
-        # 2-5: agent-dir overlay, inbox bind, outbox bind, models.json RO bind
+        lib_target = f"{sp.workdir}/lib"
+        os.makedirs(lib_target, exist_ok=True)
+        _assert_real_dir(lib_target)
+        # 2-6: agent-dir overlay, inbox bind, outbox bind, lib RO bind,
+        # models.json RO bind
         for op in ops[1:]:
             op.mount()
     except Exception:
@@ -256,7 +272,7 @@ def plan_session_mounts(
     toolkit_dir: str = TOOLKIT_DIR,
     agent_dir_ro: bool = False,
 ) -> list[MountOp]:
-    """The five mounts, in mount order (teardown is the reverse).
+    """The six mounts, in mount order (teardown is the reverse).
 
     ``toolkit_dir`` defaults to the image-baked constant; tests inject a
     scratch toolkit (the production path always uses the constant).
@@ -291,11 +307,50 @@ def plan_session_mounts(
             options=state.outbox_for(sp.session_id),
         ),
         MountOp(
-            kind="ro-bind-file",
+            kind="ro-bind",
+            target=f"{sp.workdir}/lib",
+            options=f"{state.lib}::{sp.workdir}/lib",
+        ),
+        MountOp(
+            kind="ro-bind",
             target=f"{sp.agent_dir}/models.json",
             options=f"{config_lower}/models.json::{sp.agent_dir}/models.json",
         ),
     ]
+
+
+def ensure_lib_bind(sp: SessionMountPaths, state: StatePaths) -> list[MountOp]:
+    """The lib bind for a workdir mounted by a plan that predates it.
+
+    An in-place app update leaves pre-lib workdirs MOUNTED (mounts outlive
+    the process; the respawn skips a workdir it finds up), and the doctor
+    FAILs a mounted workdir without the library its prompt advertises. The
+    bind is added where a surviving session is revisited — at boot (every
+    live workdir) and on respawn (the session's own pickup) — and is
+    idempotent: a workdir that already has it costs one ismount and yields
+    no op. Returns a list with the op (the caller records it, so release()
+    unmounts it) or an empty list.
+    """
+    target = f"{sp.workdir}/lib"
+    if os.path.ismount(target):
+        return []
+    try:
+        os.makedirs(target, exist_ok=True)
+    except FileExistsError:
+        # the workdir is slot-writable and survives a reboot: a regular
+        # file planted at the canonical name fails closed, as the
+        # mount_session gates do
+        raise MountError(
+            f"{target} is not a real directory (tampered?); refusing to mount"
+        ) from None
+    _assert_real_dir(target)
+    op = MountOp(
+        kind="ro-bind",
+        target=target,
+        options=f"{state.lib}::{target}",
+    )
+    op.mount()
+    return [op]
 
 
 def execute_mounts(ops: list[MountOp]) -> None:

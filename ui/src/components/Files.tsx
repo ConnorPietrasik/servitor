@@ -17,6 +17,9 @@ export interface FileEvent {
   seq: number;
   delta: FilesChanged | null;
   kind?: string;
+  // `lib_saved` only: the JSON mapping the event carries (source → lib path)
+  // — a save from another tab sets the badge directly, no fetch
+  detail?: string;
 }
 
 interface Dir {
@@ -148,6 +151,29 @@ export default function Files({
       }
       return next;
     });
+  // source paths already saved to the shared library ("outbox/<rel>" |
+  // "uploads/<name>" → the lib path the server landed it under). Same
+  // persistence and truth rules as the kept-badge: the library listing is
+  // the authority, and a badge whose lib path is gone is unsaved and goes.
+  const libKey = `servitor-lib:${sid}`;
+  const [inLib, setInLib] = useState<Record<string, string>>(() => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(libKey) ?? "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
+  const updateInLib = (updater: (cur: Record<string, string>) => Record<string, string>) =>
+    setInLib((cur) => {
+      const next = updater(cur);
+      try {
+        localStorage.setItem(libKey, JSON.stringify(next));
+      } catch {
+        /* private mode: the badge is simply per-mount */
+      }
+      return next;
+    });
   const [shelf, setShelf] = useState<KeepRow[] | null>(null);
   const [showShelf, setShowShelf] = useState(false);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -176,7 +202,16 @@ export default function Files({
 
   useEffect(() => {
     void load();
-  }, [load]);
+    // badges are per-mount residue with the library as their truth: if any
+    // survived (a delete on the Library screen, a sync from the host), one
+    // ETag'd fetch settles them — a 304 costs ~200 bytes, no badges no fetch
+    if (Object.keys(inLib).length > 0) {
+      void api
+        .listLib()
+        .then(({ lib }) => reconcileInLib(lib))
+        .catch(() => {});
+    }
+  }, [load]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // deltas from the session's stream (the parent owns the socket)
   useEffect(() => {
@@ -199,6 +234,24 @@ export default function Files({
           })
           .catch((e) => setErr(String(e)));
       }
+    } else if (ev.kind === "lib_saved") {
+      // a save — possibly from another tab. The event carries the
+      // source→lib mapping (JSON detail), so the badge is set directly with
+      // no fetch; a DELETE still arrives as the global lib_deleted event,
+      // which names the lib path and drops its badge
+      let parsed: { source?: unknown; path?: unknown } | null = null;
+      try {
+        parsed = ev.detail ? JSON.parse(ev.detail) : null;
+      } catch {
+        parsed = null;
+      }
+      const source = parsed?.source;
+      const libPath = parsed?.path;
+      if (typeof source === "string" && typeof libPath === "string" && source && libPath) {
+        updateInLib((cur) =>
+          cur[source] === libPath ? cur : { ...cur, [source]: libPath },
+        );
+      }
     } else {
       // revalidate through the ETag (not force): the event names a change
       // the listing will have to carry, but a stale duplicate event must
@@ -207,6 +260,83 @@ export default function Files({
     }
     // ev.seq is the trigger; the handlers below are stable per session
   }, [ev?.seq]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // a library DELETE arrives as a GLOBAL event (the session stream cannot
+  // carry it), so a badge would sit stale while this tab stays open. While
+  // any badge exists, hold one narrow global stream (viewed to `lib_deleted`):
+  // the event names the deleted path, so the badge is dropped with no fetch
+  // (the same contract the Kept screen has for its rows). No badges, no
+  // stream; a hidden tab closes it (the UI pays for change, never for
+  // waiting), and show reconciles through the ETag — a delete that landed
+  // while hidden settles there, and an unchanged answer is a 304
+  const hasLibBadges = Object.keys(inLib).length > 0;
+  useEffect(() => {
+    if (!hasLibBadges) return;
+    let unsub: (() => void) | null = null;
+    const attach = () => {
+      if (unsub) return;
+      unsub = api.subscribeGlobal(
+        (name, data) => {
+          if (name !== "lib_deleted") return;
+          const p = (data as { detail?: string } | null)?.detail;
+          if (!p) return;
+          updateInLib((cur) => {
+            if (!Object.values(cur).includes(p)) return cur;
+            const next: Record<string, string> = {};
+            for (const [src, libPath] of Object.entries(cur))
+              if (libPath !== p) next[src] = libPath;
+            return next;
+          });
+        },
+        () => {
+          // a gap evicted the delete we were waiting for: settle against
+          // the listing (ETag'd)
+          void api.listLib().then(({ lib }) => reconcileInLib(lib)).catch(() => {});
+        },
+        ["lib_deleted"],
+      );
+    };
+    const onVis = () => {
+      if (document.hidden) {
+        unsub?.();
+        unsub = null;
+      } else {
+        void api.listLib().then(({ lib }) => reconcileInLib(lib)).catch(() => {});
+        attach();
+      }
+    };
+    document.addEventListener("visibilitychange", onVis);
+    // a tab that mounts HIDDEN holds no stream: the first show reconciles
+    // (a lib_deleted that landed in the dark settles against the listing)
+    // and then attaches — the UI pays for change, never for waiting
+    if (!document.hidden) attach();
+    return () => {
+      unsub?.();
+      document.removeEventListener("visibilitychange", onVis);
+    };
+  }, [hasLibBadges]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // a badge is only as good as its row: when a source leaves the listing —
+  // a delete that landed from another tab or device (its delta folds in, or
+  // its revalidate reloads the rows) — the badge goes with it, the same rule
+  // the local deletes apply. An orphaned badge would mislabel a NEW file
+  // later written to the same path (a different artifact the save does not
+  // cover) and hold the lib_deleted stream open for a row that is gone. The
+  // rows the view just loaded are the truth; a first load in flight (outbox
+  // null) prunes nothing
+  useEffect(() => {
+    if (outbox === null) return;
+    const sources = new Set<string>([
+      ...outbox.map((f) => `outbox/${f.path}`),
+      ...uploads.map((u) => `uploads/${u.name}`),
+    ]);
+    updateInLib((cur) => {
+      const next: Record<string, string> = {};
+      for (const [src, libPath] of Object.entries(cur))
+        if (sources.has(src)) next[src] = libPath;
+      return Object.keys(next).length === Object.keys(cur).length ? cur : next;
+    });
+  }, [outbox, uploads]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dirs = useMemo(() => groupByDir(outbox ?? []), [outbox]);
   const uploadDirs = useMemo(() => groupUploads(uploads), [uploads]);
@@ -240,6 +370,30 @@ export default function Files({
         if (alive.has(shelfPath)) next[src] = shelfPath;
       return Object.keys(next).length === Object.keys(cur).length ? cur : next;
     });
+  }
+
+  // drop in-lib badges the library no longer backs (a delete from the
+  // Library screen, a host sync that re-pushed the tree)
+  function reconcileInLib(rows: { path: string }[]) {
+    const alive = new Set(rows.map((r) => r.path));
+    updateInLib((cur) => {
+      const next: Record<string, string> = {};
+      for (const [src, libPath] of Object.entries(cur))
+        if (alive.has(libPath)) next[src] = libPath;
+      return Object.keys(next).length === Object.keys(cur).length ? cur : next;
+    });
+  }
+
+  async function doSaveToLib(source: string, label: string) {
+    try {
+      const row = await api.saveToLib(sid, source);
+      updateInLib((cur) => ({ ...cur, [source]: row.path }));
+      setNote(
+        `saved ${label} to lib/ as ${row.path} — every session's agent can read it (read-only)`,
+      );
+    } catch (e) {
+      setErr(String(e));
+    }
   }
 
   // the shelf is fetched when the human opens the section, never on mount:
@@ -326,6 +480,18 @@ export default function Files({
       } else {
         setUploads((cur) => cur.filter((u) => u.name !== target.path));
       }
+      // the in-lib badge for the source goes with the row: the library copy
+      // survives (the Library screen still shows it), but a badge with no
+      // row to render on would hold the lib_deleted stream open forever —
+      // and a NEW file later written to the same path is a different
+      // artifact the old save does not cover
+      const srcKey = `${target.kind === "outbox" ? "outbox" : "uploads"}/${target.path}`;
+      updateInLib((cur) => {
+        if (!(srcKey in cur)) return cur;
+        const next = { ...cur };
+        delete next[srcKey];
+        return next;
+      });
       setNote(`deleted ${target.path} (${fmtBytes(freed)} freed)`);
     } catch (e) {
       setErr(String(e));
@@ -338,12 +504,25 @@ export default function Files({
   async function doDeleteMany() {
     let freed = 0;
     let failed = 0;
+    const gone: string[] = [];
     for (const p of selectedPaths) {
       try {
         freed += await api.deleteOutboxFile(sid, p);
+        gone.push(p);
       } catch {
         failed++;
       }
+    }
+    // the in-lib badges for the deleted sources go with the rows (the
+    // doDeleteOne rule); only the paths that actually went are stale
+    if (gone.length > 0) {
+      updateInLib((cur) => {
+        const stale = new Set(gone.map((p) => `outbox/${p}`));
+        const next: Record<string, string> = {};
+        for (const [src, libPath] of Object.entries(cur))
+          if (!stale.has(src)) next[src] = libPath;
+        return Object.keys(next).length === Object.keys(cur).length ? cur : next;
+      });
     }
     setSelected({});
     void load(true);
@@ -369,14 +548,23 @@ export default function Files({
     const target = clean.startsWith(area + "/") ? clean : `${area}/${clean}`;
     try {
       const moved = await api.renameFile(sid, rename.from, target);
-      // the kept-badge is keyed by the source path: a renamed file keeps its
-      // badge under the NEW path (the shelf entry it points at is untouched),
-      // never a stale key the shelf can no longer match against. Both areas
-      // report a path within the area; the area goes back on as the key
+      // the kept and in-lib badges are keyed by the source path: a renamed
+      // file keeps both under the NEW path (the shelf and library entries
+      // they point at are untouched), never a stale key the truth can no
+      // longer match against. A stale in-lib key is worse than cosmetic — it
+      // would hold the lib_deleted stream open for a badge no row can show.
+      // Both areas report a path within the area; the area goes back on as
+      // the key
       const newFrom = `${area}/${moved.to}`;
       if (newFrom !== rename.from) {
         const oldKey = rename.from;
         updateKept((cur) => {
+          if (!(oldKey in cur)) return cur;
+          const next = { ...cur, [newFrom]: cur[oldKey] };
+          delete next[oldKey];
+          return next;
+        });
+        updateInLib((cur) => {
           if (!(oldKey in cur)) return cur;
           const next = { ...cur, [newFrom]: cur[oldKey] };
           delete next[oldKey];
@@ -549,6 +737,19 @@ export default function Files({
                         keep
                       </button>
                     )}
+                    {inLib[`outbox/${f.path}`] ? (
+                      <span className="chip stable sm-chip" title={`in lib as ${inLib[`outbox/${f.path}`]} (read-only to the agent)`}>
+                        in lib
+                      </span>
+                    ) : (
+                      <button
+                        className="btn sm"
+                        title="save into the shared library — every session's agent can read it (read-only to them; no extra bytes)"
+                        onClick={() => void doSaveToLib(`outbox/${f.path}`, f.path)}
+                      >
+                        → lib
+                      </button>
+                    )}
                     <button
                       className="btn ghost sm"
                       title="rename or move inside the outbox"
@@ -654,6 +855,19 @@ export default function Files({
                         onClick={() => void doKeep(`uploads/${f.path}`, f.path.split("/").pop() ?? f.path)}
                       >
                         keep
+                      </button>
+                    )}
+                    {inLib[`uploads/${f.path}`] ? (
+                      <span className="chip stable sm-chip" title={`in lib as ${inLib[`uploads/${f.path}`]} (read-only to the agent)`}>
+                        in lib
+                      </span>
+                    ) : (
+                      <button
+                        className="btn sm"
+                        title="save into the shared library — every session's agent can read it (read-only to them; no extra bytes)"
+                        onClick={() => void doSaveToLib(`uploads/${f.path}`, f.path.split("/").pop() ?? f.path)}
+                      >
+                        → lib
                       </button>
                     )}
                     <button

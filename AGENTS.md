@@ -97,7 +97,7 @@ changes:
 
 | path | what |
 |---|---|
-| `app/` | the guest-side app: `api/` (FastAPI, SSE, transcript), `iso/` (mounts, slots, spawn, sweep, release, config swap), `rpc/` (pi driver, framer, launch), `delivery/` (staging→blob store, keep shelf, file watch, byte meters), `lifecycle.py`, `registry.py`, `doctor.py` |
+| `app/` | the guest-side app: `api/` (FastAPI, SSE, transcript), `iso/` (mounts, slots, spawn, sweep, release, config swap), `rpc/` (pi driver, framer, launch), `delivery/` (staging→blob store, keep shelf, library save, file watch, byte meters), `lifecycle.py`, `registry.py`, `doctor.py` |
 | `ui/` | chat UI (React 18 / Vite / TS), static, served by the app same-port; `/api`, `/panel`, `/healthz` same-origin |
 | `agent-config/` | system prompt, model config, skills — synced **read-only** to the guest, spawn-time only |
 | `lib/` | durable human-curated library — synced RO to the agent, never agent-writable, never GC'd |
@@ -111,9 +111,12 @@ changes:
   by the app and never synced.
 - Day-2: `make sync` (config/lib push, key slice) or `make update` (float +
   doctor-certified deploy + auto-rollback, image included).
-- `make pull` mirrors the guest's kept shelf (`/var/lib/servitor/keep`) to the
-  host — one-way, host-side, over the deploy key. Kept bytes are the only
-  files with no session attached and no expiry; this is their backup path.
+- `make pull` mirrors the guest's durable bytes to the host — the kept
+  shelf (`/var/lib/servitor/keep` → `<dest>/`) and the library's UI saves
+  (`lib/` → `<dest>/lib/`; the repo-pushed half of the library is the
+  checkout's own `lib/`, already the source of truth) — one-way, host-side,
+  over the deploy key. These are the only files with no session attached and
+  no expiry; this is their backup path.
 - `make deploy` deliberately prints instructions instead of running a script —
   the one-time install (`deploy/portcullis/INSTALL.md`) keeps operator
   decisions visible. Do not add a deploy script.

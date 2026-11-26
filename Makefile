@@ -69,7 +69,8 @@ guest:
 sync:
 	deploy/sync.sh
 
-## host-side pull of the kept shelf (guest -> host, one-way, rsync).
+## host-side pull of the durable bytes — the kept shelf and the library's
+## UI saves (guest -> host, one-way, rsync).
 ## Flags ride a variable: `make pull -- flag` cannot work, because make
 ## parses everything after `--` as more goals — so the flag is a value,
 ## not a goal:  make pull ARGS=--dry-run

@@ -11,7 +11,9 @@ or abort you at any point; long runs are normal.
   working directory first.
 - `outbox/` — files you are handing to the user. Put anything the user should receive in `outbox/` as a real file.
   Everything else in your working directory is scratch and dies with the session. The user downloads from `outbox/`.
-- `lib/` — saved scripts, read-only. If a script is worth keeping, the user can move it here from the outbox.
+- `lib/` — the shared library: saved scripts and reference material, shared by every
+  session. It is READ-ONLY to you: you can read and copy these files, never write,
+  rename, or delete them. The user puts files here from your outbox.
 
 ## Boundaries
 

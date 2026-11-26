@@ -151,24 +151,37 @@ host gates), a shut-off VM is SKIPPED — the tick never starts a VM the
 operator stopped on purpose (the swap would); the float then lands on the
 next tick after the VM is back, or via a manual run above.
 
-## Backing up the kept shelf
+## Backing up the durable bytes
 
 ```bash
-make pull                       # guest:/var/lib/servitor/keep -> $SERVITOR_PULL_DIR
+make pull                       # guest's durable areas -> $SERVITOR_PULL_DIR
 make pull ARGS=--new-only       # report what the host lacks, then pull only that
 make pull ARGS=--dry-run        # bytes only, nothing moved
 ```
 
-`keep/` is the one state area with no session attached and no expiry — it
-outlives every release and is deleted only by an explicit delete in the UI, so
-it is the one part of the guest with no other copy. `deploy/pull.sh` is
-host-side and one-way (guest → host) over the deploy key `sync` uses: the guest holds no host credentials (the
-deploy key lives on the host only) and the agent has no route here —
-reconciliation stays host-side, as invariant 12 requires for git. It
-LISTS the shelf through the API first (so the run reports its byte count before
-moving any of them, over a link that may be metered) and rsyncs changed bytes
-only. Files the shelf no longer has stay on the host unless `--mirror` says
-otherwise.
+Two state areas outlive every session and are deleted only by an explicit
+delete in the UI:
+
+- the kept shelf (`/var/lib/servitor/keep`) → the mirror's root;
+- the library's UI saves (`/var/lib/servitor/lib`) → `<mirror>/lib/`.
+
+The library's REPO-pushed half is not pulled: the checkout's `lib/` is its
+source of truth, and the sync's additive push keeps it current. The pull
+takes only what the last push's manifest (`/var/lib/servitor/.lib-manifest`)
+does not list. A guest with no manifest (no push in the new shape has landed
+yet) has no way to tell, so the whole library is pulled rather than guessed.
+
+`deploy/pull.sh` is host-side and one-way (guest → host) over the deploy key
+`sync` uses: the guest holds no host credentials (the deploy key lives on the
+host only) and the agent has no route here — reconciliation stays host-side,
+as invariant 12 requires for git. It LISTS both areas through the API first
+(so the run reports its byte count before moving any of them, over a link
+that may be metered) and rsyncs changed bytes only. Files an area no longer
+has stay on the host unless `--mirror` says otherwise: the shelf is pruned by
+rsync `--delete` (the library mirror, which lives under the shelf's mirror
+root, is shielded from that delete with an anchored `/lib` exclude), and the
+library is pruned host-side to exactly its pull set (rsync's `--delete` is a
+no-op under `--files-from`).
 
 ## Runbook
 

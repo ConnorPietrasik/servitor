@@ -86,6 +86,8 @@ GLOBAL_EVENTS = (
     "agent_settled",
     "file_uploaded",
     "file_kept",
+    "lib_saved",
+    "lib_deleted",
     "file_deleted",
     "file_renamed",
     "keep_deleted",
@@ -324,6 +326,7 @@ class Lifecycle:
         handed out. Transcripts and slots survive either way; the
         expectation is a respawn on pickup, not a release."""
         out: list[dict] = []
+        mounted = M.mounted_targets()  # one /proc/mounts read for the boot
         for slot in self.cfg.pool.slots.values():
             row = self.cfg.registry.session_for_slot(slot.name)
             if row is None or row.state == FREE:
@@ -355,6 +358,33 @@ class Lifecycle:
                     f"; orphan killed: {killed}" if killed else "")
             elif killed or interrupted:
                 log.warning("boot reconcile: slot %s session %s: %s", slot.name, row.id, detail or "killed")
+            # a workdir a pre-lib plan left MOUNTED across the app update
+            # (mounts outlive the process; the respawn would skip it as
+            # mounted) has no library its prompt advertises, and no other
+            # pass revisits an idle session: add the missing bind at boot.
+            # Its op rides a driver-less Live (the shape the pickup path
+            # already assumes) so release() unmounts it; a later respawn
+            # reuses the entry and finds the bind up. A failed add is loud
+            # here and in the doctor — boot itself continues
+            if row.state in (ALLOCATED, LIVE):
+                sp = SessionMountPaths.for_session(row.id, str(self.cfg.state.scratch))
+                if sp.workdir in mounted and not os.path.ismount(f"{sp.workdir}/lib"):
+                    try:
+                        bind_ops = M.ensure_lib_bind(sp, self.cfg.state)
+                    except M.MountError as e:
+                        log.error("boot reconcile: lib bind not added for %s: %s", row.id, e)
+                    else:
+                        # an empty result means the bind was up already
+                        # (nothing to record for teardown); a live entry is
+                        # never replaced — it carries the op release() needs
+                        if bind_ops and row.id not in self.live:
+                            self.live[row.id] = Live(
+                                session_id=row.id,
+                                sp=sp,
+                                mount_ops=bind_ops,
+                                driver=None,
+                                config_version=row.config_version or "",
+                            )
         # any surviving staging dir is an interrupted upload
         if self.cfg.delivery is not None:
             self.cfg.delivery.gc_boot()
@@ -739,6 +769,18 @@ class Lifecycle:
                 ops = await asyncio.to_thread(
                     M.mount_session, sp, lower, self.cfg.state, ident.uid, ident.gid, self.cfg.toolkit_dir
                 )
+            else:
+                # a workdir a pre-lib plan left up has no library its prompt
+                # advertises: add the missing bind (idempotent — a current
+                # plan already has it), and record the op so release()
+                # unmounts it. A bind that fails to add is loud in the log
+                # and in the doctor (the session's workdir stays mounted;
+                # refusing the whole pickup over one RO reference dir would
+                # strand a healthy session)
+                try:
+                    ops = await asyncio.to_thread(M.ensure_lib_bind, sp, self.cfg.state)
+                except M.MountError as e:
+                    log.error("respawn %s: lib bind not added: %s", session_id, e)
             live = Live(session_id=session_id, sp=sp, mount_ops=ops, driver=None,
                         config_version=row.config_version or "", config_lower=lower)
             self.live[session_id] = live

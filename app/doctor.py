@@ -604,36 +604,55 @@ def check_delivery(rep: Report, root: str) -> None:
     )
 
 
-def check_outbox_mounts(rep: Report, root: str, registry) -> None:
-    """Every LIVE session's workdir must have its outbox bind up.
+def check_session_mounts(rep: Report, root: str, registry) -> None:
+    """Every LIVE session's workdir must have its session binds up.
 
     The outbox is the agent's handoff directory, and it is a bind of
     ``<state>/outbox/<sid>`` into the workdir overlay. If the overlay is
     mounted and the bind is not, the agent is writing into the overlay upper:
     the app never sees the artifacts (the listing reads the bind source), and
-    they die with the scratch instead of waiting for a keep. That is a broken
-    mount plan, not a preference — so it FAILs when a session is mounted
-    without it, and says nothing when the session is simply not mounted
-    (unprivileged dev, or a session killed and released).
+    they die with the scratch instead of waiting for a keep. The lib bind is
+    the same class of failure, in the other direction: mounted workdir,
+    missing ``lib/`` — the agent's prompt advertises a shared library that
+    is not there. Both are a broken mount plan, not a preference — so they
+    FAIL when a session is mounted without them, and say nothing when the
+    session is simply not mounted (unprivileged dev, or a session killed and
+    released).
     """
-    missing = []
+    # (bind name, why its absence matters)
+    binds = (
+        (
+            "outbox",
+            "artifacts would land in the overlay and be lost at release",
+        ),
+        (
+            "lib",
+            "the shared library the prompt advertises is missing from the workdir",
+        ),
+    )
+    missing: dict[str, list[str]] = {name: [] for name, _why in binds}
     for row in registry.list_sessions():
         if row.state != LIVE or not row.slot:
             continue
         m = SessionMountPaths.for_session(row.id, f"{root.rstrip('/')}/scratch")
         if not os.path.isdir(m.workdir) or not os.path.ismount(m.workdir):
             continue  # not mounted at all: nothing to say
-        if not os.path.ismount(f"{m.workdir}/outbox"):
-            missing.append(row.id)
-    if missing:
-        rep.add(
-            "mounts.outbox", FAIL,
-            "live session(s) mounted WITHOUT the outbox bind — artifacts would "
-            f"land in the overlay and be lost at release: {', '.join(missing[:5])}"
-            + (f" (+{len(missing) - 5} more)" if len(missing) > 5 else ""),
-        )
-    else:
-        rep.add("mounts.outbox", PASS, "every mounted session has its outbox bind")
+        for name, _why in binds:
+            if not os.path.ismount(f"{m.workdir}/{name}"):
+                missing[name].append(row.id)
+    for name, why in binds:
+        gone = missing[name]
+        if gone:
+            rep.add(
+                f"mounts.{name}", FAIL,
+                f"live session(s) mounted WITHOUT the {name} bind — {why}: "
+                + ", ".join(gone[:5])
+                + (f" (+{len(gone) - 5} more)" if len(gone) > 5 else ""),
+            )
+        else:
+            rep.add(
+                f"mounts.{name}", PASS, f"every mounted session has its {name} bind"
+            )
 
 
 def check_usage_meters(rep: Report, root: str) -> None:
@@ -1263,7 +1282,7 @@ async def main(argv: list[str]) -> int:
     check_ui(rep)
     check_disk(rep, args.state)
     check_delivery(rep, args.state)
-    check_outbox_mounts(rep, args.state, registry)
+    check_session_mounts(rep, args.state, registry)
     check_usage_meters(rep, args.state)
     check_keys_absent(rep, args, args.state)
     check_update_waiting(rep, args)

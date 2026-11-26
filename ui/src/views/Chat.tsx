@@ -108,6 +108,18 @@ export default function Chat() {
         // refreshes the shelf it is showing instead of revalidating rows
         setFileEv((c) => ({ seq: (c?.seq ?? 0) + 1, delta: null, kind: "file_kept" }));
         break;
+      case "lib_saved":
+        // the listing is untouched by a save; what is missing is an in-lib
+        // badge (a save from another tab). The event carries the source→lib
+        // mapping (JSON detail), so the Files view sets the badge with no
+        // fetch
+        setFileEv((c) => ({
+          seq: (c?.seq ?? 0) + 1,
+          delta: null,
+          kind: "lib_saved",
+          detail: typeof d.detail === "string" ? d.detail : undefined,
+        }));
+        break;
       case "file_deleted":
       case "file_uploaded":
       case "file_renamed":
@@ -952,7 +964,12 @@ export default function Chat() {
       )}
 
       {subview === "files" && (
+        // keyed per session: /s/A → /s/B keeps this element mounted, and
+        // everything in it (rows, kept/in-lib badges) is session-scoped —
+        // the remount is the reset. It costs a 304, not a fetch: the
+        // per-sid listings are module-cached, the badges are localStorage
         <Files
+          key={sid}
           sid={sid}
           ev={fileEv}
           onAttached={(name) => {

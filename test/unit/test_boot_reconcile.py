@@ -19,13 +19,15 @@ process-shaped bits (_pids_of_uid, kill_strays_by_uid) are faked.
 """
 from __future__ import annotations
 
+import os
 from types import SimpleNamespace
 
 import pytest
 
+import app.iso.mounts as M
 import app.iso.slots as slots_mod
 import app.lifecycle as lcmod
-from app.iso.layout import SLOT_NAMES, state_paths
+from app.iso.layout import SLOT_NAMES, SessionMountPaths, state_paths
 from app.iso.slots import SlotPool
 from app.lifecycle import (
     CLEANING,
@@ -187,3 +189,73 @@ def test_released_slot_stays_free(tmp_path, monkeypatch):
     s1 = lc.cfg.pool.get("slot1")
     assert s1.state == "free" and s1.session_id is None
     assert all(r["slot"] != "slot1" for r in report)
+
+
+# ---------------------------------------------------------------------- #
+# the late lib bind: a workdir a pre-lib plan left MOUNTED across an app
+# update gets the bind at boot, and release() can unmount it
+# ---------------------------------------------------------------------- #
+
+
+def test_boot_adds_the_missing_lib_bind_to_a_mounted_workdir(tmp_path, monkeypatch):
+    """A LIVE session whose workdir survived the update mounted by a
+    pre-lib plan (mounted, no lib bind) gets the bind added at boot. The
+    op rides a driver-less Live — the shape the pickup path already
+    assumes — so release() unmounts it."""
+    lc, _ = _make_lc(tmp_path, monkeypatch)
+    lc.cfg.registry.upsert_session("live-sess", slot="slot1", state=LIVE)
+
+    sp = SessionMountPaths.for_session("live-sess", str(lc.cfg.state.scratch))
+    # the workdir is up (a pre-lib plan's), the lib bind is not
+    monkeypatch.setattr(M, "mounted_targets", lambda: {sp.workdir})
+    monkeypatch.setattr(os.path, "ismount", lambda p: p == sp.workdir)
+    added = []
+    fake_op = SimpleNamespace(
+        kind="ro-bind", target=f"{sp.workdir}/lib", options="")
+    monkeypatch.setattr(
+        M, "ensure_lib_bind", lambda sp_, state: (added.append(sp_), [fake_op])[1]
+    )
+
+    lc.boot_reconcile()
+
+    assert len(added) == 1  # the bind was added, exactly once
+    live = lc.live.get("live-sess")
+    assert live is not None and live.driver is None
+    assert live.mount_ops == [fake_op]  # release() unmounts it
+    assert lc.cfg.pool.get("slot1").state == "allocated"
+    # a second boot (idempotence drill) does not lose the teardown op
+    lc.boot_reconcile()
+    assert lc.live["live-sess"].mount_ops == [fake_op]
+
+
+def test_boot_leaves_a_current_plan_workdir_alone(tmp_path, monkeypatch):
+    """A workdir whose plan already has the lib bind (the steady state)
+    costs one ismount and no mount, and no Live entry is minted."""
+    lc, _ = _make_lc(tmp_path, monkeypatch)
+    lc.cfg.registry.upsert_session("live-sess", slot="slot1", state=LIVE)
+
+    sp = SessionMountPaths.for_session("live-sess", str(lc.cfg.state.scratch))
+    monkeypatch.setattr(M, "mounted_targets", lambda: {sp.workdir})
+    monkeypatch.setattr(os.path, "ismount", lambda p: True)  # lib is up
+    calls = []
+    monkeypatch.setattr(M, "ensure_lib_bind", lambda sp_, state: calls.append(1))
+
+    lc.boot_reconcile()
+
+    assert calls == []  # the bind is up: ensure_lib_bind never even runs
+    assert lc.live == {}  # nothing to record for teardown
+
+
+def test_boot_skips_an_unmounted_workdir(tmp_path, monkeypatch):
+    """A session that is not mounted at all (rebooted VM, unprivileged dev)
+    says nothing: the full plan mounts it fresh on pickup."""
+    lc, _ = _make_lc(tmp_path, monkeypatch)
+    lc.cfg.registry.upsert_session("live-sess", slot="slot1", state=LIVE)
+
+    calls = []
+    monkeypatch.setattr(M, "ensure_lib_bind", lambda sp_, state: calls.append(1))
+
+    lc.boot_reconcile()  # real /proc/mounts: no tmp workdir is ever mounted
+
+    assert calls == []
+    assert lc.live == {}

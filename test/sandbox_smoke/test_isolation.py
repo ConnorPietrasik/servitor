@@ -354,12 +354,12 @@ def test_an_agent_cannot_make_the_app_unlink_or_rename_its_own_uploads(iso_env):
 
 def test_mount_before_spawn_and_teardown_order(iso_env):
     """Mounts are up before ANY spawn (the harness enforces it; here: the
-    plan's order is workdir → agent-dir → inbox → outbox → models.json, and
-    teardown is the EXACT reverse, each unmount succeeding)."""
+    plan's order is workdir → agent-dir → inbox → outbox → lib → models.json,
+    and teardown is the EXACT reverse, each unmount succeeding)."""
     sp, ops, _ = _mount_session(iso_env, "s-order")
     try:
         assert [op.kind for op in ops] == [
-            "overlay", "overlay", "bind", "bind", "ro-bind-file",
+            "overlay", "overlay", "bind", "bind", "ro-bind", "ro-bind",
         ]
         # the two binds are the session's two file areas, in the workdir
         assert [op.target for op in ops][2:4] == [
@@ -369,6 +369,10 @@ def test_mount_before_spawn_and_teardown_order(iso_env):
             iso_env["state"].inbox_for("s-order"),
             iso_env["state"].outbox_for("s-order"),
         ]
+        # the lib bind: the shared library, one source for every session,
+        # RO-remounted at workdir/lib
+        assert ops[4].target == f"{sp.workdir}/lib"
+        assert ops[4].options == f"{iso_env['state'].lib}::{sp.workdir}/lib"
         # teardown order: reverse
         unmounted = M.unmount_all(ops)
         assert unmounted == [op.target for op in reversed(ops)]
@@ -376,6 +380,39 @@ def test_mount_before_spawn_and_teardown_order(iso_env):
         assert os.path.isdir(sp.workdir)
     finally:
         M.aunmount_all_safe(ops)
+
+
+def test_ensure_lib_bind_adds_the_missing_bind_to_a_mounted_workdir(iso_env):
+    """The late-lib migration: a workdir a pre-lib plan left MOUNTED
+    (mounted, no lib bind) gets the bind on revisit — idempotent when it
+    is up, one op when it is not, and the added bind is RO like the
+    plan's (a write, even as root, is EROFS from the mount)."""
+    sp, ops, _ = _mount_session(iso_env, "s-liblate")
+    lib_target = f"{sp.workdir}/lib"
+    lib_op = next(op for op in ops if op.target == lib_target)
+    rest = [op for op in ops if op.target != lib_target]
+    try:
+        # the current plan already has it: a no-op that yields no op
+        assert M.ensure_lib_bind(sp, iso_env["state"]) == []
+        # simulate the pre-lib plan: the lib bind is down, the workdir up
+        M.unmount_all([lib_op])
+        assert not os.path.ismount(lib_target)
+        added = M.ensure_lib_bind(sp, iso_env["state"])
+        assert [op.target for op in added] == [lib_target]
+        assert added[0].kind == "ro-bind"
+        assert added[0].options == f"{iso_env['state'].lib}::{lib_target}"
+        assert os.path.ismount(lib_target)
+        # RO like the plan's: the refusal is the mount's, not a mode bit
+        with pytest.raises(OSError) as ei:
+            with open(f"{lib_target}/late.txt", "wb"):
+                pass
+        assert ei.value.errno == 30  # EROFS
+        # and a second revisit sees it up: no-op, no op
+        assert M.ensure_lib_bind(sp, iso_env["state"]) == []
+    finally:
+        if os.path.ismount(lib_target):
+            M.aunmount_all_safe([lib_op])
+        M.aunmount_all_safe(rest)
 
 
 def test_sweep_walk_finds_and_deletes_everywhere(iso_env):

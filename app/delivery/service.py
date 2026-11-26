@@ -22,6 +22,9 @@ those operations is a hardlink, never a copy:
 - **keep** — a session's upload or artifact gains a second link under
   ``keep/<session>/``, outside every session area, so ``release()`` cannot
   reach it and the owner sweep cannot find it (it is excluded there).
+- **save to lib** — a session's upload or artifact gains a link under the
+  shared library (``lib/``, mounted RO in every session's workdir), through
+  the same store hop: the link is the app's inode, never the agent's.
 - **attach** — a file one session already has becomes an inbox entry of
   another, from the same inode (or, for an artifact not yet in the store,
   one copy into the store and then zero per extra session).
@@ -48,7 +51,6 @@ from app.delivery.store import (
     DeliveryError,
     FileNotDelivered,
     SessionFiles,
-    _safe_relpath,
     _safe_relpath_safe,
     ensure_hash,
     mime_for,
@@ -68,6 +70,9 @@ class Delivery:
         self.state = state_paths(str(self.root))
         self.blobs = Blobs(self.state)
         Path(self.state.keep).mkdir(parents=True, exist_ok=True)
+        # the shared library: the agent's RO mount source, and the landing
+        # area of a save-to-lib. Created like the keep area, on first use.
+        Path(self.state.lib).mkdir(parents=True, exist_ok=True)
 
     def files(self, state: StatePaths, session_id: str, slot: SlotIdentity | None) -> SessionFiles:
         """The session's delivery views: the two bind sources (inbox is
@@ -151,6 +156,11 @@ class Delivery:
         The link lives outside every session area: ``release()`` cannot reach
         it and the owner sweep excludes it. Nothing here expires on its own;
         only an explicit delete removes a keep.
+
+        ``name`` is caller-vetted (never re-sanitized here): the route hands
+        over either the source's own gated area-relative path — safe as-is,
+        and a dot file keeps its dots — or the safe form of a typed
+        ``as_name`` (:func:`app.delivery.store.safe_relpath`).
         """
         try:
             st = os.stat(src_path)
@@ -179,12 +189,10 @@ class Delivery:
         if bucket is None:
             raise DeliveryError("no keep area for this session")
         os.makedirs(bucket, exist_ok=True)
-        # the name is a path within the shelf's bucket: keeping keeps the
-        # folder the file arrived in (the route passes the source's
-        # area-relative path), and a keep is never silently overwritten
-        dest = self._free_link(
-            blob, bucket, _safe_relpath(name or os.path.basename(src_path))
-        )
+        # the name is a path within the shelf's bucket, caller-vetted (see
+        # the docstring): keeping keeps the folder the file arrived in, and
+        # a keep is never silently overwritten
+        dest = self._free_link(blob, bucket, name or os.path.basename(src_path))
         # The row and the MIME cache key off the LINK, not the source: the
         # shelf lists the link's inode, so its size/mtime and the cache key
         # the listing uses are the link's. The source's mtime names a
@@ -200,14 +208,16 @@ class Delivery:
         }
 
     def _free_link(self, blob: str, bucket: str, relname: str) -> str:
-        """Link a blob into the shelf under the first free path, atomically.
+        """Link a blob into a durable area (the keep shelf or the library)
+        under the first free path, atomically.
 
-        ``relname`` is a path within the bucket (a keep preserves the folder
-        its source lived in); ``_free_names`` PREDICTS the name in the
-        target's folder, ``Blobs.link`` DECIDES — a name a concurrent keep
-        takes in the window fails the link (FileExistsError) and the next
-        suffix wins. A keep is never silently overwritten — overwriting would
-        destroy bytes the human asked to keep permanently.
+        ``relname`` is a caller-vetted path within the bucket (a keep or a
+        save preserves the folder its source lived in); ``_free_names``
+        PREDICTS the name in the target's folder, ``Blobs.link`` DECIDES —
+        a name a concurrent keep or save takes in the window fails the link
+        (FileExistsError) and the next suffix wins. Neither is ever silently
+        overwritten — overwriting would destroy bytes the human curated
+        permanently.
         """
         parent, _, base = relname.rpartition("/")
         target_dir = os.path.join(bucket, parent) if parent else bucket
@@ -304,6 +314,132 @@ class Delivery:
         if p == root or not p.startswith(root + os.sep) or not os.path.isfile(p):
             raise FileNotDelivered(rel)
         return p
+
+    # ------------------------------------------------------------------ #
+    # save to lib (human action; the store hop, then a link into lib/)
+    # ------------------------------------------------------------------ #
+
+    def save_to_lib(
+        self,
+        src_path: str,
+        name: str | None = None,
+        sha256: str | None = None,
+    ) -> dict:
+        """Save a session file into the shared library (``lib/``).
+
+        The destination is keep's opposite: not a private shelf outside the
+        agent's world, but the one directory the agent's world shares —
+        mounted RO in every session's workdir, read by all sessions, written
+        by humans only. The store hop is keep's, for keep's reason: the link
+        must be the app's (root-owned) inode — a moved or directly linked
+        artifact keeps the agent's owner, and a still-running agent rewrites
+        what it owns with no write permission on the mount. The suffix
+        scheme is keep's too: a save never silently overwrites a name the
+        library already holds (a repo-curated one or an earlier save).
+
+        ``name`` is caller-vetted, as on :meth:`keep`: the source's own
+        gated area-relative path (a dot file keeps its dots) or the safe
+        form of a typed ``as_name`` — never re-sanitized here.
+        """
+        try:
+            st = os.stat(src_path)
+        except FileNotFoundError:
+            raise FileNotDelivered(src_path) from None
+        if not stat.S_ISREG(st.st_mode):
+            raise DeliveryError(f"{src_path} is not a regular file")
+        if sha256 and self.blobs.is_same_blob(sha256, st):
+            blob = self.blobs.state.blob_for(sha256)
+        else:
+            try:
+                blob, sha256 = self.blobs.adopt_hashed(src_path)
+            except FileNotFoundError:
+                raise FileNotDelivered(src_path) from None
+        dest = self._free_link(blob, self.state.lib, name or os.path.basename(src_path))
+        lst = os.lstat(dest)
+        real = os.path.realpath(dest)
+        rel = os.path.relpath(real, os.path.realpath(self.state.lib))
+        return {
+            "path": rel,
+            "sha256": sha256,
+            "size": lst.st_size,
+            "mtime": lst.st_mtime,
+            # the listing's per-version cache (same key list_lib uses): the
+            # row the human saw is not sniffed a second time on download
+            "mime": _mime_cached(real, lst, "lib"),
+            "ts": time.time(),
+        }
+
+    def list_lib(self) -> list[dict]:
+        """The shared library, newest first — the listing of ``lib/`` that
+        the UI shows and the download/delete routes gate against.
+
+        The sha is answered from the store's index only — the file is
+        NEVER read for it. A save is a hardlink of a blob and the blob's
+        name IS its sha (free, off the inode). A file the repo pushed is
+        not a stored blob, and it is the library's normal content, not
+        noise — so it earns a null, never a background hash: that fallback
+        would bill a full read per file per cold process (the answer dies
+        with the process) for a field no consumer reads — the UI shows
+        size/mtime/mime, the pull rides size+mtime. The keep shelf's
+        read-per-file fallback does not transfer here, where the non-blob
+        file is the rule.
+        """
+        rows: list[dict] = []
+        root = os.path.realpath(self.state.lib)
+        for dirpath, _dirs, names in os.walk(root):
+            for name in names:
+                p = os.path.join(dirpath, name)
+                try:
+                    st = os.lstat(p)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(st.st_mode):
+                    continue
+                rows.append(
+                    {
+                        "path": os.path.relpath(p, root),
+                        "size": st.st_size,
+                        "mtime": st.st_mtime,
+                        # a save addresses its bytes by the store's name;
+                        # a repo file has none — null, never a read
+                        "sha256": self.blobs.sha_for_inode(st),
+                        "mime": _mime_cached(p, st, "lib"),
+                    }
+                )
+        rows.sort(key=lambda r: -r["mtime"])
+        return rows
+
+    def lib_path(self, rel: str) -> str:
+        """A library file, containment-gated (404 as FileNotDelivered so the
+        route maps it, never a 500). ``p`` is realpath'd, so a link pointing
+        out of the library fails the prefix test."""
+        root = os.path.realpath(self.state.lib)
+        if "\x00" in rel:
+            raise FileNotDelivered(rel)
+        p = os.path.realpath(os.path.join(root, rel))
+        if p == root or not p.startswith(root + os.sep) or not os.path.isfile(p):
+            raise FileNotDelivered(rel)
+        return p
+
+    def delete_lib(self, rel: str) -> int:
+        """Delete one library file (a human curation action). Repo-pushed
+        files re-land on the next sync; a file saved from the UI is gone.
+        Empty dirs the delete leaves are pruned — never the lib root itself,
+        which is a mounted bind source."""
+        p = self.lib_path(rel)
+        try:
+            size = os.stat(p).st_size
+            os.unlink(p)
+        except FileNotFoundError:
+            raise FileNotDelivered(rel) from None
+        d = os.path.dirname(p)
+        while d and d != os.path.realpath(self.state.lib):
+            try:
+                os.rmdir(d)
+            except OSError:
+                break
+            d = os.path.dirname(d)
+        return size
 
     # ------------------------------------------------------------------ #
     # rename / move — inside one area, never across the durability line
@@ -661,7 +797,10 @@ def _free_names(directory: str, name: str):
     return
 
 
-def _mime_cached(path: str, st: os.stat_result) -> str:
-    """MIME for a known file version, from the store's cache (a keep walk that
-    re-sniffed the tree it just listed would read bytes nobody asked for)."""
-    return mime_for(("keep", path, st.st_size, st.st_mtime), path, st.st_size)
+def _mime_cached(path: str, st: os.stat_result, area: str = "keep") -> str:
+    """MIME for a known file version, from the store's cache (a shelf or
+    library walk that re-sniffed the tree it just listed would read bytes
+    nobody asked for). ``area`` namespaces the key: keep and lib are
+    different listings over different paths, and a download reuses the
+    listing's key, never re-sniffs."""
+    return mime_for((area, path, st.st_size, st.st_mtime), path, st.st_size)
