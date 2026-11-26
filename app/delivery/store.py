@@ -101,12 +101,11 @@ _MIME_CACHE_MAX = 4096
 class _HashPool:
     """Bounded background hashers (daemon workers, unbounded queue).
 
-    One full-file reader per new version, unbounded, would storm the disk on
-    a run that materializes a big tree in the outbox (a clone is tens of
-    thousands of versions in one sweep). The bound throttles the APP's own
-    reads, never the agent's: queued versions still get hashed (the meter
-    completes, slowly), and a hash interrupted at shutdown is simply re-
-    offered by the next listing (the cache, not the queue, is the truth).
+    One full-file reader per new version, unbounded, would storm the disk
+    on a run that materializes a big tree in the outbox. The bound throttles
+    the APP's own reads, never the agent's: queued versions still get hashed,
+    and a hash interrupted at shutdown is re-offered by the next listing
+    (the cache, not the queue, is the truth).
     """
 
     def __init__(self, max_workers: int = 4) -> None:
@@ -157,19 +156,15 @@ def _process_outbox_version(key: tuple, path: str) -> None:
     fill-ins at once.
 
     The sniff runs only for the outbox namespace: the keep shelf's and the
-    library's rows render their MIME and keep it synchronous (small,
-    human-curated areas), and both key their mime by the ABSOLUTE path
-    while this pass's sha key is a RELPATH — a sniff here would land under
-    a key nobody reads (a double read on every listing).
+    library's rows render their MIME synchronously and key it by the
+    ABSOLUTE path, while this pass's sha key is a RELPATH — a sniff here
+    would land under a key nobody reads.
     """
     try:
         lst = os.lstat(path)
         if not stat.S_ISREG(lst.st_mode):
-            # a FIFO/socket/device is not a version to read: a plain open
-            # of a FIFO BLOCKS (the reader waits for a writer that never
-            # comes) and would hold one of the pool's permanent workers
-            # forever. The listing is what must not have offered it; the
-            # pool must not die on it anyway.
+            # a FIFO/socket/device is not a version to read: a plain open of
+            # a FIFO blocks forever and would hold a pool worker
             return
         with _sha_lock:
             need_sha = key not in _SHA_CACHE
@@ -198,12 +193,9 @@ def _process_outbox_version(key: tuple, path: str) -> None:
 
 def ensure_hash(key: tuple, path: str) -> str | None:
     """The per-version sha: the cached value, or ``None`` with the file
-    queued for the background hash pool.
-
-    A listing is a lookup that costs at most ONE hash per file version,
-    never a blocking read of the file — the row carries null until the
-    background pass lands (and the delta machinery publishes the fill-in).
-    """
+    queued for the background hash pool. A listing is a lookup that costs at
+    most ONE hash per file version, never a blocking read — the row carries
+    null until the background pass lands."""
     sha = _SHA_CACHE.get(key)
     if sha is not None:
         return sha
@@ -216,17 +208,15 @@ def ensure_hash(key: tuple, path: str) -> str | None:
 
 def sha_cached(key: tuple) -> str | None:
     """The per-version sha cache, read-only: a lookup that never queues a
-    hash. A download or an attach must not start reading a multi-GB file to
-    answer "do we already know this version" — the listing's background
-    pass is the one that computes it."""
+    hash — a download or an attach must not start reading a multi-GB file to
+    answer "do we already know this version"."""
     return _SHA_CACHE.get(key)
 
 
 def record_sha(key: tuple, sha: str) -> None:
-    """Record a sha the caller already knows — the store's own name for the
-    bytes, read off the inode's address, not computed from them: the next
-    lookup is a hit and nothing gets queued. A pass the key already queued
-    still drains, but finds the cache warm and skips the read."""
+    """Record a sha the caller already knows (the store's own name for the
+    bytes, read off the inode's address): the next lookup is a hit and
+    nothing gets queued."""
     with _sha_lock:
         _SHA_CACHE[key] = sha
         if len(_SHA_CACHE) > _SHA_CACHE_MAX:
@@ -236,10 +226,9 @@ def record_sha(key: tuple, sha: str) -> None:
 
 def mime_cached(key: tuple) -> str | None:
     """The per-version MIME cache, read-only: a lookup that never sniffs and
-    never blocks. The listing's row carries null until the background pass
-    lands (the delta machinery publishes the fill-in — the same contract as
-    the sha). A download and the kept shelf still take the blocking
-    :func:`mime_for`: the human asked for the bytes; one sniff at most."""
+    never blocks; the row carries null until the background pass lands.
+    A download and the kept shelf still take the blocking :func:`mime_for`:
+    the human asked for the bytes; one sniff at most."""
     return _MIME_CACHE.get(key)
 
 
@@ -252,13 +241,9 @@ _manifest_locks: dict[str, threading.Lock] = {}
 
 
 def _manifest_lock(manifest_path: Path) -> threading.Lock:
-    """The read-modify-write lock for one manifest file.
-
-    Module-level, not on SessionFiles: every request builds a fresh
-    SessionFiles, so an instance attribute would serialize nothing.
-    Bounded by the session count for the process's life (the update path
-    restarts the app).
-    """
+    """The read-modify-write lock for one manifest file. Module-level, not
+    on SessionFiles: every request builds a fresh SessionFiles, so an
+    instance attribute would serialize nothing."""
     key = str(manifest_path)
     with _manifest_lock_guard:
         lock = _manifest_locks.get(key)
@@ -306,21 +291,18 @@ class SessionFiles:
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.inbox.mkdir(parents=True, exist_ok=True)
         # The inbox directory is created root-owned and STAYS that way: no
-        # delivery ever chowns it. Handing it to the slot would hand back the
-        # one thing the read-only inbox is for — the power to create, rename,
-        # or unlink what a human sent.
-        # The outbox is created by mount_session (it is the bind source on the
-        # state volume); nothing here needs to make it.
+        # delivery ever chowns it — that would hand back the power to create,
+        # rename, or unlink what a human sent.
+        # The outbox is created by mount_session (it is the bind source on
+        # the state volume); nothing here needs to make it.
 
     def link_blob(self, sha256: str, name: str) -> str:
         """Deliver a blob the store already holds into this inbox (attach).
 
         No bytes move: the inbox entry is another link to the same inode, and
-        the manifest entry written for it carries the sha that proves the link
-        is the app's own blob (see :meth:`_readable`). The name is a path
-        within the inbox (an attach keeps the folder its source lived in) and
-        is disambiguated exactly like a delivery (:meth:`_land_name`), and the
-        link is create-only (:meth:`_link_into_inbox`): an attach never
+        the manifest entry carries the sha that proves the link is the app's
+        own blob (see :meth:`_readable`). The name is disambiguated exactly
+        like a delivery, and the link is create-only: an attach never
         silently replaces a different file the human already sees.
         """
         if self.blobs is None:
@@ -328,14 +310,12 @@ class SessionFiles:
         return self._link_into_inbox(sha256, self.blobs.state.blob_for(sha256), name)
 
     def _ensure_inbox_parents(self, safe: str) -> None:
-        """Create the parent dirs a landed path needs.
-
-        Root-owned (like the inbox itself: its directory bits are what make
-        uploads un-removable and un-creatable to the agent), mode fixed past
-        the umask, and a component that already exists as anything but a
-        dir is a conflict, not a mkdir: landing ``a/b.csv`` through a file
-        named ``a`` would silently hide the file under the name ``a``.
-        """
+        """Create the parent dirs a landed path needs: root-owned (like the
+        inbox itself: its directory bits are what make uploads un-removable
+        and un-creatable to the agent), mode fixed past the umask. A
+        component that already exists as anything but a dir is a conflict,
+        not a mkdir: landing ``a/b.csv`` through a file named ``a`` would
+        silently hide the file under the name ``a``."""
         d = self.inbox
         for part in safe.split("/")[:-1]:
             d = d / part
@@ -358,12 +338,11 @@ class SessionFiles:
         """Link a store blob into the inbox under the first path that is
         still free, atomically.
 
-        ``_land_name`` PREDICTS the path (the requested one, or a
-        disambiguated suffix); the LINK decides — a concurrent delivery that
-        takes it in the window fails the link, and the choice is made again.
-        A silent replace of a file the human already sees is the outcome this
-        exists to prevent. A path that already holds the SAME blob is a
-        no-op: the bytes are already where they should be.
+        ``_land_name`` PREDICTS the path; the LINK decides — a concurrent
+        delivery that takes it in the window fails the link, and the choice
+        is made again. A silent replace of a file the human already sees is
+        the outcome this exists to prevent. A path that already holds the
+        SAME blob is a no-op: the bytes are already where they should be.
         """
         while True:
             safe = self._land_name(_safe_relpath(name), sha256)
@@ -393,12 +372,11 @@ class SessionFiles:
 
         The requested path, unless a file the app is NOT about to replace
         already occupies it: re-landing the SAME bytes on their own inode is
-        the dedup (free, path kept), but a DIFFERENT file under a path that
-        is taken must land beside it — the inbox is where the human's files
-        live, and a silent replace is a lost file the phone paid for twice
-        (a folder upload makes same-basename pairs routine). The suffix
-        scheme is the keep shelf's (``x.csv`` → ``x.1.csv``), applied to the
-        LAST component so the folder the human organized into stays.
+        the dedup (free, path kept), but a DIFFERENT file under a taken path
+        must land beside it — the inbox is where the human's files live.
+        The suffix scheme is the keep shelf's (``x.csv`` → ``x.1.csv``),
+        applied to the LAST component so the folder the human organized into
+        stays.
         """
         dest = self.inbox / safe
         try:
@@ -429,12 +407,9 @@ class SessionFiles:
                 pass
 
     def _serves_uid(self, uid: int) -> bool:
-        """May root read an inode owned by ``uid`` for this session?
-
-        Only the session's own uid. A hardlink into the outbox has some
-        other owner's uid (root for a system file, another slot for its
-        uploads), and that is exactly what this rejects.
-        """
+        """May root read an inode owned by ``uid`` for this session? Only
+        the session's own uid — a hardlink into the outbox has some other
+        owner's uid, and that is exactly what this rejects."""
         return self.uid is None or uid == self.uid
 
     def _readable(self, name: str, st: os.stat_result, manifest_sha: str | None = None) -> bool:
@@ -482,12 +457,11 @@ class SessionFiles:
         """The manifest, always shaped ``{"uploads": [dict, …]}`` with every
         entry a dict carrying a string ``name``.
 
-        The slot owns this directory, so a tampered file must not be a 500
-        on the routes that read it — a structurally broken entry is DROPPED,
-        not raised, and register_upload's atomic replace self-heals the file
-        on the next real upload. A symlinked manifest would let the slot
-        forge the upload list served to the human (and the root app would
-        read a root-readable target); never follow it.
+        The slot owns this directory, so a tampered file must not be a 500 —
+        a structurally broken entry is DROPPED, not raised, and
+        register_upload's atomic replace self-heals the file. A symlinked
+        manifest would let the slot forge the upload list (and the root app
+        would read a root-readable target); never follow it.
         """
         try:
             if stat.S_ISLNK(os.lstat(self.manifest_path).st_mode):
@@ -500,15 +474,13 @@ class SessionFiles:
     def register_upload(self, f: DeliveredFile) -> None:
         # The read-modify-write is serialized on the process-wide lock:
         # every request builds a fresh SessionFiles, so without it two
-        # concurrent uploads to the same session would both read the
-        # manifest and the last write wins — the earlier upload lands in
-        # the inbox but never in the manifest.
+        # concurrent uploads would both read the manifest and the last
+        # write wins.
         with _manifest_lock(self.manifest_path):
             man = self.read_manifest()
-            # match through _safe_relpath, as drop_upload does: a legacy raw
-            # entry (".env" for the file that landed as "env") is the same
-            # row a re-landing of "env" replaces — a raw compare would keep
-            # both, and the UI would render one file twice
+            # match through _safe_relpath, as drop_upload does: a raw entry
+            # (".env" for the file that landed as "env") is the same row a
+            # re-landing of "env" replaces — a raw compare would keep both
             man["uploads"] = [
                 u for u in man.get("uploads", [])
                 if _safe_relpath_safe(u["name"]) != f.name
@@ -521,7 +493,7 @@ class SessionFiles:
     def drop_upload(self, name: str) -> bool:
         """Drop one manifest entry (the human deleted the upload). True if
         an entry went away — the name is matched through ``_safe_relpath``
-        so a legacy raw entry (".env" for the file that landed as "env") is
+        so a raw entry (".env" for the file that landed as "env") is
         removed too."""
         with _manifest_lock(self.manifest_path):
             man = self.read_manifest()
@@ -543,10 +515,9 @@ class SessionFiles:
         """The one atomic, symlink-proof manifest write (caller holds the
         manifest lock). The slot owns this directory and the app runs as
         root: the temp name is FIXED, so a planted ``files.json.tmp`` symlink
-        must never be written through (that overwrites the target as root).
-        O_EXCL|O_NOFOLLOW fails closed on any pre-existing name; only a stale
-        REGULAR file (a crash between open and replace) is recovered —
-        unlink it and retry once."""
+        must never be written through. O_EXCL|O_NOFOLLOW fails closed on any
+        pre-existing name; only a stale REGULAR file (a crash between open
+        and replace) is recovered — unlink it and retry once."""
         tmp = self.manifest_path.with_suffix(".json.tmp")
         try:
             fd = os.open(
@@ -570,8 +541,8 @@ class SessionFiles:
                     0o600,
                 )
             except OSError:
-                # the name re-appeared between unlink and open (race):
-                # refuse rather than write through whatever it is now
+                # the name re-appeared between unlink and open: refuse
+                # rather than write through whatever it is now
                 raise DeliveryError(
                     f"manifest temp {tmp} could not be (re)created — "
                     "refusing to write"
@@ -587,20 +558,16 @@ class SessionFiles:
         """Hand the verified staged file to the inbox.
 
         With a store and its sha: the bytes are adopted into the blob store
-        and HARDLINKED in (create-only, :meth:`_link_into_inbox`) — one copy
-        however many sessions get the file, and the inode stays the app's:
-        the agent can read it but neither write nor remove it (the inbox
-        directory is root-owned too, so it cannot create or rename there
-        either).
+        and HARDLINKED in (create-only) — one copy however many sessions get
+        the file, and the inode stays the app's: the agent can read it but
+        neither write nor remove it. Without them the part is LINKED in
+        (create-only) and dropped — an atomic move with the same
+        no-replace guarantee.
 
-        Without them the part is LINKED in (create-only) and the part
-        dropped — an atomic move with the same no-replace guarantee.
-
-        Returns the path the file actually landed under (``_safe_relpath``
-        of the requested path, disambiguated by ``_land_name`` when a
-        different file already holds it — a leading-dot upload like ``.env``
-        lands as ``env``): the caller must record THAT name in the manifest,
-        or the entry can never match the files on disk.
+        Returns the path the file actually landed under (``_safe_relpath``,
+        disambiguated by ``_land_name`` when a different file already holds
+        it — ``.env`` lands as ``env``): the caller must record THAT name in
+        the manifest, or the entry can never match the files on disk.
         """
         if self.blobs is not None and sha256:
             blob, _existed = self.blobs.adopt(part, sha256)
@@ -642,13 +609,10 @@ class SessionFiles:
                     continue
                 # the outbox is slot-owned: a planted link must not be
                 # root-read (the lazy hash and the mime sniff would open the
-                # target) or advertised in the listing (a link to a root file
-                # would expose its existence/size in the UI). A NON-REGULAR
-                # file (a FIFO, a socket, a device) is not an artifact either:
-                # the background hash that opens it can BLOCK forever (a
-                # reader on a FIFO waits for a writer that never comes), and
-                # a worker hung like that is lost from the pool for the
-                # process's life. Skip.
+                # target) or advertised in the listing. A NON-REGULAR file
+                # (a FIFO, a socket, a device) is not an artifact either:
+                # a background hash that opens a FIFO blocks forever.
+                # Skip.
                 if (
                     stat.S_ISLNK(st.st_mode)
                     or not stat.S_ISREG(st.st_mode)
@@ -658,10 +622,9 @@ class SessionFiles:
                 key = (sid, rel, st.st_size, st.st_mtime)
                 sha = ensure_hash(key, str(p))
                 # the mime rides the same background pass as the sha: a walk
-                # of a fresh tree must not sniff serially (one 8 KB read per
-                # file, in the walk's critical section) — the row carries
-                # null until the pass lands. Empty files need no sniff at
-                # all: they are the one MIME with no bytes to read.
+                # of a fresh tree must not sniff serially. Empty files need
+                # no sniff at all: they are the one MIME with no bytes to
+                # read.
                 mime = mime_cached(key) if st.st_size else "application/octet-stream"
                 out.append(
                     {
@@ -695,17 +658,11 @@ class SessionFiles:
         """Manifest entries that still resolve to a file in the inbox.
 
         Entries are recorded under the path the file LANDED under
-        (_safe_relpath); match through it, so a raw-dot entry still resolves,
-        and a tampered entry (the manifest lives in a slot-owned dir) that
-        does not resolve to an inbox file is dropped, not raised.
-
-        The read gate applies here too (see :meth:`_readable`): an entry is
-        listed only when its inode is the session's own or a blob the app
-        delivered to it — a row the app will not serve is worse than no row.
-
-        The manifest is read ONCE for the whole listing: the gate asks each
-        root-owned entry for its recorded sha, and re-reading the file per
-        entry turns a listing of N uploads into N manifest reads.
+        (_safe_relpath); match through it. A tampered entry (the manifest
+        lives in a slot-owned dir) that does not resolve is dropped, not
+        raised. The read gate applies too (see :meth:`_readable`): a row the
+        app will not serve is worse than no row. The manifest is read ONCE
+        for the whole listing.
         """
         present: set[str] = set()
         try:
@@ -740,13 +697,11 @@ class SessionFiles:
         return [u for u in entries if on_disk(u["name"])]
 
     def _assert_linkfree(self, root: Path, rel: str) -> None:
-        """Refuse a name whose literal path crosses a symlink.
-
-        A resolve would FOLLOW such a link and answer for its target —
-        a delete through an in-area link would unlink the target's name
-        and report the link's. The listing never shows links, so a link
-        name only arrives hand-crafted: it is not a file.
-        """
+        """Refuse a name whose literal path crosses a symlink: a resolve
+        would FOLLOW it and answer for its target — a delete through an
+        in-area link would unlink the target's name and report the link's.
+        The listing never shows links, so a link name only arrives
+        hand-crafted: it is not a file."""
         cur = root
         for part in rel.split("/"):
             if part in ("", "."):
@@ -759,12 +714,10 @@ class SessionFiles:
         """Resolve a requested outbox path; escape or link => FileNotDelivered.
 
         The link gate runs on the LITERAL name before the resolve (a link
-        into the area is not the file its target has). ``is_relative_to``
-        (path-wise, not a string prefix) — a resolved target must stay
-        under the outbox, sibling dirs included. The uid gate closes what
-        resolve cannot: a hardlink is not a link and resolves to itself,
-        but its inode belongs to someone else; the post-resolve S_ISLNK
-        is the guard for a link planted between the walk and the resolve.
+        into the area is not the file its target has), and ``is_relative_to``
+        is path-wise, not a string prefix. The uid gate closes what resolve
+        cannot: a hardlink is not a link and resolves to itself, but its
+        inode belongs to someone else.
         """
         if "\x00" in rel:
             raise FileNotDelivered(rel)
@@ -784,11 +737,11 @@ class SessionFiles:
         """Resolve a requested upload path; escape, link, or gate =>
         FileNotDelivered.
 
-        ``name`` is a path within the inbox (a folder upload lives under its
-        relative path). The rules are the outbox's: no traversal component,
-        no symlink anywhere on the way in, and the file must pass the read
-        gate (the uid or the blob proof) — a download, delete, rename, keep,
-        or attach can never reach a byte the listing would not show.
+        ``name`` is a path within the inbox. The rules are the outbox's: no
+        traversal component, no symlink anywhere on the way in, and the file
+        must pass the read gate (the uid or the blob proof) — a download,
+        delete, rename, keep, or attach can never reach a byte the listing
+        would not show.
         """
         try:
             safe = _safe_relpath(name)
@@ -812,23 +765,20 @@ class SessionFiles:
     # --- deletion (a human action; the agent has no route here) --------- #
 
     def delete_upload(self, name: str) -> dict:
-        """Unlink one upload and drop its manifest entry.
-
-        Path resolution is the download's (escape/symlink/uid-gated), so a
-        delete can never reach a byte a download could not. The manifest
-        entry goes after the unlink: a crash between the two leaves an
-        entry that ``list_uploads`` filters out (it must resolve to a file),
-        never a file with no record of where it came from. Empty parent
-        dirs the delete leaves are pruned (never the inbox root: the bind
-        source — the outbox's rule).
-        """
+        """Unlink one upload and drop its manifest entry. Path resolution is
+        the download's (escape/symlink/uid-gated), so a delete can never
+        reach a byte a download could not. The manifest entry goes after the
+        unlink: a crash between the two leaves an entry ``list_uploads``
+        filters out, never a file with no record of where it came from.
+        Empty parent dirs the delete leaves are pruned (never the inbox
+        root: the bind source)."""
         p = self.upload_path(name)
         try:
             st = os.lstat(p)
             os.unlink(p)
         except FileNotFoundError:
-            # the gate passed and the file is gone (a delete from another
-            # tab): the gate's own 404 shape, never a 500 off the path
+            # the file is gone (a delete from another tab): the gate's
+            # 404 shape, never a 500
             raise FileNotDelivered(name) from None
         rel = p.relative_to(self.inbox.resolve()).as_posix()
         self.drop_upload(rel)
@@ -843,8 +793,7 @@ class SessionFiles:
             st = os.lstat(p)
             os.unlink(p)
         except FileNotFoundError:
-            # the gate passed and the artifact is gone (the agent owns the
-            # outbox and may have unlinked it in the window): 404, not a 500
+            # the artifact is gone (the agent owns the outbox): 404, not a 500
             raise FileNotDelivered(rel) from None
         self._prune_empty(p.parent, self.outbox.resolve())
         return {"path": rel, "size": st.st_size}
@@ -858,19 +807,16 @@ class SessionFiles:
 
         Both sides run the download's gate, so a rename can neither read nor
         write outside the outbox; the destination must not exist (replacing
-        would destroy a file the human can still see, to fix a typo); parents
-        are created — mkdir is not an escape once the target path is
-        contained — and every parent THIS call created is handed to the
-        slot: a root-owned folder a human made would be an EACCES wall the
-        agent's next write into it runs into, and the outbox is the agent's
-        handoff, not a museum.
+        would destroy a file the human can still see). Parents are created —
+        mkdir is not an escape once the target path is contained — and every
+        parent THIS call created is handed to the slot: a root-owned folder
+        would be an EACCES wall the agent's next write into it runs into.
         """
         src = self.outbox_path(rel)
         dst = self._outbox_target(to)
         if dst == src:
             # a rename to itself is a no-op, not a 404: the destination
-            # exists (it IS the source), and an unchanged name in the UI's
-            # rename box must not read as an error
+            # exists (it IS the source)
             try:
                 size = src.stat().st_size
             except FileNotFoundError:
@@ -891,22 +837,22 @@ class SessionFiles:
         for d in created:
             self._chown(d)
         # link-then-unlink, not rename: the link is the atomic check-and-
-        # create — a destination a concurrent rename just took is refused
-        # (404 to the caller), never replaced. A crash between the two leaves
-        # two names for the same file, never a lost one.
+        # create — a destination a concurrent rename just took is refused,
+        # never replaced. A crash between the two leaves two names for the
+        # same file, never a lost one.
         try:
             os.link(src, dst)
         except FileExistsError:
             raise FileNotDelivered(f"outbox/{to} already exists") from None
         except FileNotFoundError:
             # the source vanished between the gate and the link (the agent
-            # owns the outbox): the gate's 404 shape, never a 500
+            # owns the outbox): 404, never a 500
             raise FileNotDelivered(rel) from None
         try:
             os.unlink(src)
         except FileNotFoundError:
             # a concurrent delete took the old name after our link: the link
-            # at dst is the rename, and the manifest moves on either way
+            # at dst is the rename
             pass
         self._prune_empty(src.parent, self.outbox.resolve())
         return {
@@ -920,18 +866,15 @@ class SessionFiles:
         entry move together.
 
         Both sides land through ``_safe_relpath`` (no traversal component,
-        leading dots stripped per component, no symlink on the way in), so
-        "move to v2/x" is a move into a folder the app creates root-owned,
-        and "rename to ../x" is refused outright — not a silent rename to
-        ``x``. The link moves first, then the entry: the row stays listed
-        (under its old name) through the window, and a crash between the two
-        leaves the file agent-readable under a name the UI will not show —
-        never a listed row pointing at nothing.
+        leading dots stripped, no symlink on the way in), so "rename to
+        ../x" is refused outright — not a silent rename to ``x``. The link
+        moves first, then the entry: a crash between the two leaves the file
+        agent-readable under a name the UI will not show — never a listed
+        row pointing at nothing.
 
         ``from``/``to`` are paths WITHIN the inbox (no area prefix) — the
-        same response shape as :meth:`rename_outbox`, which answers within
-        the outbox: the caller's URL already names the area, and a response
-        that re-prefixed it would be the shape the UI has to special-case.
+        same response shape as :meth:`rename_outbox`; the caller's URL
+        already names the area.
         """
         src = self.upload_path(name)
         src_rel = src.relative_to(self.inbox.resolve()).as_posix()
@@ -939,8 +882,7 @@ class SessionFiles:
         dst = self.inbox / safe
         if safe == src_rel:
             # a rename to itself is a no-op, not a 404: the destination
-            # exists (it IS the source), and an unchanged name in the UI's
-            # rename box must not read as an error
+            # exists (it IS the source)
             try:
                 size = src.stat().st_size
             except FileNotFoundError:
@@ -955,7 +897,7 @@ class SessionFiles:
             os.link(src, dst)
         except FileNotFoundError:
             # a delete from another tab won the race between the gate
-            # and the move: the gate's 404 shape, never a 500
+            # and the move: 404, never a 500
             raise FileNotDelivered(name) from None
         except FileExistsError:
             raise FileNotDelivered(f"uploads/{safe} already exists") from None
@@ -963,7 +905,7 @@ class SessionFiles:
             os.unlink(src)
         except FileNotFoundError:
             # the delete took the old name after our link: the link at
-            # dst is the rename, and the manifest moves on either way
+            # dst is the rename
             pass
         self._prune_empty(src.parent, self.inbox.resolve())
         with _manifest_lock(self.manifest_path):
@@ -973,7 +915,7 @@ class SessionFiles:
                     u["name"] = safe
             self._write_manifest(m)
         # `from` is the path the file actually lived under, not the one the
-        # URL asked for (a legacy ``.env`` row moves the file ``env``)
+        # URL asked for (a ``.env`` row moves the file ``env``)
         return {"from": src_rel, "to": safe, "size": st.st_size}
 
     def _outbox_target(self, to: str) -> Path:
@@ -1018,9 +960,8 @@ class SessionFiles:
 def _clean_manifest(man) -> dict:
     """Coerce parsed manifest JSON to the shape every reader assumes (a dict
     whose ``uploads`` is a list of dicts with a string ``name``). Anything
-    else is slot tampering (the file lives in a slot-owned dir), and a
-    structurally broken entry is the one that would turn a listing or an
-    upload into a 500 — so it is dropped, and the next real write replaces
+    else is slot tampering (the file lives in a slot-owned dir) — a
+    structurally broken entry is dropped, and the next real write replaces
     the file with a clean one."""
     uploads = man.get("uploads") if isinstance(man, dict) else None
     if not isinstance(uploads, list):

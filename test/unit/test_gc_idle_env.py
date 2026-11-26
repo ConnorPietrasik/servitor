@@ -1,11 +1,9 @@
 """SERVITOR_GC_IDLE_DAYS must reach the running lifecycle.
 
-Regression: load_http_config parsed and validated the env value into
-Config.gc_idle_days, but run_http copied only cfg.sse_ring_bytes into the
-lifecycle — LifecycleConfig.gc_idle_days came solely from the --gc-idle-days
-CLI default (14.0), which the guest unit never passes (ExecStart is
---state/--config-src only). An operator override was a silent no-op, and
-the positive-value validation at boot made it look honoured.
+The guest unit passes only --state/--config-src: without the wiring,
+LifecycleConfig.gc_idle_days would come solely from the --gc-idle-days CLI
+default, and an operator override would be a silent no-op (the
+positive-value validation at boot makes it look honoured).
 
 run_http is exercised directly with a stub app object and fake lazy imports
 (uvicorn, app.api.app) — no server, no network, no fastapi required.
@@ -24,8 +22,7 @@ from app.main import App
 
 class _FakeLifecycle:
     def __init__(self) -> None:
-        # mirrors the CLI-fed defaults: this is the value that would have
-        # silently won without the env wiring
+        # the CLI-fed defaults: the value that would win without the env wiring
         self.cfg = SimpleNamespace(
             sse_ring_bytes=None,
             gc_idle_days=14.0,

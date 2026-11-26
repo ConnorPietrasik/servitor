@@ -241,8 +241,7 @@ def test_release_without_live_entry_drops_hub(tmp_path, monkeypatch):
 
 
 def test_churn_does_not_grow_hubs(tmp_path, monkeypatch):
-    """The _hubs dict returns to empty after each release (50 MB cap x
-    churn was the unbounded part)."""
+    """The _hubs dict returns to empty after each release (50 MB cap × churn)."""
     lc = _make_lc(tmp_path, monkeypatch)
     for i in range(25):
         sid = f"s-{i}"

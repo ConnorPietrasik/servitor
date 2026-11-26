@@ -145,28 +145,21 @@ class Delivery:
         Through the store, never straight at the session's own file, and
         never a move of it: the kept inode must be the app's (root-owned) —
         a moved or directly linked artifact keeps the agent's owner, and a
-        still-running agent rewrites what it owns (through an open fd or
-        straight at the path) with no write permission on the keep area.
-        The hop is a pure link when the bytes are already the store's
-        inode, one read when the store already holds the bytes, and two
-        full reads plus one write for an artifact the store has not held
-        (the pre-read finds the store miss; the copy re-reads and
-        re-hashes — :meth:`Blobs.adopt_hashed`).
+        still-running agent rewrites what it owns.
 
         The link lives outside every session area: ``release()`` cannot reach
         it and the owner sweep excludes it. Nothing here expires on its own;
         only an explicit delete removes a keep.
 
-        ``name`` is caller-vetted (never re-sanitized here): the route hands
-        over either the source's own gated area-relative path — safe as-is,
-        and a dot file keeps its dots — or the safe form of a typed
-        ``as_name`` (:func:`app.delivery.store.safe_relpath`).
+        ``name`` is caller-vetted (never re-sanitized here): the source's own
+        gated area-relative path (safe as-is, a dot file keeps its dots) or
+        the safe form of a typed ``as_name``.
         """
         try:
             st = os.stat(src_path)
         except FileNotFoundError:
-            # the gate handed us this path; a file unlinked in the window is
-            # the gate's own 404 shape, never a 500 off the vanished path
+            # a file unlinked between the gate and here is the gate's 404
+            # shape, never a 500
             raise FileNotDelivered(src_path) from None
         if not stat.S_ISREG(st.st_mode):
             raise DeliveryError(f"{src_path} is not a regular file")
@@ -182,21 +175,19 @@ class Delivery:
             try:
                 blob, sha256 = self.blobs.adopt_hashed(src_path)
             except FileNotFoundError:
-                # unlinked between the stat and the copy: the source may be
-                # a multi-GB artifact, so this window is not a microsecond
+                # unlinked between the stat and the copy (the source may be
+                # multi-GB: the window is real)
                 raise FileNotDelivered(src_path) from None
         bucket = sf.keep_dir
         if bucket is None:
             raise DeliveryError("no keep area for this session")
         os.makedirs(bucket, exist_ok=True)
-        # the name is a path within the shelf's bucket, caller-vetted (see
-        # the docstring): keeping keeps the folder the file arrived in, and
-        # a keep is never silently overwritten
+        # the name is caller-vetted: keeping keeps the folder the file
+        # arrived in, and a keep is never silently overwritten
         dest = self._free_link(blob, bucket, name or os.path.basename(src_path))
         # The row and the MIME cache key off the LINK, not the source: the
-        # shelf lists the link's inode, so its size/mtime and the cache key
-        # the listing uses are the link's. The source's mtime names a
-        # different version and would cost the shelf a re-sniff per keep.
+        # shelf lists the link's inode. The source's mtime names a different
+        # version and would cost a re-sniff per keep.
         kst = os.lstat(dest)
         return {
             "path": os.path.relpath(dest, os.path.realpath(self.state.keep)),
@@ -213,11 +204,9 @@ class Delivery:
 
         ``relname`` is a caller-vetted path within the bucket (a keep or a
         save preserves the folder its source lived in); ``_free_names``
-        PREDICTS the name in the target's folder, ``Blobs.link`` DECIDES —
-        a name a concurrent keep or save takes in the window fails the link
-        (FileExistsError) and the next suffix wins. Neither is ever silently
-        overwritten — overwriting would destroy bytes the human curated
-        permanently.
+        PREDICTS the name, ``Blobs.link`` DECIDES — a name a concurrent keep
+        or save takes in the window fails the link (FileExistsError) and the
+        next suffix wins. Nothing is ever silently overwritten.
         """
         parent, _, base = relname.rpartition("/")
         target_dir = os.path.join(bucket, parent) if parent else bucket
@@ -231,9 +220,8 @@ class Delivery:
             except FileExistsError:
                 continue  # taken in the race: next suffix
             except FileNotFoundError:
-                # the store's copy vanished under the gate (a reclaim race):
-                # a vanished file is the 404 shape, never a 500 off the
-                # missing blob
+                # the store's copy vanished (a reclaim race): the 404 shape,
+                # never a 500
                 raise FileNotDelivered(f"kept bytes for {relname!r} are gone") from None
         raise DeliveryError(f"no free name for {relname!r} in {bucket}")
 
@@ -242,11 +230,9 @@ class Delivery:
 
         The sha needs no read of the file at all: a keep is a hardlink of a
         blob, and the blob's name IS its sha — :meth:`Blobs.sha_for_inode`
-        answers from the store's index, so a cold process lists the shelf
-        (even a multi-GB one) for one bounded store walk, not one full file
-        read per kept file. The background pass is the fallback for a file
-        that is not a stored blob — the area is root-only, so anything odd
-        there is noise, not data.
+        answers from the store's index. The background pass is the fallback
+        for a file that is not a stored blob — the area is root-only, so
+        anything odd there is noise, not data.
         """
         rows: list[dict] = []
         root = os.path.realpath(self.state.keep)
@@ -282,15 +268,13 @@ class Delivery:
         """The sha of a kept file — a lookup, never a hash: the cache if
         this process already knows it, else the inode's address in the
         store (a keep is a hardlink of a blob; the blob's name is the
-        sha). This is what makes a cold process's first attach of a kept
-        file a free link instead of a full re-hash of its bytes."""
+        sha)."""
         p = self.keep_path(rel)  # containment-gated, realpath'd
         try:
             st = os.lstat(p)
         except FileNotFoundError:
             # an un-keep can take the file in the window between the gate
-            # and this lookup: the gate's own 404 shape, never a 500 off
-            # the vanished path
+            # and this lookup: the 404 shape, never a 500
             raise FileNotDelivered(rel) from None
         relpath = os.path.relpath(p, os.path.realpath(self.state.keep))
         key = ("keep", relpath, st.st_size, st.st_mtime)
@@ -331,11 +315,9 @@ class Delivery:
         agent's world, but the one directory the agent's world shares —
         mounted RO in every session's workdir, read by all sessions, written
         by humans only. The store hop is keep's, for keep's reason: the link
-        must be the app's (root-owned) inode — a moved or directly linked
-        artifact keeps the agent's owner, and a still-running agent rewrites
-        what it owns with no write permission on the mount. The suffix
-        scheme is keep's too: a save never silently overwrites a name the
-        library already holds (a repo-curated one or an earlier save).
+        must be the app's (root-owned) inode. The suffix scheme is keep's
+        too: a save never silently overwrites a name the library already
+        holds.
 
         ``name`` is caller-vetted, as on :meth:`keep`: the source's own
         gated area-relative path (a dot file keeps its dots) or the safe
@@ -363,8 +345,8 @@ class Delivery:
             "sha256": sha256,
             "size": lst.st_size,
             "mtime": lst.st_mtime,
-            # the listing's per-version cache (same key list_lib uses): the
-            # row the human saw is not sniffed a second time on download
+            # the listing's per-version cache (the key list_lib uses): the
+            # row is not sniffed a second time
             "mime": _mime_cached(real, lst, "lib"),
             "ts": time.time(),
         }
@@ -375,14 +357,10 @@ class Delivery:
 
         The sha is answered from the store's index only — the file is
         NEVER read for it. A save is a hardlink of a blob and the blob's
-        name IS its sha (free, off the inode). A file the repo pushed is
-        not a stored blob, and it is the library's normal content, not
-        noise — so it earns a null, never a background hash: that fallback
-        would bill a full read per file per cold process (the answer dies
-        with the process) for a field no consumer reads — the UI shows
-        size/mtime/mime, the pull rides size+mtime. The keep shelf's
-        read-per-file fallback does not transfer here, where the non-blob
-        file is the rule.
+        name IS its sha. A file the repo pushed is not a stored blob, and
+        it is the library's normal content, not noise — so it earns a null,
+        never a background hash (the keep shelf's read-per-file fallback
+        does not transfer here, where the non-blob file is the rule).
         """
         rows: list[dict] = []
         root = os.path.realpath(self.state.lib)
@@ -451,13 +429,12 @@ class Delivery:
         ``uploads/x`` and ``outbox/sub/x.md`` are the two namespaces, and both
         sides must be in the same one. A ``to`` without an area prefix is the
         source's own area — the request URL already says which, and the
-        prefix is a repeat, not information. A leading slash is not a bare
-        name: it is the explicit form, and it must name the source's own
-        area. A ``to`` with the OTHER area's prefix crosses areas, which is
-        deliberately not a rename: uploads arrive through delivery and
-        artifacts enter the store through a keep, and an in-place path change
-        is neither (get it into the outbox: ``cp inbox/x outbox/x`` — the
-        agent's own tool, and it should cost a copy).
+        prefix is a repeat, not information. A leading slash is the explicit
+        form and must name the source's own area. A ``to`` with the OTHER
+        area's prefix crosses areas, which is deliberately not a rename:
+        uploads arrive through delivery and artifacts enter the store through
+        a keep, and an in-place path change is neither (the agent can copy:
+        ``cp inbox/x outbox/x`` — it should cost a copy).
 
         The response's ``from``/``to`` are paths WITHIN the area (no area
         prefix) on both sides — the request URL already names the area, so a
@@ -500,20 +477,17 @@ class Delivery:
 
         The candidate set is the GATED LISTING and every entry is re-resolved
         through the download's gate as it is selected — so an archive holds
-        exactly the files the human could click, nothing the session planted,
-        and nothing that changed shape between the listing and the read. The
-        archive never walks an area on its own. A named upload is one file or
-        a folder of them (matched through the download's gate); a name the
-        listing does not hold is a 404, not an empty zip. A selection that
-        earns the same arcname twice (a root outbox file and an upload of the
-        same name) is suffixed, not collided: readers keep only the LAST
-        same-named zip entry, so a silent collision would drop the first
-        file from the archive.
+        exactly the files the human could click; the archive never walks an
+        area on its own. A name the listing does not hold is a 404, not an
+        empty zip. A selection that earns the same arcname twice (a root
+        outbox file and an upload of the same name) is suffixed, not
+        collided: readers keep only the LAST same-named zip entry, so a
+        silent collision would drop the first file from the archive.
         """
         paths = [path] if isinstance(path, str) else list(path)
         sf = session_files
         # one listing per area per call: a multi-select is N selections
-        # over ONE consistent view, not N walks of the same tree
+        # over ONE consistent view
         listings: dict[str, list[dict]] = {}
 
         def _list(kind: str) -> list[dict]:
@@ -541,11 +515,10 @@ class Delivery:
             elif kind == "uploads":
                 uploads = _list("uploads")
                 if prefix:
-                    # a named upload, or a folder of uploads: matched through
-                    # _safe_relpath exactly as the download's gate does, so a
-                    # raw-dot ask finds its landed rows. A file selection
-                    # carries the basename into the zip; a folder selection,
-                    # its files relative to the folder
+                    # matched through _safe_relpath exactly as the download's
+                    # gate does, so a raw-dot ask finds its landed rows. A
+                    # file selection carries the basename into the zip; a
+                    # folder selection, its files relative to the folder
                     safe_prefix = _safe_relpath_safe(prefix)
                     matched: list[tuple[str, str]] = []
                     for u in uploads:
@@ -589,7 +562,7 @@ class Delivery:
             # the keep shelf's suffix scheme, on the LAST component
             # (a/b.csv -> a/b.1.csv): a name a sibling entry already took is
             # refused, never replaced — a collision here is a lost file in
-            # the zip, not a rename
+            # the zip
             if arc not in used_arcs:
                 used_arcs.add(arc)
                 return arc
@@ -615,9 +588,7 @@ class Delivery:
                     arc = rp  # no shared dir: the full path keeps the shape
             out.append((_free_arc(arc), str(p)))
         if not out:
-            # the selection named nothing that resolves — the 404 shape,
-            # like a named upload the listing does not hold (the other
-            # branch above), not a server fault
+            # the selection named nothing that resolves — the 404 shape
             raise FileNotDelivered(f"nothing to archive at {path!r}")
         return f"{name}.zip", out
 
@@ -668,23 +639,21 @@ class Delivery:
         The bytes go through the store, so the target's inbox entry is
         app-owned and provably a blob — which is what makes it readable under
         the delivery gate and un-modifiable by the target's agent. Free when
-        the source is already the store's inode, or the store already holds
-        the bytes (one read, zero writes); otherwise one copy into the store,
-        and the name is always the hash of the bytes stored. Every session
-        after that is free.
+        the source is already the store's inode or the store already holds
+        the bytes; otherwise one copy into the store, and the name is always
+        the hash of the bytes stored. Every session after that is free.
 
         ``mime`` (a pre-resolved value, e.g. the source manifest's record) or
-        ``mime_key`` (the source's OWN listing key — its area and relpath,
-        so the row the human saw listed is not sniffed a second time) take
-        the row's MIME from a cache the listing already warmed. Without
-        either, a keep-shelf source falls back to the shelf's key (its
-        absolute path — the key :meth:`list_keep` uses).
+        ``mime_key`` (the source's OWN listing key) take the row's MIME from
+        a cache the listing already warmed. Without either, a keep-shelf
+        source falls back to the shelf's key (its absolute path — the key
+        :meth:`list_keep` uses).
         """
         try:
             st = os.stat(src_path)
         except FileNotFoundError:
-            # the gate handed us this path; a file unlinked in the window is
-            # the gate's own 404 shape, never a 500 off the vanished path
+            # a file unlinked between the gate and here is the gate's 404
+            # shape, never a 500
             raise FileNotDelivered(src_path) from None
         if not stat.S_ISREG(st.st_mode):
             raise DeliveryError(f"{src_path} is not a regular file")
@@ -698,8 +667,8 @@ class Delivery:
             try:
                 blob, sha256 = self.blobs.adopt_hashed(src_path)
             except FileNotFoundError:
-                # unlinked between the stat and the read: the source may be
-                # a multi-GB artifact, so this window is not a microsecond
+                # unlinked between the stat and the read (the source may be
+                # multi-GB: the window is real)
                 raise FileNotDelivered(src_path) from None
         if mime is None:
             if mime_key is not None:
@@ -757,11 +726,8 @@ class Delivery:
                 # not a session-shaped name: the app did not put it here and
                 # nothing can own it — junk goes. Removal by shape, as in
                 # Staged.gc: a real directory by rmtree, a non-directory
-                # entry (a stray file, a symlink, a planted FIFO) by unlink.
-                # Report only what was still there AND is gone now: listdir
-                # and this removal are not atomic, and an entry that
-                # vanished in between (or that the removal could not take)
-                # is not a removal this sweep made.
+                # entry by unlink. Report only what was still there AND is
+                # gone now: listdir and the removal are not atomic.
                 d = Path(self.state.staging) / sid
                 was_there = d.is_symlink() or d.exists()
                 if d.is_dir() and not d.is_symlink():

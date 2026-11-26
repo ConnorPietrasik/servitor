@@ -35,8 +35,7 @@ log = logging.getLogger("servitor.delivery.watch")
 _STABLE_FIELDS = ("size", "mtime")
 
 # What a delta compares: a rewrite (size/mtime), the sha filling in from
-# null (the background hash finishes after the file first appears — without
-# this the UI would show "computing…" until the next unrelated change), and
+# null (the background hash finishes after the file first appears), and
 # the stable flip (a file that stops moving is the ONE change that moves
 # none of the content fields — without it the UI's "writing…" chip lifts
 # only on an unrelated change or a reload).
@@ -69,29 +68,23 @@ class FileWatch:
     def __init__(self, stable_grace_sec: float = 60.0) -> None:
         self.grace = stable_grace_sec
         self._snaps: dict[str, dict[str, dict]] = {}
-        # ONE lock per session, not one lock for all sessions: the timer's
-        # sweep and a listing fetch share a session's snapshot (walk, diff,
-        # and snapshot write are that session's critical section, or a stale
-        # write can swallow a delta), but two sessions' sweeps must not queue
-        # behind each other — a walk of one chatty outbox (and the background
-        # passes it triggers) must not delay the other sessions' deltas.
-        # The guard serializes the lock dict itself; an entry dies with its
-        # session (release → forget), so the dict is bounded by the number
-        # of live sessions.
+        # ONE lock per session, not one for all: the timer's sweep and a
+        # listing fetch share a session's snapshot (walk, diff, and snapshot
+        # write are that session's critical section, or a stale write can
+        # swallow a delta), but two sessions' sweeps must not queue behind
+        # each other. The guard serializes the lock dict itself; an entry
+        # dies with its session (release → forget).
         self._locks: dict[str, threading.Lock] = {}
         self._lock_guard = threading.Lock()
-        # released sessions, by id — the residue a racing sweep would leave
-        # behind is what this prevents. A sweep that got past its LIVE check
+        # released sessions, by id: a sweep that got past its LIVE check
         # before a release must not reseed a dead session's snapshot after
         # forget popped it, so forget leaves this record (read under the
         # session's lock) and a sweep that finds it drops its walk. The set
-        # only grows: a released id is never re-allocated and the process
-        # restarts on every update, so it is bounded the same way the rest
-        # of the process's bookkeeping is.
+        # only grows: a released id is never re-allocated.
         self._dead: set[str] = set()
         # one shared lock for dead sessions: they need no mutual exclusion,
-        # and a real per-session lock minted here would be the residue the
-        # dead set exists to prevent
+        # and a per-session lock minted here would be the residue the dead
+        # set exists to prevent
         self._dead_lock = threading.Lock()
 
     def _lock_for(self, sid: str) -> threading.Lock:
@@ -108,17 +101,13 @@ class FileWatch:
         """One sweep: ``(outbox entries with stable, delta or None)``.
 
         Blocking (walks the outbox) — call it in a thread. Serialized per
-        SESSION: the timer and a listing fetch can sweep the same session
-        concurrently, and the snapshot read/diff/write must not interleave —
-        but a sweep of another session neither waits for it nor is waited on
-        by it (see ``__init__`` on why one global lock would couple them).
-        The delta is ``None`` when nothing moved since the previous sweep,
-        and on the very first sweep (no baseline to diff, and a full listing
-        is on its way to whoever asked).
+        SESSION: the snapshot read/diff/write must not interleave, but a
+        sweep of another session neither waits for it nor is waited on by
+        it. The delta is ``None`` when nothing moved since the previous
+        sweep, and on the very first sweep (no baseline to diff).
 
-        A released session (``forget`` already ran — this sweep's caller
-        checked LIVE before release landed) answers ``([], None)``: its walk
-        is dropped, and its snapshot is not reseeded.
+        A released session (``forget`` already ran) answers ``([], None)``:
+        its walk is dropped, and its snapshot is not reseeded.
         """
         with self._lock_for(sid):
             if sid in self._dead:
@@ -146,16 +135,12 @@ class FileWatch:
             return entries, delta
 
     def forget(self, sid: str) -> None:
-        """Drop a released session's snapshot and record it as dead.
-
-        Under the session's own lock, so a sweep already in flight writes
-        its snapshot before the pop, not after (a sweep that acquires the
-        lock first cannot be popped out from under it), and a sweep that
-        takes the lock after this sees the dead record and drops its walk
-        instead of reseeding (release is the only path a session leaves, and
-        a released id is never reused, so the record is permanent by
-        construction).
-        """
+        """Drop a released session's snapshot and record it as dead. Under
+        the session's own lock, so a sweep already in flight writes its
+        snapshot before the pop, not after, and a sweep that takes the lock
+        after this sees the dead record and drops its walk instead of
+        reseeding (a released id is never reused: the record is permanent by
+        construction)."""
         with self._lock_for(sid):
             with self._lock_guard:
                 self._locks.pop(sid, None)

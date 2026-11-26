@@ -237,10 +237,10 @@ def mount_session(
         os.makedirs(inbox_target, exist_ok=True)
         _assert_real_dir(inbox_target)
         os.chown(inbox_target, slot_uid, slot_gid)
-        # The outbox target is covered by the bind a few lines below, so its
-        # own ownership is moot; a pre-upgrade run that left files in the
-        # upper's outbox/ has them shadowed by the bind — invisible to the
-        # agent AND the UI, and gone with the scratch at release.
+        # The outbox target's own ownership is moot (the bind covers it);
+        # a pre-upgrade run that left files in the upper's outbox/ has them
+        # shadowed by the bind — invisible to agent and UI, gone with the
+        # scratch at release.
         outbox_target = f"{sp.workdir}/outbox"
         os.makedirs(outbox_target, exist_ok=True)
         _assert_real_dir(outbox_target)
@@ -323,13 +323,11 @@ def ensure_lib_bind(sp: SessionMountPaths, state: StatePaths) -> list[MountOp]:
     """The lib bind for a workdir mounted by a plan that predates it.
 
     An in-place app update leaves pre-lib workdirs MOUNTED (mounts outlive
-    the process; the respawn skips a workdir it finds up), and the doctor
-    FAILs a mounted workdir without the library its prompt advertises. The
-    bind is added where a surviving session is revisited — at boot (every
-    live workdir) and on respawn (the session's own pickup) — and is
-    idempotent: a workdir that already has it costs one ismount and yields
-    no op. Returns a list with the op (the caller records it, so release()
-    unmounts it) or an empty list.
+    the process; the respawn skips a workdir it finds up). The bind is
+    added where a surviving session is revisited — at boot (every live
+    workdir) and on respawn — and is idempotent: a workdir that already
+    has it costs one ismount and yields no op. Returns a list with the op
+    (the caller records it, so release() unmounts it) or an empty list.
     """
     target = f"{sp.workdir}/lib"
     if os.path.ismount(target):

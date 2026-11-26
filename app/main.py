@@ -101,8 +101,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         p.error("--pi-node and --pi-cli required (CLI or SERVITOR_PI_NODE_BIN/SERVITOR_PI_CLI_JS)")
     if not args.baseline_ext:
         # the image-bundled extension IS the baseline: without this fallback
-        # the baseline is empty and every spawn's own -e mount is reported as
-        # drift (the doctor's probe has the identical fallback)
+        # every spawn's own -e mount is reported as drift (the doctor's probe
+        # has the identical fallback)
         args.baseline_ext = [Path(args.pi_ext).name] if args.pi_ext else []
     if args.shutdown_grace_sec is None:
         args.shutdown_grace_sec = float(drain_grace_secs())
@@ -286,16 +286,14 @@ class App:
         # it now is before any of them exists
         self.lc.cfg.sse_ring_bytes = cfg.sse_ring_bytes
         # the guest unit passes only --state/--config-src: without this the
-        # CLI default would silently win and the env file's
-        # SERVITOR_GC_IDLE_DAYS override would be a no-op
+        # CLI defaults would silently win over the env file
         self.lc.cfg.gc_idle_days = cfg.gc_idle_days
         self.lc.cfg.files_sweep_sec = cfg.files_sweep_sec
         self.lc.cfg.stable_grace_sec = cfg.stable_grace_sec
         self.lc.files.grace = float(cfg.stable_grace_sec)
         # the global stream's hub was minted at Lifecycle init, before this
         # env value could land on cfg (session hubs are lazy and read it
-        # fresh) — re-apply the cap there, or a tuned ring is the 50 MB
-        # default on exactly the one hub that grows with every session
+        # fresh) — re-apply the cap there
         self.lc.global_hub.cap = ring_cap(cfg.sse_ring_bytes)
         # start_update_tick is idempotent; the ASGI lifespan starts the GC
         self.lc.start_update_tick()

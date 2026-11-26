@@ -116,10 +116,9 @@ def area_footprint(paths: tuple[str, ...]) -> tuple[int, int]:
     otherwise would cry wolf.
 
     Mount points are not descended into: a still-mounted session's merged
-    views (its ``workdir``/``agent-dir`` overlays and the binds in them)
-    expose the shared image lower, which a release frees for no one — and
-    this walks mounted sessions (the disk-pressure order), not just the
-    unmounted areas of a release in flight.
+    views expose the shared image lower, which a release frees for no one
+    — and this walks mounted sessions (the disk-pressure order), not just
+    the unmounted areas of a release in flight.
 
     Recorded in the outcome and the feed: "GC released my session" with no
     footprint is how a kept-too-late artifact becomes a mystery instead of

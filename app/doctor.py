@@ -127,11 +127,9 @@ def check_state_fs(rep: Report, root: str) -> None:
     code, out = _sh(["stat", "-f", "-c", "%T", root])
     fstype = out.strip().splitlines()[0] if code == 0 and out.strip() else "?"
     # stat(1) names the SUPERBLOCK MAGIC, and ext2/ext3/ext4 share one: an
-    # ext4 state volume reports "ext2/ext3". That is not a wrong filesystem
-    # and not a wrong check (the magic is what decides overlay-safety); the
-    # name is only what the operator reads, so when the root IS a mount ask
-    # findmnt for the real type. The unmounted dev fallback has no findmnt row
-    # and keeps stat's name.
+    # ext4 state volume reports "ext2/ext3". The name is only what the
+    # operator reads, so when the root IS a mount ask findmnt for the real
+    # type; the unmounted dev fallback has no findmnt row and keeps stat's.
     label = fstype
     if fstype == "ext2/ext3":
         code, out = _sh(["findmnt", "-no", "FSTYPE", "--mountpoint", root])
@@ -180,11 +178,10 @@ def check_state_mount(rep: Report, root: str) -> None:
 
 def check_machine_id(rep: Report, path: str = "/etc/machine-id") -> None:
     # logind refuses to start without a valid id, and systemd-firstboot
-    # prompts (hanging a boot nobody watches) on an empty one. The image
-    # build writes the id directly — the deployed system is certified the
-    # same way the build gate certifies the image: 32 lowercase hex chars,
-    # nothing else. No dev-mode shape is tolerated: every booted Linux box
-    # carries a valid machine-id, so a red here is a broken guest, full stop.
+    # prompts on an empty one. The image build writes the id directly:
+    # 32 lowercase hex chars, nothing else. No dev-mode shape is tolerated —
+    # every booted Linux box carries a valid machine-id, so a red here is a
+    # broken guest, full stop.
     try:
         v = Path(path).read_text().strip()
     except OSError as e:
@@ -425,13 +422,11 @@ def check_ui(rep: Report) -> None:
     """The chat UI is served by the app itself (static, same port): GET /
     on the app's bind address must answer 200. If ui/dist is missing
     from the deployed tree, / is a bare FastAPI 404 while the API stays
-    healthy — only this check sees it. The app key-gates every route
-    (EdgeKeyMiddleware in app/api/app.py) while SERVITOR_EDGE_KEY is set
-    — production always: this doctor runs with the guest env file
-    sourced, so the probe presents the same value the app verifies;
-    keyless (dev/standalone) the gate is off and a bare GET is right. A
-    403 here means the guest env's key drifted from what the app holds —
-    deploy/sync.sh re-injects it."""
+    healthy — only this check sees it. With SERVITOR_EDGE_KEY set the app
+    key-gates every route; this doctor runs with the guest env file
+    sourced, so the probe presents the same value the app verifies
+    (keyless = gate off, bare GET is right). A 403 means the guest env's
+    key drifted from what the app holds — deploy/sync.sh re-injects it."""
     bind = optional_env("SERVITOR_BIND") or ""
     port = optional_env("SERVITOR_PORT") or ""
     if not bind or not port:
@@ -463,9 +458,9 @@ def check_ui(rep: Report) -> None:
 
 
 def check_disk(rep: Report, root: str) -> None:
-    # every state area, so an operator sees WHERE the volume went; du counts a
-    # hardlinked blob once per tree it appears in, so blobs (where the bytes
-    # live) plus near-zero links elsewhere is the expected shape, not a bug
+    # every state area, so an operator sees WHERE the volume went; du counts
+    # a hardlinked blob once per tree it appears in, so blobs plus
+    # near-zero links elsewhere is the expected shape
     sizes = {}
     for sub in STATE_AREAS:
         code, out = _sh(["du", "-sk", f"{root}/{sub}"])
@@ -532,12 +527,11 @@ def check_delivery(rep: Report, root: str) -> None:
             if st.st_nlink <= 1:
                 orphan_bytes += st.st_size
                 # young and unlinked is normal (just adopted, or just released:
-                # the grace window is what keeps a race from deleting bytes a
-                # keep is about to link). Old and unlinked means the reclaim
-                # tick has not run — the service is down, or it is broken.
-                # The clock is the GC's own (max of mtime and ctime): link
-                # churn bumps ctime without touching mtime, and the GC holds
-                # such a blob — blaming the tick on mtime alone would.
+                # the grace window keeps a race from deleting bytes a keep is
+                # about to link). Old and unlinked means the reclaim tick has
+                # not run. The clock is the GC's own (max of mtime and ctime):
+                # link churn bumps ctime without touching mtime, and the GC
+                # holds such a blob.
                 if now - max(st.st_mtime, st.st_ctime) > BLOB_GRACE_SEC * 4:
                     stale_orphans += 1
     detail = f"{files} blob(s), {blob_bytes // (1024 * 1024)}MB; "
@@ -562,7 +556,7 @@ def check_delivery(rep: Report, root: str) -> None:
     elif stale_orphans:
         # WARN rather than PASS: the pile says the reclaim tick is not
         # running. Not FAIL — the service may legitimately be down while
-        # doctor runs (the detail names that reading)
+        # doctor runs.
         rep.add("delivery.blobs", WARN, detail)
     else:
         rep.add("delivery.blobs", PASS, detail)
@@ -614,17 +608,14 @@ def check_delivery(rep: Report, root: str) -> None:
 def check_session_mounts(rep: Report, root: str, registry) -> None:
     """Every LIVE session's workdir must have its session binds up.
 
-    The outbox is the agent's handoff directory, and it is a bind of
+    The outbox is the agent's handoff directory, a bind of
     ``<state>/outbox/<sid>`` into the workdir overlay. If the overlay is
-    mounted and the bind is not, the agent is writing into the overlay upper:
-    the app never sees the artifacts (the listing reads the bind source), and
-    they die with the scratch instead of waiting for a keep. The lib bind is
-    the same class of failure, in the other direction: mounted workdir,
-    missing ``lib/`` — the agent's prompt advertises a shared library that
-    is not there. Both are a broken mount plan, not a preference — so they
-    FAIL when a session is mounted without them, and say nothing when the
-    session is simply not mounted (unprivileged dev, or a session killed and
-    released).
+    mounted and the bind is not, the agent writes into the overlay upper:
+    the app never sees the artifacts, and they die with the scratch
+    instead of waiting for a keep. The lib bind is the same failure in
+    the other direction: mounted workdir, missing ``lib/``. Both are a
+    broken mount plan — so they FAIL when a session is mounted without
+    them, and say nothing when the session is simply not mounted.
     """
     # (bind name, why its absence matters)
     binds = (
@@ -665,10 +656,9 @@ def check_session_mounts(rep: Report, root: str, registry) -> None:
 def check_usage_meters(rep: Report, root: str) -> None:
     """What the app's own byte meters say (the numbers the UI shows).
 
-    A second walk after ``disk.headroom``'s ``du`` is worth it: ``du`` counts a
-    hardlinked blob once per tree it appears in, and these meters count it once
-    in the store. The difference IS the dedup, and an operator comparing the
-    two lines is exactly the person who should see both.
+    A second walk after ``disk.headroom``'s ``du`` is worth it: ``du`` counts
+    a hardlinked blob once per tree it appears in, and these meters count it
+    once in the store — the difference IS the dedup.
     """
     from app.delivery.usage import UsageMeter
 
@@ -813,12 +803,11 @@ async def reap_stale_probes(state: StatePaths, probe_uid: int) -> list[tuple[str
     """Reap the debris of a previous doctor that died mid-probe.
 
     PATH-SCOPED (the probe keeps no registry row): (1) kill probe-uid
-    children older than the grace — a dead doctor's child normally exits
-    on stdin EOF on its own; this catches the wedged case, and a live
-    concurrent probe's child is always younger than the grace; (2)
-    unmount + delete stale per-probe trees — older than the grace AND
-    holding no live process (belt: a concurrent probe's tree is never
-    touched). Returns (kind, detail) report items (kind: "tree" | "kill").
+    children older than the grace (a live concurrent probe's child is
+    always younger than the grace); (2) unmount + delete stale per-probe
+    trees — older than the grace AND holding no live process (a concurrent
+    probe's tree is never touched). Returns (kind, detail) report items
+    (kind: "tree" | "kill").
     """
     from app.iso.sweep import _pids_of_uid
 
@@ -942,10 +931,8 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
     import pwd as _pwd
 
     # the probe slot is outside the app's pool by contract: a probe on an
-    # app slot would race the service's uid-gated kills (boot reconciliation
-    # after a tick restart SIGTERMs every process of a slot uid that owns a
-    # live row — the probe's own row) and its owner sweep would delete the
-    # probe's files
+    # app slot would race the service's uid-gated kills, and its owner
+    # sweep would delete the probe's files
     if args.probe_slot in args.slots:
         rep.add(
             "spawn.probe_slot",
@@ -968,7 +955,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
     state = state_paths(args.state)
     # stale probe debris from a previous doctor that died mid-probe: ONLY
     # the doctor can clean it (the app's pool does not include the probe
-    # slot). Path-scoped: no registry row to find, no sweep to re-run.
+    # slot); path-scoped, no registry row to find
     try:
         for kind, detail in await reap_stale_probes(state, _pw.pw_uid):
             rep.add("spawn.stale_probe", PASS if kind == "tree" else WARN, detail)
@@ -994,8 +981,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
         await asyncio.to_thread(M.ensure_session_dirs, sp, state)
         # per-probe HOME inside the probe's own scratch tree: teardown is
         # then purely path-scoped and concurrent probes cannot interleave
-        # in a shared home. The passwd home stays on disk (0700 —
-        # check_slots); pi's state lives in the agent dir, not HOME.
+        # in a shared home. The passwd home stays on disk (0700 — check_slots).
         home = f"{sp.scratch}/home"
         os.makedirs(home, exist_ok=True)
         os.chown(home, ident.uid, ident.gid)
@@ -1106,9 +1092,8 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
         # router path, a dead PUBLIC egress path) only surface when a REAL
         # model call leaves the VM. ONE prompt does both jobs: it makes the
         # agent search the web, so the same run certifies public egress +
-        # the installed pi-web-access (the model router is reached
-        # edge-internally — a dead public path looks green to the
-        # no-prompt gate). Two report lines, one settle wait.
+        # the installed pi-web-access (the router is reached edge-internally
+        # — a dead public path looks green to the no-prompt gate).
         # Key-gated: without EXA_API_KEY the run degrades to the echo-only
         # prompt and spawn.live_search is not reported.
         exa_key = os.environ.get(args.exa_key_env, "")
@@ -1170,8 +1155,8 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
                         # Match the SEARCH tool by name, not just any
                         # successful toolResult: a file/bash success would
                         # otherwise certify egress. `web_search` is the
-                        # extension's contract tool name — a rename shows
-                        # up here as FAIL, which is the point.
+                        # extension's contract tool name — a rename shows up
+                        # here as FAIL.
                         ok = [
                             m for m in msgs
                             if m.get("role") == "toolResult"

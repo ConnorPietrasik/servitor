@@ -90,11 +90,10 @@ class Blobs:
         vanish from its listing. Same sha means same bytes, so the
         concurrent winner's inode is exactly what this part holds.
 
-        A failed drop of the staging name (the second ``os.unlink``) propagates:
-        the delivery answers as failed (the route reports the error and no inbox
-        link is made), but the part stays resumable — a re-complete dedups the
-        already-stored bytes and lands the link, so nothing is lost and nothing
-        is silently left on the volume unreported.
+        A failed drop of the staging name (the second ``os.unlink``)
+        propagates: the delivery answers as failed, but the part stays
+        resumable — a re-complete dedups the already-stored bytes and lands
+        the link.
         """
         blob = self.state.blob_for(sha256)
         os.makedirs(os.path.dirname(blob), exist_ok=True)
@@ -134,20 +133,17 @@ class Blobs:
         The hash is read in place first, and the copy happens only when the
         store LACKS the bytes: a re-keep or re-attach of content the store
         already holds is one read and a free link — no full-size temp, which
-        is the first thing to fail on a near-full volume even though the
-        bytes are already there. The pre-read is safe for a source that can
-        move (the agent's outbox): its hash is trusted only when the store
-        already proves the bytes under that name; on a miss the pre-read is
-        discarded and the copy re-reads and re-hashes in one pass, so the
-        name always describes the stored bytes, whatever the source did
-        meanwhile.
+        is the first thing to fail on a near-full volume. The pre-read is
+        safe for a source that can move (the agent's outbox): its hash is
+        trusted only when the store already proves the bytes under that name;
+        on a miss the copy re-reads and re-hashes in one pass, so the name
+        always describes the stored bytes, whatever the source did meanwhile.
 
         One copy, ever: every later attach links the stored inode for free,
-        and an existing copy at the hashed name is never replaced (another
-        keep or inbox may link it; same sha means same bytes). The copy goes
-        to a temp name and is LINKED in (create-only, for the reason
-        :meth:`adopt`'s docstring gives), so a crash never leaves a
-        half-written blob under the content-addressed name.
+        and an existing copy at the hashed name is never replaced. The copy
+        goes to a temp name and is LINKED in (create-only, as in
+        :meth:`adopt`), so a crash never leaves a half-written blob under the
+        content-addressed name.
         """
         h = hashlib.sha256()
         with open(src_path, "rb") as f:
@@ -207,11 +203,10 @@ class Blobs:
         Create-only: ``os.link`` either makes the name or fails with
         FileExistsError — a name a concurrent delivery or keep just took is
         refused, never overwritten, and the caller re-chooses (its
-        ``_land_name`` / ``_free_names`` is a prediction, the link is the
-        fact). ``name`` may be nested (the caller made the parent dirs); the
-        durable entry is fsynced in the dir that holds it. A link is a
-        single directory entry, so there is no half-file state to sweep:
-        a crash leaves nothing but the entry that was never made.
+        ``_land_name`` is a prediction, the link is the fact). ``name`` may
+        be nested (the caller made the parent dirs); the durable entry is
+        fsynced in the dir that holds it. A link is a single directory entry,
+        so a crash leaves nothing to sweep.
         """
         dest = os.path.join(dest_dir, name)
         os.link(blob_path, dest)
@@ -226,8 +221,8 @@ class Blobs:
 
         The only way a root-owned inode becomes readable to a session: it has
         to be the exact blob the app stored under the sha the app computed.
-        Takes the caller's already-lstat'd result — the gate runs per file on
-        every listing, so it must not re-stat.
+        Takes the caller's already-lstat'd result (the gate runs per file on
+        every listing).
         """
         if not sha256 or not stat.S_ISREG(st.st_mode):
             return False
@@ -244,15 +239,13 @@ class Blobs:
     def sha_for_inode(self, st: os.stat_result) -> str | None:
         """The sha of the stored blob whose inode this is — ``None`` if the
         inode is not a stored blob. Takes the caller's already-lstat'd
-        result (the shelf walks it per file; a re-stat would double the
-        syscall).
+        result (the shelf walks it per file).
 
         The store's name IS the sha and every keep is a hardlink of a
         blob, so a shelf row's sha is recoverable from the inode without
-        re-reading — let alone re-hashing — the bytes: a cold process
-        lists a multi-GB shelf for one bounded store walk, not one full
-        file read per kept file. The index is process-local memory, and
-        this process's own adopt (in) and reclaim (out) keep it honest.
+        re-reading — let alone re-hashing — the bytes. The index is
+        process-local memory; this process's own adopt (in) and reclaim
+        (out) keep it honest.
         """
         if not stat.S_ISREG(st.st_mode):
             return None
@@ -268,9 +261,7 @@ class Blobs:
         Blobs are content-addressed and inserted create-only, so nothing
         moves: a walk is a complete snapshot, and a blob created after it
         is indexed by the adopt that made it. Built outside the lock and
-        swapped in, so a slow walk on a large store never holds off the
-        reads it serves; a race with a concurrent builder just wastes a
-        walk.
+        swapped in, so a slow walk never holds off the reads it serves.
         """
         index: dict[tuple[int, int], str] = {}
         try:

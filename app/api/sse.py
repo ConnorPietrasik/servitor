@@ -44,9 +44,8 @@ class SseEvent:
 def ring_cap(cap_bytes: int | None) -> int:
     """The replay cap for a hub: the configured value, or the default.
 
-    One helper so the cap an operator tunes (SERVITOR_SSE_RING_BYTES) lands
-    on EVERY hub — including the app-wide one, which is minted before the
-    env lands on the lifecycle config and is re-applied there.
+    One helper so the cap an operator tunes (SERVITOR_SSE_RING_BYTES)
+    lands on EVERY hub.
     """
     return int(cap_bytes) if cap_bytes else EVENT_BUFFER_CAP
 
@@ -110,8 +109,8 @@ class SseHub:
     def _evict(self) -> None:
         """Free events every live consumer already has, then evict to the
         cap. Eviction may move PAST a slow consumer — that is the gap
-        contract (the stream detects the skip via gap_before and the
-        client re-syncs via the API). The run is never blocked by delivery.
+        contract (the stream detects the skip via gap_before). The run is
+        never blocked by delivery.
         """
         mc = self._min_consumed()
         if mc:
@@ -148,9 +147,8 @@ class SseHub:
         """True when the ring has evicted past the consumer's next
         position (cursor + 1): the stream must emit a ``gap`` and the
         client re-syncs via the API. An empty ring has been evicted past
-        everything too, but then there is nothing to distinguish — the
-        publisher always keeps the newest event, so a non-empty check
-        suffices."""
+        everything too — the publisher always keeps the newest event, so a
+        non-empty check suffices."""
         return bool(self._ring) and self._ring[0].id > cursor + 1
 
     def events_after(self, cursor: int) -> list[SseEvent]:
@@ -258,21 +256,19 @@ async def stream_events(
     This loop only READS the ring — it never waits on the run for a
     client. A ``gap`` tuple is emitted whenever the consumer's position has
     been evicted — at subscribe or mid-stream — and the stream resumes from
-    the newest event: the client re-syncs via the API, never a partial tail.
-    The ring is never re-sent after a gap: it duplicates the transcript fetch
-    and costs up to the cap; events published while the client re-syncs still
-    arrive on this stream (the cursor is snapshotted before the yield).
-    Ends when the request disconnects or the hub is closed (the client's
-    EventSource auto-reconnects, ?after= resumes).
+    the newest event: the client re-syncs via the API, never a partial
+    tail, and the ring is never re-sent after a gap. Events published while
+    the client re-syncs still arrive (the cursor is snapshotted before the
+    yield). Ends when the request disconnects or the hub is closed (the
+    client's EventSource auto-reconnects, ?after= resumes).
 
     ``kinds`` (the app-wide stream only) is a per-subscription VIEW: this
     subscriber is delivered only the named kinds. The view never changes
     the transport — a filtered event still advances the cursor and is
     consumed, or a long-lived filtered stream pins the ring at its cap
-    behind events it will never read, and position (hence gap detection
-    and Last-Event-ID resume) counts every event, filtered or not.
-    ``gap`` and the heartbeat are the stream's own frames, not ring
-    events: they ride whatever the view is.
+    behind events it will never read, and position (hence gap detection and
+    Last-Event-ID resume) counts every event, filtered or not. ``gap`` and
+    the heartbeat are the stream's own frames, not ring events.
     """
     if gap:
         # the requested position was evicted: the client must re-sync from the API
@@ -302,9 +298,7 @@ async def stream_events(
             return
         # the ring evicted past our cursor (slow consumer): gap — the client
         # re-syncs via the API; this stream continues from the newest event
-        # AT GAP TIME (no partial tail, no ring re-send; events published
-        # while the client re-syncs still arrive — the cursor is
-        # snapshotted before the yield)
+        # at gap time (no partial tail, no ring re-send)
         if hub.gap_before(cursor):
             missed_from = cursor
             cursor = hub.latest_id

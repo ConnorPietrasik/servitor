@@ -46,11 +46,10 @@ _VERSION_DIR_RE = re.compile(r"^(?:v\d+|c[0-9a-f]{12})$")
 #: makes the new version dir and removes it after the pointer flip; while
 #: a FRESH marker exists, a swap is in flight and a prune must not delete
 #: a version that is about to become active. A marker outlives a crash: a
-#: re-sync that pushes anything re-runs the swap block and removes it, and
-#: the NO-OP branch removes it once it is past this TTL (a FRESH one may
-#: belong to a concurrent live run, so it is never removed early) — the
-#: TTL is also the backstop when no sync runs at all: no swap takes an
-#: hour, so an older marker is stale debris.
+#: re-sync re-runs the swap block and removes it; the NO-OP branch removes
+#: it once past this TTL (a FRESH one may belong to a concurrent live run,
+#: so it is never removed early). The TTL is also the backstop when no
+#: sync runs at all: no swap takes an hour, so an older marker is stale.
 SWAP_MARKER_PREFIX = ".swapping-"
 SWAP_MARKER_TTL_SEC = 3600.0
 

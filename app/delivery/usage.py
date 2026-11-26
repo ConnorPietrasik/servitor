@@ -24,16 +24,14 @@ log = logging.getLogger("servitor.delivery.usage")
 
 #: areas whose children are session ids (bucketed into ``by_session``) —
 #: exactly the per-session areas ``release()`` deletes, so a row always says
-#: what releasing would free. ``keep`` is deliberately NOT one: its buckets
-#: are per-session *prefixes* of bytes that outlive the session, so
-#: attributing them to a live session row would be a lie — it is reported
-#: as its own area.
+#: what releasing would free. ``keep`` is deliberately NOT one: its bytes
+#: outlive the session, so attributing them to a live session row would be a
+#: lie — it is reported as its own area.
 PER_SESSION_AREAS = ("inbox", "outbox", "staging", "scratch", "sessions")
 
-#: walked FIRST, before the rest in name order. The store owns the bytes every
-#: other area merely references, so shared inodes are billed to it and the
-#: other areas honestly read "0 extra bytes" — not to an alphabetical accident
-#: about which directory the walk reached first.
+#: walked FIRST, before the rest in name order. The store owns the bytes
+#: every other area merely references, so shared inodes are billed to it and
+#: the other areas read "0 extra bytes" — not to an alphabetical accident.
 BILL_FIRST_AREAS = ("blobs",)
 
 
@@ -54,10 +52,8 @@ def _du(
 
     Links are neither followed nor counted (their target is billed where it
     lives). Neither are MOUNT POINTS descended into: a session's merged
-    views (its ``workdir``/``agent-dir`` overlays and the ``inbox``/
-    ``outbox`` binds in them) are windows onto bytes billed at their real
-    locations — the uppers below, the bind sources in their own areas, the
-    shared image lower that no release ever frees. Walking a mount would
+    views (its overlays and the ``inbox``/``outbox`` binds in them) are
+    windows onto bytes billed at their real locations. Walking a mount would
     bill the whole toolkit to every session and count each bind's files
     twice.
     """
@@ -118,9 +114,8 @@ def area_usage(root: str) -> dict:
                 kids = []
             for sid in kids:
                 spath = os.path.join(path, sid)
-                # one walk, both views: the report-wide dedup for the area
-                # total AND the session's referenced bytes (its own dedup)
-                # — a second walk of the same tree would bill the meter
+                # one walk, both views: the report-wide dedup AND the
+                # session's referenced bytes — a second walk would bill
                 # double the metadata cost for one number
                 b, f, d, rb = _du(spath, seen, set())
                 total += b

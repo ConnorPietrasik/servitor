@@ -322,7 +322,6 @@ def test_a_slow_disk_does_not_stall_the_loop(tmp_path, monkeypatch):
     Pinned with a poisoned fsync that blocks its caller for 1.5 s: an
     unrelated loop task must run at ~0.3 s, long before either slow sync
     (the part's, in the writer thread; the meta's, in a to_thread) returns.
-    On the old in-loop path the task could not run before ~1.5 s.
     """
     from app.delivery.upload import Staged
 
@@ -494,9 +493,8 @@ def test_a_client_disconnect_mid_body_is_a_499_not_a_500(tmp_path, monkeypatch):
 
 
 def test_a_staged_upload_survives_an_app_restart(tmp_path):
-    """Boot used to sweep every staging dir. A resumable upload interrupted by
-    a restart is not garbage: a fresh process over the same state volume lists
-    it and finishes it.
+    """A resumable upload interrupted by a restart is not garbage: a fresh
+    process over the same state volume lists it and finishes it.
 
     ``make_client(tmp_path)`` twice is exactly that — the same ``state/`` root,
     a new Delivery, a new app.

@@ -181,11 +181,10 @@ class EdgeKeyMiddleware:
             # the app untouched
             await self.app(scope, receive, send)
             return
-        # Websocket upgrade: the gate's "EVERY request" claim must not
-        # depend on the transport staying SSE. The upgrade carries the same
-        # headers, so the same check applies; the connect message is
-        # consumed here and re-delivered once, because the app expects to
-        # receive it first.
+        # Websocket upgrade: the gate covers EVERY request, upgrade
+        # included (fail-closed). The upgrade carries the same headers, so
+        # the same check applies; the connect message is consumed here and
+        # re-delivered once.
         if self.key:
             connect = await receive()
             provided = Headers(scope=scope).get(EDGE_KEY_HEADER, "").encode("latin-1")
@@ -359,22 +358,17 @@ def _sse_frame(name: str, data: str, eid: int | None = None) -> str:
 
 
 def _install_http_stop_handler(app_state) -> None:
-    """Replace uvicorn's SIGTERM with the app's stop path.
+    """Replace uvicorn's SIGTERM with the app's stop path, called from the
+    ASGI lifespan startup (by then uvicorn's own handler is in place).
 
-    Called from the ASGI lifespan startup — by then uvicorn's own handler
-    is in place, and ``signal.signal`` overrides it for the server's life
-    (installing before ``serve()`` would not work: uvicorn saves the
-    pre-existing handler as the "original" and masks it).
-
-    uvicorn's handler only sets ``should_exit``: in-flight SSE streams
-    keep the 'waiting for connections' phase open (uvicorn does not
-    cancel an in-flight streaming response), so the stop would run to
-    the unit's TimeoutStopSec SIGKILL with the abort-then-drain never
-    running and ``shutting_down`` never set. The app's handler:
-    ``shutting_down`` now, close every stream, only then let uvicorn
-    exit — the connection wait ends at once and the lifespan shutdown
-    runs the drain (bounded < TimeoutStopSec). No-op outside the HTTP
-    front door (no ``http_server``).
+    uvicorn's handler only sets ``should_exit``: in-flight SSE streams keep
+    the 'waiting for connections' phase open (uvicorn does not cancel an
+    in-flight streaming response), so the stop would run to the unit's
+    TimeoutStopSec SIGKILL with the abort-then-drain never running and
+    ``shutting_down`` never set. The app's handler: ``shutting_down`` now,
+    close every stream, only then let uvicorn exit — the connection wait
+    ends at once and the lifespan shutdown runs the drain (bounded <
+    TimeoutStopSec). No-op outside the HTTP front door (no ``http_server``).
     """
     server = getattr(app_state, "http_server", None)
     if server is None:
@@ -438,12 +432,7 @@ def build_app(app_state, cfg) -> FastAPI:
     # Edge credential gate — registered BEFORE the CORS middleware below:
     # last-added is outermost, and a CORS preflight (OPTIONS, no key) must
     # reach CORSMiddleware first. The credential is injected server-side by
-    # the proxy, so the browser never sees or sends it — same-origin UI,
-    # SSE and file downloads need no client change.
-    # (getattr, not attribute: a cfg built outside load_http_config that
-    # lacks the key gets an EMPTY key — gate off (dev/standalone semantics)
-    # instead of build_app crashing mid-startup; `or ""` because
-    # load_http_config hands out None for an unset key.)
+    # the proxy, so the browser never sees or sends it.
     app.add_middleware(
         EdgeKeyMiddleware,
         key=(getattr(cfg, "edge_key", "") or "").encode("latin-1"),
@@ -474,21 +463,15 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.get(f"/api/{API_VERSION}/usage")
     async def usage():
         """State-volume meters: bytes per area, per session, and the
-        filesystem totals. A report, never a limit.
-
-        ``gc_idle_days`` rides along because the list screen pairs a
-        session's held bytes with its idle-GC countdown ("held · GC in Nd").
-        """
+        filesystem totals. A report, never a limit."""
         report = dict(await asyncio.to_thread(app_state.lc.usage.report))
         report["gc_idle_days"] = app_state.lc.cfg.gc_idle_days
         return report
 
     @app.get(f"/api/{API_VERSION}/sessions")
     async def list_sessions():
-        # released sessions are GONE (404 everywhere); the list shows live
-        # sessions only, most recent first: last_activity descending, with
-        # created_at as the tiebreak so two rows touched in the same instant
-        # fall back to mint order (newest first)
+        # released sessions are GONE (404 everywhere); most recent first:
+        # last_activity descending, created_at as the tiebreak (mint order)
         rows = app_state.registry.list_sessions(include_released=False)
         rows.sort(key=lambda r: (r.last_activity, r.created_at), reverse=True)
         return {"sessions": [_row_dict(r, app_state.lc) for r in rows]}
@@ -569,9 +552,8 @@ def build_app(app_state, cfg) -> FastAPI:
         try:
             result = await app_state.lc.probe(sid, which)
         except ValueError:
-            # fresh session, no transcript yet: the probe's short-lived spawn
-            # is refused by the first-touch rule; the busy state is everything
-            # a waiter polling this endpoint needs
+            # fresh session, no transcript yet (the first-touch rule):
+            # busy is all a waiter needs
             return {"result": None, "busy": busy}
         return {"result": result, "busy": busy}
 
@@ -600,9 +582,7 @@ def build_app(app_state, cfg) -> FastAPI:
         except KeyError:
             raise HTTPException(status_code=404, detail="no such session")
         except SessionNotResumable:
-            raise  # terminal row: the app-level handler maps it to 409,
-            # NOT the 503 below (a retryable upstream failure) — without
-            # this the blanket RuntimeError catch would shadow it
+            raise  # the app-level handler maps it to 409, not the 503 below
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
         except Exception as e:
@@ -635,20 +615,16 @@ def build_app(app_state, cfg) -> FastAPI:
         kinds: frozenset[str] | None = None,
     ) -> StreamingResponse:
         """One SSE subscription: replay from the ring, then the live tail.
-
-        Shared by the per-session stream and the app-wide one — the resume
+        Shared by the per-session stream and the app-wide one: the resume
         contract (Last-Event-ID / ?after=, gap on eviction, 503 while the
-        stop path drains) must be identical on both, or a client learns to
-        trust one and silently miss events on the other.
+        stop path drains) must be identical on both.
         """
         if hub is None:
-            # no hub: the row is released, or stuck mid-release (quarantine).
-            # Terminal either way — every further request 404s too, so the
-            # client should stop (EventSource closes permanently on non-200)
+            # no hub: the row is released or stuck mid-release (quarantine)
+            # — terminal either way, every further request 404s too
             raise HTTPException(status_code=404, detail="no such session")
         if hub.closed:
-            # per-hub terminal (defense-in-depth: shutting_down always
-            # precedes close_streams)
+            # per-hub terminal (shutting_down always precedes close_streams)
             raise HTTPException(status_code=503, detail="shutting down")
         last_event_id = request.headers.get("last-event-id")
         start = _start_pos(hub, after, last_event_id, head)
@@ -685,10 +661,7 @@ def build_app(app_state, cfg) -> FastAPI:
         _get_row(app_state, sid)
         if app_state.lc.shutting_down:
             # the stop path is draining: gate BEFORE hub() — hub() is lazy,
-            # so a session with no hub yet would get a fresh OPEN hub that
-            # the stop path would never close. The client's EventSource
-            # backs off and retries against the new instance once the
-            # restart lands.
+            # and a hub minted here would never be closed by the stop path
             raise HTTPException(status_code=503, detail="shutting down")
         return _stream(app_state.lc.hub(sid), request, after)
 
@@ -700,32 +673,25 @@ def build_app(app_state, cfg) -> FastAPI:
         kinds: str | None = Query(default=None),
     ):
         """App-wide stream: lifecycle transitions and run state for every
-        session. This is what lets the sessions list follow reality on its
-        own — a phone on a metered plan must not poll the whole list every
-        few seconds to learn that a run started.
+        session — what lets the sessions list follow reality on its own
+        without polling.
 
         ``?head=1`` (what the list screen uses) takes no replay: it wants
-        "did anything change?", not history. A reconnect with
-        Last-Event-ID resumes exactly where it stopped either way.
+        "did anything change?"; a reconnect with Last-Event-ID resumes
+        exactly where it stopped either way.
 
-        ``?kinds=a,b`` is a per-subscription view of the stream: this
-        subscriber is delivered only the named kinds (``gap`` rides whatever
-        the view is — it is the stream's own resync frame, not a kind), so a
-        screen that needs two kinds does not pay the wire bytes for the
-        rest. The stream still carries exactly GLOBAL_EVENTS — the view is
-        a subset of the contract, never a rename, and an unknown kind is a
-        400 — ``gap`` excepted: it is the one name a view may name that the
-        stream never carries as a ring event (a view of just it is a stream
-        of nothing but resync signals).
+        ``?kinds=a,b`` is a per-subscription view: this subscriber is
+        delivered only the named kinds (``gap`` rides whatever the view is
+        — it is the stream's own resync frame, not a kind). The stream
+        still carries exactly GLOBAL_EVENTS — the view is a subset of the
+        contract, and an unknown kind is a 400 — ``gap`` excepted.
         """
         if app_state.lc.shutting_down:
             raise HTTPException(status_code=503, detail="shutting down")
         kindset: frozenset[str] | None = None
         if kinds:
             asked = {k.strip() for k in kinds.split(",") if k.strip()}
-            # gap is the stream's own resync frame, not a GLOBAL_EVENTS kind:
-            # it rides every view, and a view may name it (a stream of
-            # nothing but resync signals) without a 400
+            # gap is the stream's own resync frame, not a GLOBAL_EVENTS kind
             unknown = asked - set(GLOBAL_EVENTS) - {"gap"}
             if unknown:
                 raise HTTPException(
@@ -754,26 +720,19 @@ def build_app(app_state, cfg) -> FastAPI:
     async def list_files(sid: str, request: Request):
         """The session's files: outbox artifacts + the human's uploads.
 
-        ETag/304 on the whole payload: the UI takes it once and then lives on
-        ``files_changed`` deltas, but a re-attach after a gap or a tab reopen
-        hits it, and an unchanged listing must not cost a phone the whole
-        body again. The sweep also stamps `stable` and seeds the
-        server-side snapshot the deltas diff against.
+        ETag/304 on the whole payload: an unchanged listing must not cost a
+        phone the whole body again. The sweep also stamps `stable` and seeds
+        the server-side snapshot the deltas diff against.
         """
         row, sfiles = _session_files(sid)
         uploads, (outbox, delta) = await asyncio.to_thread(
             lambda: (sfiles.list_uploads(), app_state.lc.files.sweep(sid, sfiles))
         )
         if delta is not None and not app_state.lc.shutting_down:
-            # the fetch is a sweep driver like the timer: its delta lands on
-            # the session's hub while the hub has a watcher, or the snapshot
-            # it just wrote would make the timer diff past a change the
-            # session's other watchers (a second open tab) never get. The
-            # lookup must not MINT, and the publish must not go to a hub
-            # with no watcher: a later subscriber starts from a full
-            # listing, not a replay, so a delta nobody can receive is bytes
-            # a metered phone pays once and uses never (the timer's "swept
-            # only while someone can receive it" rule)
+            # the fetch is a sweep driver: its delta lands on the session's
+            # hub only while the hub has a watcher — a later subscriber
+            # starts from a full listing, not a replay. The lookup must not
+            # MINT.
             hub = app_state.lc.hub_if_present(sid)
             if hub is not None and not hub.closed and hub.consumer_count > 0:
                 hub.publish("files_changed", delta)
@@ -784,7 +743,6 @@ def build_app(app_state, cfg) -> FastAPI:
         ).encode("utf-8")
         etag = '"' + hashlib.blake2b(body, digest_size=16).hexdigest() + '"'
         if request.headers.get("if-none-match") == etag:
-            # ~200 bytes instead of the whole listing, sha strings included
             return Response(status_code=304, headers={"ETag": etag})
         return Response(
             content=body,
@@ -794,14 +752,11 @@ def build_app(app_state, cfg) -> FastAPI:
 
     @app.post(f"/api/{API_VERSION}/sessions/{{sid}}/files/upload")
     async def upload(sid: str, request: Request, name: str = Query(...)):
-        """The one-shot: one stream, one part, nobody to answer for the next
-        offset. Driven here, in the route, so the
-        upload_id is at hand when it matters: a mid-body drop is not an
-        abort — what landed is staged until its TTL. The 499 and its resume
-        handle are BEST-EFFORT: the client that disconnected is usually
-        already gone (the body then lands only in the log), so the resume
-        path that never depends on this response is the staged list —
-        GET /staged shows the part and its size.
+        """The one-shot: one stream, one part. Driven here, in the route,
+        so the upload_id is at hand when it matters: a mid-body drop is not
+        an abort — what landed is staged until its TTL. The 499 and its
+        resume handle are best-effort; the resume path that never depends
+        on this response is the staged list (GET /staged).
         """
         row, sfiles = _session_files(sid)
         staged = app_state.delivery.staged(sid)
@@ -809,8 +764,7 @@ def build_app(app_state, cfg) -> FastAPI:
             uid, _offset = await asyncio.to_thread(staged.create, name)
         except StagedError as e:
             # a name the store will refuse to land (a NUL, an all-dot name):
-            # refused at create, before any byte is on disk — a bad request,
-            # not a server fault, and no residue for the TTL to find
+            # refused at create, before any byte is on disk
             raise HTTPException(status_code=400, detail=str(e))
         try:
             await staged.append_stream(uid, 0, request.stream())
@@ -818,12 +772,10 @@ def build_app(app_state, cfg) -> FastAPI:
             # the part vanished under a concurrent cancel or TTL sweep
             raise HTTPException(status_code=404, detail="no such staged upload")
         except ClientDisconnect:
-            # the radio gave up mid-body: what landed is on disk (the part
-            # is resumable until its TTL), nothing was delivered — an
-            # expected interruption, not a server fault. The 499 rides back
-            # only if the client is within earshot and always lands in the
-            # log; the resume handle in the body is best-effort, the staged
-            # list is the resume path that does not depend on it
+            # the radio gave up mid-body: what landed is on disk and
+            # resumable until its TTL — an expected interruption, not a
+            # server fault. The 499 and its resume handle are best-effort;
+            # the log always lands
             try:
                 size = await asyncio.to_thread(staged.size, uid)
             except (StagedError, OSError):
@@ -920,8 +872,7 @@ def build_app(app_state, cfg) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(e) or "no such file")
         app_state.lc.events.add(sid, "file_renamed", f"outbox/{path} -> {moved['to']}")
         # no usage.invalidate(): a rename moves no bytes — the meter's cache
-        # is still exactly right, and invalidating would bill a full
-        # state-volume re-walk for a number that did not change
+        # is still exactly right
         return moved
 
     @app.get(f"/api/{API_VERSION}/sessions/{{sid}}/files/archive")
@@ -946,10 +897,10 @@ def build_app(app_state, cfg) -> FastAPI:
 
         def gen():
             # a sync generator: Starlette iterates it in a thread, so hashing
-            # and deflating a big tree never blocks the loop that serves the
-            # runs. An entry that grows past the 32-bit fields its header
-            # promised aborts the stream mid-way (the headers are already on
-            # the wire) — the log says why, instead of an opaque truncation.
+            # and deflating a big tree never blocks the loop. An entry that
+            # grows past the 32-bit fields its header promised aborts the
+            # stream mid-way; the log says why, instead of an opaque
+            # truncation.
             try:
                 yield from stream_zip(entries)
             except ArchiveError as e:
@@ -975,8 +926,7 @@ def build_app(app_state, cfg) -> FastAPI:
             upload_id, offset = await asyncio.to_thread(staged.create, name)
         except StagedError as e:
             # a name the store will refuse to land (a NUL, an all-dot name):
-            # the refusal is a bad request, and it happens before a part or
-            # a meta exists to be swept
+            # the refusal happens before a part or a meta exists to be swept
             raise HTTPException(status_code=400, detail=str(e))
         return {"upload_id": upload_id, "offset": offset}
 
@@ -1004,15 +954,13 @@ def build_app(app_state, cfg) -> FastAPI:
             return JSONResponse(status_code=409, content={"offset": e.size})
         except FileNotFoundError:
             # the part went away between the id resolving and the offset
-            # check (a concurrent complete or cancel): the same 404 the
-            # resolved path gives, not a 500 from the catch-all
+            # check: the same 404 the resolved path gives, not a 500
             raise HTTPException(status_code=404, detail="no such staged upload")
         except ClientDisconnect:
             # what landed is fsynced and stays staged: the client resumes
-            # from the server's size (its own offset bookkeeping or the
-            # staged list) — the designed path, not a fault. The log is the
-            # part of this answer that always lands; the 499 with its resume
-            # handle is best-effort, the same shape as the one-shot upload's
+            # from the server's size — the designed path, not a fault. The
+            # log always lands; the 499 with its resume handle is
+            # best-effort
             try:
                 size = await asyncio.to_thread(staged.size, upload_id)
             except (StagedError, OSError):
@@ -1040,7 +988,6 @@ def build_app(app_state, cfg) -> FastAPI:
             await asyncio.to_thread(staged.cancel, upload_id)
         except StagedError:
             raise HTTPException(status_code=404, detail="no such staged upload")
-        # the human just moved a number the meter shows
         app_state.lc.usage.invalidate()
         return {"cancelled": upload_id}
 
@@ -1048,14 +995,9 @@ def build_app(app_state, cfg) -> FastAPI:
     async def staged_complete(sid: str, upload_id: str):
         """Finish: hash what actually landed (over the whole file, never per
         chunk — see :mod:`app.delivery.upload`), then deliver it like any
-        upload.
-
-        The whole verify → deliver → drop runs under the part's append lock
-        (the shared :meth:`app.delivery.service.Delivery.complete_staged`):
-        a chunk that landed between the hash and the move would break the
-        store's content address, and the UI's one-ack-before-complete order
-        is a property of a well-behaved client, not a guarantee.
-        """
+        upload. The whole verify → deliver → drop runs under the part's
+        append lock (a chunk landing between the hash and the move would
+        break the store's content address)."""
         _row, sfiles = _session_files(sid)
         staged = app_state.delivery.staged(sid)
         try:
@@ -1085,11 +1027,11 @@ def build_app(app_state, cfg) -> FastAPI:
                 try:
                     st = os.lstat(p)
                 except FileNotFoundError:
-                    # the gate passed and the artifact is gone (the agent
-                    # owns the outbox): the gate's 404 shape, never a 500
+                    # the artifact is gone (the agent owns the outbox):
+                    # the gate's 404 shape, never a 500
                     raise FileNotDelivered(path) from None
-                # the listing's per-version cache (same key): a file the human
-                # just saw listed is not sniffed a second time
+                # the listing's per-version cache: a listed file is not
+                # sniffed a second time
                 mime = await asyncio.to_thread(
                     mime_for, (sid, rel, st.st_size, st.st_mtime), str(p), st.st_size
                 )
@@ -1098,7 +1040,7 @@ def build_app(app_state, cfg) -> FastAPI:
                 p = sfiles.upload_path(name)
                 filename = p.name
                 # sniffed once, at upload time, and recorded in the manifest;
-                # the inbox file is immutable to the session, so that is its MIME
+                # the inbox file is immutable, so that is its MIME
                 mime = sfiles.manifest_mime(name)
                 if not mime:
                     mime = await asyncio.to_thread(sniff_mime, str(p))
@@ -1121,12 +1063,11 @@ def build_app(app_state, cfg) -> FastAPI:
                 rel = body.path[len("outbox/") :]
                 src = sfiles.outbox_path(rel)
                 # the sha is the keep's address in the store; an upload's is
-                # already recorded, an artifact's may already be hashed in the
-                # background — otherwise the keep pass computes it once
+                # already recorded — otherwise the keep pass computes it once
                 sha = sfiles.sha_for_outbox(rel)
-                # the default name is the gated relpath itself — the gate
-                # resolved it in-area, so it is safe as-is and a dot file
-                # keeps its dots; only a typed as_name gets the safe form
+                # the default name is the gated relpath: already safe as-is
+                # (a dot file keeps its dots); only a typed as_name gets the
+                # safe form
                 keep_name = safe_relpath(body.as_name) if body.as_name else rel
             elif body.path.startswith("uploads/"):
                 name = body.path[len("uploads/") :]
@@ -1164,12 +1105,11 @@ def build_app(app_state, cfg) -> FastAPI:
                 rel = body.path[len("outbox/") :]
                 src = sfiles.outbox_path(rel)
                 # the sha is the save's address in the store; an upload's is
-                # already recorded, an artifact's may already be hashed in
-                # the background — otherwise the save pass computes it once
+                # already recorded — otherwise the save pass computes it once
                 sha = sfiles.sha_for_outbox(rel)
-                # the default name is the gated relpath itself — safe as-is,
-                # and a dot file keeps its dots; only a typed as_name gets
-                # the safe form
+                # the default name is the gated relpath: already safe as-is
+                # (a dot file keeps its dots); only a typed as_name gets the
+                # safe form
                 save_name = safe_relpath(body.as_name) if body.as_name else rel
             elif body.path.startswith("uploads/"):
                 name = body.path[len("uploads/") :]
@@ -1189,10 +1129,9 @@ def build_app(app_state, cfg) -> FastAPI:
             )
         except (FileNotDelivered, DeliveryError) as e:
             raise HTTPException(status_code=404, detail=f"no such file: {e}")
-        # the event carries the source→library mapping (JSON in the string
-        # detail): a save from another tab sets the in-lib badge in this one
-        # with no fetch — the library listing cannot map a lib path back to
-        # the source that produced it
+        # the event carries the source→library mapping: a save from another
+        # tab sets the in-lib badge here with no fetch (the library listing
+        # cannot map a lib path back to its source)
         app_state.lc.events.add(
             sid,
             "lib_saved",
@@ -1220,15 +1159,13 @@ def build_app(app_state, cfg) -> FastAPI:
                 src = app_state.delivery.keep_path(body.path)
                 # the shelf's listing hashed this row in the background: with
                 # its sha the attach is a free link (the keep IS the store's
-                # inode), without, a full re-hash of the same bytes. The
-                # MIME falls to the shelf's own key (its absolute path — the
-                # key list_keep warms).
+                # inode), without, a re-hash of the same bytes. The MIME falls
+                # to the shelf's own cache key.
                 sha = await asyncio.to_thread(
                     app_state.delivery.keep_sha, body.path
                 )
                 # the shelf's path is <source session>/<path>: the bucket is
-                # the source session's prefix, not the file's shape — land
-                # it under the path it was kept under
+                # the source session's prefix, not the file's shape
                 att_name = (
                     body.as_name
                     or (body.path.split("/", 1)[1] if "/" in body.path else body.path)
@@ -1239,8 +1176,8 @@ def build_app(app_state, cfg) -> FastAPI:
                     rel = body.path[len("outbox/") :]
                     src = src_files.outbox_path(rel)
                     sha = src_files.sha_for_outbox(rel)
-                    # the source's OWN listing key: the row the human saw
-                    # listed is not sniffed a second time
+                    # the source's own listing key: a listed file is not
+                    # sniffed a second time
                     att_key = (body.source, rel)
                     # an attach keeps the folder its source lived in
                     att_name = body.as_name or rel
@@ -1249,8 +1186,8 @@ def build_app(app_state, cfg) -> FastAPI:
                     src = src_files.upload_path(name)
                     sha = src_files.manifest_sha(name)
                     # sniffed once, at upload time, and recorded in the
-                    # source's manifest: the inbox file is immutable, so
-                    # that record is the MIME — no sniff of any kind
+                    # source's manifest: the inbox file is immutable, so that
+                    # record is the MIME — no sniff of any kind
                     att_mime = src_files.manifest_mime(name) or None
                     # the path the file LANDED under (a raw-dot ask resolves
                     # to its safe form): an attach keeps its folder
@@ -1303,12 +1240,11 @@ def build_app(app_state, cfg) -> FastAPI:
             p = app_state.delivery.keep_path(path)
             st = os.lstat(p)
         except (FileNotFoundError, FileNotDelivered, DeliveryError):
-            # the lstat runs after the gate: an un-keep landing in the
-            # window is the gate's own 404 shape, never a 500 off the
-            # vanished path
+            # an un-keep landing after the gate is the gate's own 404 shape,
+            # never a 500 off the vanished path
             raise HTTPException(status_code=404, detail="no such kept file")
-        # the shelf listing's per-version cache (same key): a file the human
-        # just saw listed is not sniffed a second time
+        # the shelf listing's per-version cache: a listed file is not
+        # sniffed a second time
         mime = await asyncio.to_thread(
             mime_for, ("keep", p, st.st_size, st.st_mtime), p, st.st_size
         )
@@ -1317,8 +1253,7 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.delete(f"/api/{API_VERSION}/files/keep/{{path:path}}")
     async def delete_kept(path: str):
         """Un-keep. The only way kept bytes are ever removed (nothing here
-        expires on its own), so it is an explicit call with an explicit
-        answer: how many bytes the human just gave back."""
+        expires on its own)."""
         try:
             size = await asyncio.to_thread(app_state.delivery.delete_keep, path)
         except (FileNotDelivered, DeliveryError):
@@ -1350,11 +1285,11 @@ def build_app(app_state, cfg) -> FastAPI:
             p = app_state.delivery.lib_path(path)
             st = os.lstat(p)
         except (FileNotFoundError, FileNotDelivered, DeliveryError):
-            # the lstat runs after the gate: a delete landing in the window
-            # is the gate's own 404 shape, never a 500 off the vanished path
+            # a delete landing after the gate is the gate's own 404 shape,
+            # never a 500 off the vanished path
             raise HTTPException(status_code=404, detail="no such library file")
-        # the library listing's per-version cache (same key): a file the
-        # human just saw listed is not sniffed a second time
+        # the library listing's per-version cache: a listed file is not
+        # sniffed a second time
         mime = await asyncio.to_thread(
             mime_for, ("lib", p, st.st_size, st.st_mtime), p, st.st_size
         )
@@ -1364,7 +1299,7 @@ def build_app(app_state, cfg) -> FastAPI:
     async def delete_lib_file(path: str):
         """Delete from the library. Repo-pushed files re-land on the next
         sync (the push is additive over UI saves); a file saved from the UI
-        is gone for good. Explicit call, explicit answer, as in un-keep."""
+        is gone for good."""
         try:
             size = await asyncio.to_thread(app_state.delivery.delete_lib, path)
         except (FileNotDelivered, DeliveryError):
@@ -1471,8 +1406,7 @@ def build_app(app_state, cfg) -> FastAPI:
 
         @app.get("/{path:path}", include_in_schema=False)
         async def spa(path: str):
-            # API/panel/healthz routes are registered above and win; this is
-            # the SPA fallback (client-side routing: /s/<id> is a UI route,
+            # the SPA fallback: client-side routing (a /s/<id> is a UI route,
             # not a server one). Unknown API-ish prefixes 404.
             if path.startswith(("api/", "panel/", "healthz", "openapi", "docs")):
                 raise HTTPException(status_code=404, detail="not found")

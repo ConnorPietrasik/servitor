@@ -1,8 +1,7 @@
 """PiSession — one `pi --mode rpc` subprocess per conversation.
 
-Protocol rules (verified empirically against the pinned pi, and against
-pi's own docs/rpc.md, rpc-commands.md, json.md): JSONL over stdio with
-LF-only framing, correlated by ``id``;
+Protocol rules (pi's docs/rpc.md, rpc-commands.md, json.md): JSONL over
+stdio with LF-only framing, correlated by ``id``;
 subscribe (start the stdout dispatcher) BEFORE prompting; stdout is
 protocol-only, stderr is captured but never parsed. ``disposition``:
 ``started`` | ``queued`` | ``handled`` — ``handled`` means consumed, no run
@@ -168,8 +167,7 @@ class PiSession:
     async def _snapshot_launched_argv(self, proc) -> tuple[str, ...]:
         """Read /proc/<pid>/cmdline immediately after spawn: node rewrites
         its process title early in startup, so /proc/<pid>/cmdline is not
-        valid launch-line evidence after the child has booted. The first
-        non-empty read is the original argv (no JS has executed yet)."""
+        valid launch-line evidence after the child has booted."""
         for _ in range(150):  # up to ~300 ms for a slow exec to populate
             try:
                 with open(f"/proc/{proc.pid}/cmdline", "rb") as f:
@@ -206,8 +204,7 @@ class PiSession:
         assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
         self._stdin_open = True
         # launch-line evidence: what the kernel ran, before node rewrites
-        # the process title; a child that dies before this read is a fatal
-        # spawn error
+        # the process title
         self._launched_argv = await self._snapshot_launched_argv(proc)
 
         # event dispatcher: subscribed before prompting (structural)
@@ -319,10 +316,9 @@ class PiSession:
         self._last_settled_aborted = bool(record.get("aborted", False))
         self._run_active = False
         # a run cannot settle while a dialog still blocks the child:
-        # anything still parked here was resolved on the pi side (its
-        # timeout or an abort — the child never re-notifies). Sweep it,
-        # so the park (and the UI fed by it) stops reporting a dialog
-        # that can never be answered; announce via on_dialog_resolved.
+        # whatever is still parked was resolved on the pi side (its timeout
+        # or an abort — the child never re-notifies). Sweep it and announce
+        # via on_dialog_resolved.
         stale = list(self._pending_dialogs)
         if stale:
             self._pending_dialogs.clear()
@@ -347,10 +343,9 @@ class PiSession:
         method = str(record.get("method", ""))
         rid = str(record.get("id", ""))
         if method in DIALOG_METHODS:
-            # blocks the child until answered — park for the human
-            # (indefinitely; never auto-allow, never auto-decline). pi
-            # may still resolve it on its own (timeout/abort) — the
-            # settle sweep drops whatever never got an answer
+            # blocks the child until answered — park for the human (never
+            # auto-allow, never auto-decline); the settle sweep drops
+            # whatever pi resolved on its own
             self._pending_dialogs[rid] = record
             if self.on_dialog:
                 try:
@@ -620,9 +615,8 @@ class PiSession:
         assert self._proc is not None and self._proc.stdin is not None
         self._proc.stdin.write(encode_command(resp))
         await self._proc.stdin.drain()
-        # the record stays parked until the child unblocks; we cannot know
-        # when, so drop from the park now — re-asking an answered id
-        # raises KeyError
+        # drop from the park now (the child unblocks at some unknown
+        # point): re-asking an answered id raises KeyError
         self._pending_dialogs.pop(dialog_id, None)
 
     # ------------------------------------------------------------------ #

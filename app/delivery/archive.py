@@ -62,9 +62,8 @@ class _EntryResult:
 
 class ArchiveError(RuntimeError):
     """The archive cannot be completed as the headers promised (an entry
-    grew past the 32-bit fields it was written with). The stream aborts
-    with a reason instead of yielding a zip a reader cannot parse — a
-    corrupt archive is worse than a truncated one the human can retry."""
+    grew past the 32-bit fields it was written with): the stream aborts
+    with a reason instead of yielding a zip a reader cannot parse."""
 
 
 def _entry_impl(
@@ -89,9 +88,7 @@ def _entry_impl(
     # stored only when empty: deflate has no bytes to work on
     method = 8 if usize_hint > 0 else 0
     # bit 3: sizes/CRC travel in the data descriptor; bit 11: the name is
-    # UTF-8 — the reader's only cue that it is not CP437, so it is set
-    # whenever the encoded bytes are valid UTF-8 (always for a clean name,
-    # ASCII included, where readers that ignore the flag are unaffected)
+    # UTF-8 (the reader's only cue that it is not CP437)
     try:
         name.decode("utf-8")
         flags = 0x08 | 0x800  # bit 3 (descriptor) + bit 11: the name is UTF-8
