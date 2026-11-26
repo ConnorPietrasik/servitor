@@ -403,6 +403,43 @@ def main() -> int:
         "outbox/" in system_md and "inbox/" in system_md and "lib/" in system_md,
         "SYSTEM.md documents the inbox/outbox/lib layout",
     )
+    strict_md_path = ac / "STRICT_SYSTEM.md"
+    check(
+        strict_md_path.is_file(),
+        "STRICT_SYSTEM.md present (the strict session's replacement prompt, "
+        "synced with the config)",
+    )
+    if strict_md_path.is_file():
+        check(
+            "[servitor-config v1]" in strict_md_path.read_text(),
+            "STRICT_SYSTEM.md carries the config-gate marker [servitor-config v1]",
+        )
+
+    # the strict tool allowlist is a capability boundary: it must stay a
+    # non-empty subset of pi's read-only builtins (a bash/edit/write slip-in
+    # would silently reopen the surface the mode exists to close). Read as
+    # AST like the other cross-module checks — this lint never imports
+    # runtime code (a broken app tree must fail as a named check, not an
+    # import crash).
+    launch_tree = ast.parse((REPO / "app" / "rpc" / "launch.py").read_text())
+    strict_tools: set[str] = set()
+    for node in ast.walk(launch_tree):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == "STRICT_TOOLS"
+        ):
+            strict_tools = {
+                el.value
+                for el in node.value.elts
+                if isinstance(el, ast.Constant) and isinstance(el.value, str)
+            }
+    READ_ONLY_BUILTINS = {"read", "grep", "find", "ls"}
+    check(
+        bool(strict_tools) and strict_tools <= READ_ONLY_BUILTINS,
+        "launch.STRICT_TOOLS is a non-empty subset of the read-only pi builtins",
+        str(sorted(strict_tools)),
+    )
 
     settings = json.loads((ac / "settings.json").read_text())
     check(

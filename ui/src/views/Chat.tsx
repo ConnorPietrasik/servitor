@@ -646,6 +646,11 @@ export default function Chat() {
         </Link>
         <div className="title">
           <span className="name">{row?.display_name || sid.slice(0, 8)}</span>
+          {row?.strict && (
+            <span className="chip stable" title="strict session: read-only tools, no web">
+              🔒
+            </span>
+          )}
           <span className={`chip ${running ? "live" : "idle"}`}>
             {running ? "running" : row?.live_process ? "idle" : "offline"}
           </span>

@@ -122,10 +122,10 @@ export default function Sessions() {
     };
   }, [load, refetchSoon]);
 
-  async function create() {
+  async function create(strict: boolean) {
     setCreating(true);
     try {
-      const r = await api.createSession();
+      const r = await api.createSession(undefined, strict);
       nav(`/s/${r.session_id}`);
     } catch (e) {
       setErr(String(e));
@@ -182,7 +182,15 @@ export default function Sessions() {
           <Link className="btn ghost" to="/kept" title="files you kept past their session">
             kept
           </Link>
-          <button className="btn primary" onClick={create} disabled={creating}>
+          <button
+            className="btn ghost"
+            onClick={() => create(true)}
+            disabled={creating}
+            title="read-only tools (read, grep, find, ls), no web"
+          >
+            🔒 strict
+          </button>
+          <button className="btn primary" onClick={() => create(false)} disabled={creating}>
             + New session
           </button>
         </div>
@@ -207,6 +215,11 @@ export default function Sessions() {
                 <div className="card-title">
                   <span className="name">{s.display_name || s.id.slice(0, 8)}</span>
                   <span className={chip.cls}>{chip.label}</span>
+                  {s.strict && (
+                    <span className="chip stable" title="strict session: read-only tools, no web">
+                      🔒
+                    </span>
+                  )}
                   {s.stable && <span className="chip stable" title="stable pin">📌</span>}
                 </div>
                 <div className="card-meters">

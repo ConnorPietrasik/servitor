@@ -39,7 +39,7 @@ from app.registry import (
     Registry,
     SessionRow,
 )
-from app.rpc.launch import build_launch
+from app.rpc.launch import STRICT_SYSTEM_NAME, build_launch
 from app.rpc.session import PiSession, SpawnFailure
 
 log = logging.getLogger("servitor.lifecycle")
@@ -390,11 +390,13 @@ class Lifecycle:
     # extension recording (warn, never block)                               #
     # ------------------------------------------------------------------ #
 
-    def _extension_names(self, sp: SessionMountPaths) -> tuple[str, ...]:
-        return extension_names(sp, self.cfg.pi.ext_path)
-
     def _record_extensions(self, session_id: str, sp: SessionMountPaths) -> None:
-        loaded = self._extension_names(sp)
+        # strict sessions load no extension: the explicit -e path (the
+        # search ext) is off the strict launch line, so the recorded set
+        # must not claim it
+        row = self.cfg.registry.get(session_id)
+        ext_path = None if (row is not None and row.strict) else self.cfg.pi.ext_path
+        loaded = extension_names(sp, ext_path)
         new = tuple(n for n in loaded if n not in set(self.cfg.baseline_extensions))
         self.cfg.registry.set_extensions(session_id, loaded, new)
         for n in new:
@@ -407,26 +409,55 @@ class Lifecycle:
 
     def _launch(self, session_id: str, session_file: str | None, sp: SessionMountPaths):
         live = self.live.get(session_id)
+        row = self.cfg.registry.get(session_id)
+        if row is None:
+            raise ValueError(f"no registry row for {session_id}")
+        strict = row.strict
         return build_launch(
             node_bin=self.cfg.pi.node_bin,
             cli_js=str(self.cfg.pi.cli_js),
             session_dir=f"{self.cfg.state.sessions}/{session_id}",
             session_id=None if session_file else session_id,
             session_file=session_file,
-            extension_paths=(str(self.cfg.pi.ext_path),) if self.cfg.pi.ext_path else (),
-            home=f"/home/{self._slot_name_for(session_id)}",
-            user=self._slot_name_for(session_id),
+            extension_paths=()
+            if strict
+            else (str(self.cfg.pi.ext_path),) if self.cfg.pi.ext_path else (),
+            home=f"/home/{row.slot}",
+            user=row.slot,
             agent_dir=sp.agent_dir,
             omnissiah_api_key=self.cfg.api_key,  # env-only: the key never appears on argv
-            exa_api_key=self.cfg.exa_key,
+            exa_api_key=self.cfg.exa_key,  # the builder drops it for strict
             web_cache_root=sp.web_cache,
+            strict=strict,
+            strict_system_path=self._strict_system_path(row, live, sp) if strict else None,
         )
 
-    def _slot_name_for(self, session_id: str) -> str:
-        row = self.cfg.registry.get(session_id)
-        if row is None:
-            raise ValueError(f"no registry row for {session_id}")
-        return row.slot
+    def _strict_system_path(
+        self, row: SessionRow, live: "Live | None", sp: SessionMountPaths
+    ) -> str:
+        """The strict prompt, resolved from the SAME config version the
+        session runs (config reaches a session only at spawn): the live
+        mount's lowerdir when mounted (the mount is the truth — it
+        outlives the process and the app), else this process's recorded
+        lower, else the respawn fallback (the row's version, else active).
+        A missing file is a spawn failure, loud: the active config must
+        carry STRICT_SYSTEM.md (doctor certifies it)."""
+        lower = M.overlay_lower_dir(sp.agent_dir)
+        if lower is None and live is not None:
+            lower = live.config_lower or None
+        if lower is None:
+            lower = (
+                (row.config_version
+                 and _lower_for_version(str(self.cfg.state.config), row.config_version))
+                or require_active_dir(str(self.cfg.state.config))
+            )
+        path = f"{lower}/{STRICT_SYSTEM_NAME}"
+        if not os.path.isfile(path):
+            raise RuntimeError(
+                f"strict session {row.id}: {path} missing — the config carries no "
+                f"STRICT_SYSTEM.md (sync the agent config, then retry)"
+            )
+        return path
 
     def _make_driver(self, session_id: str, session_file: str | None, live: Live) -> PiSession:
         launch = self._launch(session_id, session_file, live.sp)
@@ -522,13 +553,15 @@ class Lifecycle:
     # ------------------------------------------------------------------ #
 
     async def start_session(
-        self, display_name: str | None = None
+        self, display_name: str | None = None, strict: bool = False
     ) -> dict:
         """Allocate slot + mounts + first spawn. Under slot pressure,
         release the oldest non-stable non-running; if none is releasable
         the start is REFUSED (NoFreeSlot → 503). There is no queue: a
         parked row has no end state (nothing could wake it, and with no
-        slot it could not be released either)."""
+        slot it could not be released either). ``strict`` pins the session
+        to the read-only launch line (see app.rpc.launch) — create-time,
+        immutable: the registry row carries it across respawn/probe."""
         if self.shutting_down:
             raise RuntimeError("app is shutting down")
         session_id = _new_session_id()
@@ -550,6 +583,7 @@ class Lifecycle:
             display_name=display_name,
             slot=slot.name,
             state=ALLOCATED,
+            strict=strict,
         )
 
         # Everything from here on is under the abort guard: a failure at
@@ -586,7 +620,8 @@ class Lifecycle:
             self.cfg.registry.touch(session_id)
             self.events.add(session_id, "started", f"slot={slot.name} config={version}")
             return {"session_id": session_id, "slot": slot.name,
-                    "session_file": session_file, "config_version": version}
+                    "session_file": session_file, "config_version": version,
+                    "strict": strict}
         except Exception:
             await self._abort_start(session_id, live, slot)
             raise

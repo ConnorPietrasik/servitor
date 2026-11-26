@@ -234,11 +234,11 @@ def check_config_version(rep: Report, config_root: str) -> None:
     else:
         rep.add("config.active", FAIL, f"active pointer -> {v} but {d} missing")
         return  # the dir is gone; the per-file checks would be noise
-    for name in ("SYSTEM.md", "models.json", "settings.json"):
+    for name in ("SYSTEM.md", "STRICT_SYSTEM.md", "models.json", "settings.json"):
         if not (Path(d) / name).exists():
             rep.add(f"config.file.{name}", FAIL, f"{d}/{name} missing from the active config")
             return
-    rep.add("config.files", PASS, "SYSTEM.md + models.json + settings.json present")
+    rep.add("config.files", PASS, "SYSTEM.md + STRICT_SYSTEM.md + models.json + settings.json present")
     # JSON validity: a truncated artifact must fail HERE with a named
     # check, not inside the spawn check's models parse
     for name in ("models.json", "settings.json"):

@@ -8,7 +8,9 @@ Routes:
 
     GET    /healthz
     GET    /api/v1/sessions
-    POST   /api/v1/sessions
+    POST   /api/v1/sessions              (body: display_name?, strict? — strict =
+                                                     read-only tools, no web; create-time,
+                                                     immutable)
     GET    /api/v1/sessions/{id}
     POST   /api/v1/sessions/{id}/prompt
     POST   /api/v1/sessions/{id}/steer
@@ -209,6 +211,7 @@ class StableBody(BaseModel):
 
 class StartBody(BaseModel):
     display_name: str | None = None
+    strict: bool = False  # read-only tools, no web (create-time, immutable)
 
 
 class ReleaseBody(BaseModel):
@@ -278,6 +281,7 @@ def _row_dict(r: SessionRow, lc: Lifecycle) -> dict:
         "state": r.state,
         "busy": busy,
         "stable": r.stable,
+        "strict": r.strict,
         "interrupted": r.interrupted,
         "session_file": r.session_file,
         "config_version": r.config_version,
@@ -480,7 +484,7 @@ def build_app(app_state, cfg) -> FastAPI:
     @app.post(f"/api/{API_VERSION}/sessions")
     async def create_session(body: StartBody):
         try:
-            res = await app_state.lc.start_session(body.display_name)
+            res = await app_state.lc.start_session(body.display_name, strict=body.strict)
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
         return res

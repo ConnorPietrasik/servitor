@@ -147,7 +147,9 @@ class App:
     async def handle(self, cmd: str, args: dict) -> object:
         lc = self.lc
         if cmd == "start_session":
-            return await lc.start_session(args.get("display_name"))
+            return await lc.start_session(
+                args.get("display_name"), strict=bool(args.get("strict"))
+            )
         if cmd == "prompt":
             return {"disposition": await lc.prompt(args["session_id"], args["text"])}
         if cmd == "settle":
@@ -191,6 +193,7 @@ class App:
                         "slot": r.slot,
                         "state": r.state,
                         "stable": r.stable,
+                        "strict": r.strict,
                         "interrupted": r.interrupted,
                         "session_file": r.session_file,
                         "config_version": r.config_version,

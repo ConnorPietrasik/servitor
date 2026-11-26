@@ -117,6 +117,15 @@ never is.** Each session's pi runs as a **slot uid** from a static pool of
     lifecycle/run state, listings are ETag'd, per-version sha/MIME are
     computed once, and a hidden tab closes its stream. Byte meters exist to
     be read, never to limit.
+15. **A strict session is a launch-line boundary, set at creation.** The
+    per-session strict opt-in pins the launch line: `--tools` restricted to
+    the read-only builtins (`read,grep,find,ls`), `--exclude-tools mcp__*`,
+    the replacement `--system-prompt <config>/STRICT_SYSTEM.md`, no search
+    extension, no EXA/web-cache env — all on the argv (the one surface the
+    agent cannot rewrite), recorded in the registry row, and re-applied
+    identically on every respawn and probe. The model-inference connection
+    is infrastructure, not session reach: with no bash and no web tool the
+    slot has no code path that opens a socket.
 
 ## Repo layout
 

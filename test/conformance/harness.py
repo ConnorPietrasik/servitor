@@ -45,6 +45,7 @@ class LiveSession:
     config_lower: str
     events: list = field(default_factory=list)
     dialogs: list = field(default_factory=list)
+    strict: bool = False  # the launch-line mode is create-time: respawn carries it
 
 
 @dataclass
@@ -104,27 +105,41 @@ class Harness:
         version = configswap.stage_and_swap(str(self.state.config), str(stage))
         return version
 
-    def launch_args(self, *, session_id: str, session_file: str | None = None):
+    def launch_args(self, *, session_id: str, session_file: str | None = None, strict: bool = False):
         """The exact launch for a session. ``session_file`` set = respawn/
         probe (the recorded path, verbatim); else first spawn
         (``--session-id``). The session dir is IDENTICAL across
         spawn/respawn/probe: ``sessions/<s>/`` — with an explicit session
-        dir, transcripts land flat inside it."""
+        dir, transcripts land flat inside it. ``strict`` pins the
+        read-only launch line (no extension, the replacement prompt from
+        the session's mounted config lower — the mount pins the version
+        the session runs and outlives the process and the app — the active
+        pointer only when unmounted, the app's resolution order)."""
         assert self.state is not None
         sp = SessionMountPaths.for_session(session_id, str(self.state.scratch))
+        strict_system_path = None
+        if strict:
+            lower = (
+                M.overlay_lower_dir(sp.agent_dir)
+                or configswap.active_dir(str(self.state.config))
+            )
+            assert lower is not None, "no active config version"
+            strict_system_path = f"{lower}/STRICT_SYSTEM.md"
         return build_launch(
             node_bin=self.pi.node_bin,
             cli_js=str(self.pi.cli_js),
             session_dir=f"{self.state.sessions}/{session_id}",
             session_id=None if session_file else session_id,
             session_file=session_file,
-            extension_paths=(str(self.pi.ext_path),),
+            extension_paths=() if strict else (str(self.pi.ext_path),),
             home=f"/home/{self.slot_name}",
             user=self.slot_name,
             agent_dir=sp.agent_dir,
             omnissiah_api_key=self.config_key,
-            exa_api_key=self.exa_key,
+            exa_api_key=None if strict else self.exa_key,
             web_cache_root=sp.web_cache,
+            strict=strict,
+            strict_system_path=strict_system_path,
         )
 
     async def start_session(
@@ -136,6 +151,7 @@ class Harness:
         extra_exts: tuple[str, ...] = (),
         expect_startup: bool = True,
         agent_dir_ro: bool = False,
+        strict: bool = False,
     ) -> LiveSession:
         """Allocate the slot, mount, spawn, and (unless told otherwise)
         verify the protocol came up: get_state + model usable.
@@ -160,7 +176,9 @@ class Harness:
                 M.mount_session, sp, lower, self.state, slot_identity_obj.uid, slot_identity_obj.gid, self.toolkit_dir, agent_dir_ro
             )
             self.mount_ops_by_session[session_id] = ops
-        launch = self.launch_args(session_id=session_id, session_file=respawn_file)
+        launch = self.launch_args(
+            session_id=session_id, session_file=respawn_file, strict=strict
+        )
         if key == "":
             # the credential is UNSET — removed from the env entirely
             # (never an empty string: an empty Bearer is a different, also
@@ -222,6 +240,7 @@ class Harness:
             config_lower=lower,
             events=events,
             dialogs=dialogs,
+            strict=strict,
         )
         self.sessions[session_id] = live
         return live
@@ -237,7 +256,7 @@ class Harness:
         await live.driver.shutdown()
         await live.driver.close()
         return await self.start_session(
-            session_id, respawn_file=session_file, expect_startup=expect_startup
+            session_id, respawn_file=session_file, expect_startup=expect_startup, strict=live.strict
         )
 
     async def prompt_and_settle(

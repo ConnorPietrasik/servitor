@@ -328,6 +328,21 @@ def mounted_targets() -> set[str]:
     return out
 
 
+def overlay_lower_dir(mountpoint: str) -> str | None:
+    """The lowerdir of the overlay mounted at ``mountpoint`` (None if no
+    such overlay mount). The MOUNT is the session's config truth: a
+    respawn must resolve the same lower the live mount still pins (the
+    mount outlives the process and the app)."""
+    with open("/proc/mounts", "r", encoding="ascii") as f:
+        for line in f:
+            parts = line.split()
+            if len(parts) >= 4 and parts[0] == "overlay" and parts[1] == mountpoint:
+                for opt in parts[3].split(","):
+                    if opt.startswith("lowerdir="):
+                        return opt[len("lowerdir="):]
+    return None
+
+
 async def aexecute_mounts(ops: list[MountOp]) -> None:
     await asyncio.to_thread(execute_mounts, ops)
 

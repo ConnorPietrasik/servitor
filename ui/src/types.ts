@@ -7,6 +7,7 @@ export interface SessionRow {
   state: string; // allocated | live | draining | cleaning | free
   busy: boolean; // a run is in flight (server: driver.run_active)
   stable: boolean;
+  strict: boolean; // strict session: read-only tools, no web (create-time)
   interrupted: boolean;
   session_file: string | null;
   config_version: string | null;

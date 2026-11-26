@@ -70,6 +70,7 @@ class SessionRow:
     update_waiting: bool = False
     loaded_extensions: tuple[str, ...] = ()
     new_extensions: tuple[str, ...] = ()
+    strict: bool = False
 
     def is_running_or_awaiting_release(self) -> bool:
         """'16 slots = 16 live sessions (running OR awaiting release)'."""
@@ -105,7 +106,8 @@ class Registry:
                 last_activity REAL NOT NULL,
                 update_waiting INTEGER NOT NULL DEFAULT 0,
                 loaded_extensions TEXT NOT NULL DEFAULT '[]',
-                new_extensions TEXT NOT NULL DEFAULT '[]'
+                new_extensions TEXT NOT NULL DEFAULT '[]',
+                strict INTEGER NOT NULL DEFAULT 0
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_slot ON sessions(slot);
             CREATE INDEX IF NOT EXISTS idx_sessions_state ON sessions(state);
@@ -117,6 +119,15 @@ class Registry:
             """
         )
         self.db.commit()
+        # schema evolution: pre-strict volumes lack the column. ALTER TABLE is
+        # sqlite's only cheap path; the DEFAULT 0 backfills existing rows — a
+        # pre-existing session was never strict (the flag is create-time).
+        cols = {r[1] for r in self.db.execute("PRAGMA table_info(sessions)")}
+        if "strict" not in cols:
+            self.db.execute(
+                "ALTER TABLE sessions ADD COLUMN strict INTEGER NOT NULL DEFAULT 0"
+            )
+            self.db.commit()
 
     # -- version stamps (what the guest actually runs) -----------------
 
@@ -156,6 +167,7 @@ class Registry:
             update_waiting=bool(r["update_waiting"]),
             loaded_extensions=tuple(json.loads(r["loaded_extensions"])),
             new_extensions=tuple(json.loads(r["new_extensions"])),
+            strict=bool(r["strict"]),
         )
 
     def upsert_session(
@@ -166,14 +178,15 @@ class Registry:
         slot: str,
         state: str = ALLOCATED,
         config_version: str | None = None,
+        strict: bool = False,
     ) -> SessionRow:
         now = time.time()
         existing = self.get(session_id)
         if existing is None:
             self.db.execute(
                 "INSERT INTO sessions (id, display_name, slot, state, created_at,"
-                " updated_at, last_activity, config_version)"
-                " VALUES (?,?,?,?,?,?,?,?)",
+                " updated_at, last_activity, config_version, strict)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     session_id,
                     display_name or session_id[:8],
@@ -183,11 +196,13 @@ class Registry:
                     now,
                     now,
                     config_version,
+                    int(strict),
                 ),
             )
         else:
             # a released row is never re-allocated: session ids are uuids,
-            # minted once
+            # minted once. strict is create-time: the update branch never
+            # touches the column (a respawn keeps the session it is).
             if existing.state == FREE:
                 raise RegistryError(f"session {session_id} is released; mint a new id")
             self.db.execute(

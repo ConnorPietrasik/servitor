@@ -39,9 +39,10 @@ async function jpost<T>(path: string, body?: unknown): Promise<T> {
 export const listSessions = () =>
   jget<{ sessions: SessionRow[] }>("/api/v1/sessions");
 export const getSession = (sid: string) => jget<SessionRow>(`/api/v1/sessions/${sid}`);
-export const createSession = (display_name?: string) =>
+export const createSession = (display_name?: string, strict = false) =>
   jpost<{ session_id: string; slot: string }>("/api/v1/sessions", {
     display_name,
+    strict,
   });
 export const releaseSession = (sid: string, reason = "user close") =>
   jpost<{ released: boolean; quarantined: boolean; errors: string[] }>(

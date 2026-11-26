@@ -573,6 +573,7 @@ want_file /opt/servitor/app/.venv/bin/python "the unit's interpreter is gone"
 want_file /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js "SERVITOR_PI_CLI_JS points at nothing: every spawn fails"
 want_file /opt/servitor/app/ui/dist/index.html "a UI-less image is a 404 behind the gate, with nothing saying why"
 want_file /opt/servitor/agent-config/SYSTEM.md "first-boot config staging has no source"
+want_file /opt/servitor/agent-config/STRICT_SYSTEM.md "strict sessions cannot start on a first-boot config (the doctor would flag it too)"
 want_file /opt/servitor/pkglist.txt "a step-[6/7] write is absent: the image was read while still mounted"
 # the verifier holds the same hazard it exists to catch: a lazy release here
 # would put a mounted filesystem back in front of the convert

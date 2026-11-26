@@ -56,6 +56,11 @@ changes:
     anywhere: session file deltas and app-wide lifecycle events ride the
     existing SSE, listings are ETag'd, sha/MIME are per-version caches only,
     and a hidden tab closes its stream.
+10. **A strict session is a launch-line boundary.** Create-time opt-in, set
+    in the registry row, carried by the launch line itself: `--tools
+    read,grep,find,ls`, `--exclude-tools mcp__*`, `--system-prompt
+    STRICT_SYSTEM.md`, no search extension, no EXA key — the one surface
+    the agent cannot rewrite, re-applied on every respawn/probe (README §15).
 
 ## Coding contracts (enforced by `make check`, an AST + parse lint)
 
