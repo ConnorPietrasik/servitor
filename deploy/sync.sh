@@ -131,7 +131,7 @@ r.close()\"" 1
 state_read "extension installed" GUEST_EXT_INSTALLED "node -e \"try{console.log(require('/opt/pi-ext/pi-web-access/package.json').version)}catch(e){console.log('')}\""
 state_read "app tree hash" GUEST_APP_SHA "cd /opt/servitor/app && find app pyproject.toml -type f -not -path '*/__pycache__/*' 2>/dev/null | LC_ALL=C sort | xargs -r sha256sum 2>/dev/null | sha256sum | cut -d' ' -f1"
 state_read "ui dist hash" GUEST_UI_SHA "cd /opt/servitor/app/ui/dist 2>/dev/null && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1"
-state_read "env key slice" GUEST_ENV_SHA "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_EDGE_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1"
+state_read "env key slice" GUEST_ENV_SHA "grep -E '^(OMNISSIAH_API_KEY|EXA_API_KEY|SERVITOR_EDGE_KEY|SERVITOR_PI_VERSION|SERVITOR_PI_WEB_ACCESS_VERSION|SERVITOR_GEN_BASE_URL)=' /etc/servitor/servitor.env | LC_ALL=C sort | sha256sum | cut -d' ' -f1"
 # the stamp of the last lib push (NOT the guest tree — the library also
 # holds UI saves, which must never re-trigger a push)
 state_read "lib push stamp" GUEST_LIB_SHA "cat /var/lib/servitor/.lib-manifest.sha 2>/dev/null"
@@ -195,7 +195,7 @@ if [[ ! -f "$REPO/ui/dist/index.html" || "$(cat "$REPO/ui/.ui-src-sha" 2>/dev/nu
 fi
 bash "$REPO/deploy/check_ui_dist.sh" "$REPO/ui/dist"
 UI_DIST_SHA="$(cd "$REPO/ui/dist" && find . -type f | LC_ALL=C sort | xargs -r sha256sum | sha256sum | cut -d' ' -f1)"
-KEYS_SHA="$( { printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_EDGE_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "$SERVITOR_EDGE_KEY" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
+KEYS_SHA="$( { printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_EDGE_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\nSERVITOR_GEN_BASE_URL=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "$SERVITOR_EDGE_KEY" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}" "${SERVITOR_GEN_BASE_URL:-}"; } | LC_ALL=C sort | sha256sum | cut -d' ' -f1)"
 
 # extension: host npm stage at the .env selection (the same command the
 # conformance suite uses — --ignore-scripts, absolute prefix)
@@ -423,7 +423,7 @@ fi
 # rejects a process substitution ("/dev/fd/N is not a regular"). The file
 # lives in $WORK (0700 mktemp dir, removed by the trap).
 KEYS_TMP="$WORK/servitor-keys.$$"
-{ printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_EDGE_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "$SERVITOR_EDGE_KEY" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}"; } > "$KEYS_TMP"
+{ printf 'OMNISSIAH_API_KEY=%s\nEXA_API_KEY=%s\nSERVITOR_EDGE_KEY=%s\nSERVITOR_PI_VERSION=%s\nSERVITOR_PI_WEB_ACCESS_VERSION=%s\nSERVITOR_GEN_BASE_URL=%s\n' "$OMNISSIAH_API_KEY" "${EXA_API_KEY:-}" "$SERVITOR_EDGE_KEY" "${SERVITOR_PI_VERSION:-}" "${SERVITOR_PI_WEB_ACCESS_VERSION:-}" "${SERVITOR_GEN_BASE_URL:-}"; } > "$KEYS_TMP"
 chmod 600 "$KEYS_TMP"
 SCp "$KEYS_TMP" "$SSH_TARGET:/tmp/servitor-keys"
 run_guest "

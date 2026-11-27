@@ -77,6 +77,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--pi-cli", default=_dep["SERVITOR_PI_CLI_JS"])
     p.add_argument("--pi-ext", default=_dep["SERVITOR_PI_EXT_DIR"])
     p.add_argument("--toolkit", default=_dep["SERVITOR_TOOLKIT_DIR"] or "/opt/toolkit")
+    p.add_argument("--gen-base-url", default=_dep["SERVITOR_GEN_BASE_URL"],
+                   help="the panel machine gen surface (default: SERVITOR_GEN_BASE_URL; "
+                        "None/empty = media gen disabled)")
     p.add_argument("--slots", default=",".join(f"slot{i}" for i in range(1, 17)))
     p.add_argument("--api-key-env", default="OMNISSIAH_API_KEY")
     p.add_argument("--exa-key-env", default="EXA_API_KEY")
@@ -130,6 +133,7 @@ class App:
                 pi=PiInstall(node_bin=args.pi_node, cli_js=args.pi_cli, ext_path=args.pi_ext),
                 api_key=os.environ.get(args.api_key_env, ""),
                 exa_key=os.environ.get(args.exa_key_env) or None,
+                gen_base_url=args.gen_base_url or None,
                 toolkit_dir=args.toolkit,
                 baseline_extensions=tuple(args.baseline_ext),
                 idle_kill_sec=args.idle_kill_sec,

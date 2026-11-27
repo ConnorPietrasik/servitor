@@ -135,6 +135,7 @@ class LifecycleConfig:
     pi: PiInstall
     api_key: str
     exa_key: str | None = None
+    gen_base_url: str | None = None
     toolkit_dir: str = "/opt/toolkit"
     baseline_extensions: tuple[str, ...] = ()
     idle_kill_sec: float = 3600.0
@@ -438,6 +439,7 @@ class Lifecycle:
             omnissiah_api_key=self.cfg.api_key,  # env-only: the key never appears on argv
             exa_api_key=self.cfg.exa_key,
             web_cache_root=sp.web_cache,
+            gen_base_url=self.cfg.gen_base_url,
             strict=strict,
             strict_system_path=self._strict_system_path(row, live, sp) if strict else None,
         )

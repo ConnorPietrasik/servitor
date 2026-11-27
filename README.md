@@ -4,8 +4,8 @@ A home assistant with coding ability, not a pure coding agent: a
 phone-first web chat UI driving Pi (`@earendil-works/pi-coding-agent`) in a
 dedicated KVM VM. You hand it files — including far-beyond-context material
 (photo binders, data dumps, video) — it writes and runs scripts to work on
-them, searches the web, and runs as long as the task needs. A human can
-steer or abort at any point.
+them, searches the web, makes and edits pictures and video, and runs as long
+as the task needs. A human can steer or abort at any point.
 
 ## Architecture
 

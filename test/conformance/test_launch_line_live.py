@@ -11,8 +11,9 @@ after boot, so a late /proc read is not valid launch-line evidence.
 - launched_argv == the exact golden argv (node, absolute cli, --mode
   rpc, --no-approve, --no-context-files, --session-dir,
   --session-id/--session, -e extension).
-- /proc/<pid>/environ == the closed env allowlist — the child NEVER
-  inherits the app's environment (environ is not rewritten by node).
+- /proc/<pid>/environ == the launch constant (the closed env allowlist,
+  optional keys absent when unset) — the child NEVER inherits the app's
+  environment (environ is not rewritten by node).
 - The key is in the child env and NOWHERE on argv.
 - Never --approve / --api-key / PI_OFFLINE / PI_CODING_AGENT_SESSION_DIR.
 """
@@ -61,10 +62,17 @@ async def test_executed_env_is_the_closed_allowlist(harness):
     env = _proc_environ(pid)
     from app.rpc.launch import ENV_ALLOWLIST, FORBIDDEN_ENV
 
-    assert set(env.keys()) == set(ENV_ALLOWLIST), (
-        f"child env is not exactly the allowlist: extra={set(env) - set(ENV_ALLOWLIST)} "
-        f"missing={set(ENV_ALLOWLIST) - set(env)}"
+    # the executed env is exactly the launch constant — the closed
+    # allowlist minus the optionals that are unset (the harness launches
+    # without the gen surface). Comparing against the constant, not the
+    # allowlist, keeps this true when another optional key lands.
+    expected = live.driver.launch.env_dict
+    assert env == expected, (
+        f"executed env drifted from the launch constant: "
+        f"extra={ {k: v for k, v in env.items() if expected.get(k) != v} } "
+        f"missing={ {k: v for k, v in expected.items() if env.get(k) != v} }"
     )
+    assert not (set(env) - set(ENV_ALLOWLIST)), sorted(set(env) - set(ENV_ALLOWLIST))
     for forbidden in FORBIDDEN_ENV:
         assert forbidden not in env
     # the key rode env-only: present in the child env, absent from argv

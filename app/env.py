@@ -45,6 +45,7 @@ ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_PI_CLI_JS",  # absolute pi CLI entry
     "SERVITOR_PI_EXT_DIR",  # absolute pi-web-access package dir (sync-owned)
     "SERVITOR_TOOLKIT_DIR",  # absolute toolkit dir (RO overlay lower)
+    "SERVITOR_GEN_BASE_URL",  # the panel machine gen surface (…/machine/gen); env-only relay to the pi subprocesses
     "SERVITOR_DOCTOR_CWD",  # cwd for the doctor command (the app tree)
 )
 
@@ -186,6 +187,7 @@ DEPLOYMENT_ENV_NAMES: tuple[str, ...] = (
     "SERVITOR_PI_CLI_JS",
     "SERVITOR_PI_EXT_DIR",
     "SERVITOR_TOOLKIT_DIR",
+    "SERVITOR_GEN_BASE_URL",
     "SERVITOR_DOCTOR_CWD",
 )
 

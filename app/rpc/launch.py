@@ -20,7 +20,7 @@ Hard rules encoded here:
 - a strict session is a launch-line boundary: ``--tools`` pinned to the
   read-only allowlist, ``--exclude-tools mcp__*``, the replacement
   ``--system-prompt STRICT_SYSTEM.md`` — all three together, no ``-e``
-  extension, no EXA/web-cache env. The agent cannot rewrite its own argv.
+  extension, no EXA/web-cache/gen env. The agent cannot rewrite its own argv.
 - env is an explicit allowlist, never the app's inherited environment.
 """
 from __future__ import annotations
@@ -50,8 +50,13 @@ STRICT_SYSTEM_NAME = "STRICT_SYSTEM.md"
 
 #: Env keys a strict subprocess never gets: nothing loads them without the
 #: search extension (the key stays env-only per subprocess — a strict
-#: subprocess does not call search).
-STRICT_ENV_DROPS: tuple[str, ...] = ("EXA_API_KEY", "PI_WEB_ACCESS_CACHE_ROOT")
+#: subprocess does not call search) or bash (the gen CLI is a bash tool; a
+#: strict session has none).
+STRICT_ENV_DROPS: tuple[str, ...] = (
+    "EXA_API_KEY",
+    "PI_WEB_ACCESS_CACHE_ROOT",
+    "SERVITOR_GEN_BASE_URL",
+)
 
 #: Env keys that may ever appear in a pi subprocess environment, in order.
 ENV_ALLOWLIST: tuple[str, ...] = (
@@ -63,6 +68,7 @@ ENV_ALLOWLIST: tuple[str, ...] = (
     "OMNISSIAH_API_KEY",
     "EXA_API_KEY",
     "PI_WEB_ACCESS_CACHE_ROOT",
+    "SERVITOR_GEN_BASE_URL",
 )
 
 #: Values that must never appear in argv (audit helpers for the gates).
@@ -105,6 +111,7 @@ def build_launch(
     omnissiah_api_key: str,
     exa_api_key: str | None,
     web_cache_root: str,
+    gen_base_url: str | None = None,
     path: str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
     lang: str = "C.UTF-8",
     strict: bool = False,
@@ -115,12 +122,14 @@ def build_launch(
     mutually exclusive and exactly one must be given.
 
     ``strict`` pins the session to the read-only tool allowlist with no
-    search extension and no EXA/web-cache env; ``strict_system_path`` is
+    search extension and no EXA/web-cache/gen env; ``strict_system_path`` is
     the absolute path of that config version's STRICT_SYSTEM.md (the
     replacement system prompt). The coupling is fail-closed: strict
     without the prompt path, the path without strict, a path that does not
     name STRICT_SYSTEM.md, or any extension on a strict line is a
-    ValueError — the boundary lives here, in one place."""
+    ValueError — the boundary lives here, in one place. ``gen_base_url``
+    (the panel machine gen surface) rides the env for the toolkit's gen
+    CLI: non-strict only, absent when None (media gen disabled)."""
     if (session_id is None) == (session_file is None):
         raise ValueError("exactly one of session_id / session_file is required")
     if strict and strict_system_path is None:
@@ -162,9 +171,11 @@ def build_launch(
         if exa_api_key is not None:
             env.append(("EXA_API_KEY", exa_api_key))
         env.append(("PI_WEB_ACCESS_CACHE_ROOT", web_cache_root))
+        if gen_base_url is not None:
+            env.append(("SERVITOR_GEN_BASE_URL", gen_base_url))
 
     # the allowlist is closed: nothing else, ever (a strict launch is the
-    # allowlist minus the web-extension keys)
+    # allowlist minus the web-extension keys and the gen surface)
     keys = [k for k, _ in env]
     assert all(k in ENV_ALLOWLIST for k in keys), keys
     assert not (set(keys) & set(FORBIDDEN_ENV)), set(keys) & set(FORBIDDEN_ENV)

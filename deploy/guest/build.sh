@@ -64,6 +64,9 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 : "${SERVITOR_PI_VERSION:?SERVITOR_PI_VERSION missing (set in .env)}"
 : "${SERVITOR_PI_WEB_ACCESS_VERSION:=}"
+# the panel machine gen surface (optional — empty = media gen disabled;
+# the gen CLI fails closed with a clear error, and the doctor reports it)
+: "${SERVITOR_GEN_BASE_URL:=}"
 : "${SERVITOR_PORT:=8787}"
 : "${SERVITOR_EDGE_SUBNET:?SERVITOR_EDGE_SUBNET missing in $ENV_FILE}"
 : "${SERVITOR_OPS_SUBNET:?SERVITOR_OPS_SUBNET missing in $ENV_FILE}"
@@ -300,6 +303,12 @@ chmod 0755 /opt/pi-ext
 CHROOT_EOF
 cp "$WORK/chroot-setup.sh" "$WORK/disk/chroot-setup.sh"
 env LC_ALL=C TZ=UTC chroot "$WORK/disk" /usr/bin/bash /chroot-setup.sh < /dev/null
+# the toolkit's gen CLI (media generation — the agent's only media surface):
+# stdlib-only, so it runs under the guest's system python; baked from the
+# repo, so it is part of the image contract (the artifact gate below
+# certifies it). The toolkit is the RO lower, so the agent can run it,
+# never rewrite it.
+install -m 0755 "$REPO/deploy/guest/toolkit/gen.py" "$WORK/disk/opt/toolkit/bin/gen"
 rm -f "$WORK/disk/chroot-packages.sh" "$WORK/disk/chroot-setup.sh"
 
 echo "==> [5/7] systemd units + firewall + ssh + fstab"
@@ -335,6 +344,10 @@ SERVITOR_PI_NODE_BIN=$NODE_BIN
 SERVITOR_PI_CLI_JS=/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
 SERVITOR_PI_EXT_DIR=/opt/pi-ext/pi-web-access
 SERVITOR_TOOLKIT_DIR=/opt/toolkit
+# the panel machine gen surface (the gen CLI's config; empty = media gen
+# disabled — the CLI fails closed with a clear error). The sync's key
+# slice keeps this current without an image rebuild.
+SERVITOR_GEN_BASE_URL=$SERVITOR_GEN_BASE_URL
 EOF
 chmod 0600 "$WORK/disk/etc/servitor/servitor.env"
 
@@ -574,6 +587,7 @@ want_file /usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js "SER
 want_file /opt/servitor/app/ui/dist/index.html "a UI-less image is a 404 behind the gate, with nothing saying why"
 want_file /opt/servitor/agent-config/SYSTEM.md "first-boot config staging has no source"
 want_file /opt/servitor/agent-config/STRICT_SYSTEM.md "strict sessions cannot start on a first-boot config (the doctor would flag it too)"
+want_file /opt/toolkit/bin/gen "media generation is a broken image (the toolkit carries no gen CLI)"
 want_file /opt/servitor/pkglist.txt "a step-[6/7] write is absent: the image was read while still mounted"
 # the verifier holds the same hazard it exists to catch: a lazy release here
 # would put a mounted filesystem back in front of the convert

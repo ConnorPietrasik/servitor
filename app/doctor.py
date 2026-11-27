@@ -33,6 +33,8 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 import uuid
 
 from app.env import deployment_env, optional_env
@@ -111,6 +113,60 @@ def check_env(rep: Report, args: argparse.Namespace) -> None:
         rep.add("env.exa_key", PASS, "EXA_API_KEY present")
     else:
         rep.add("env.exa_key", WARN, "EXA_API_KEY absent — live search disabled")
+    if (getattr(args, "gen_base_url", None) or "").strip():
+        rep.add("env.gen_base_url", PASS, "SERVITOR_GEN_BASE_URL present (media gen relayed to the sessions)")
+    else:
+        rep.add("env.gen_base_url", WARN, "SERVITOR_GEN_BASE_URL absent — media gen disabled")
+
+
+def check_gen_surface(rep: Report, args: argparse.Namespace) -> None:
+    """The live probe of the machine gen surface. WARN, never FAIL: a panel
+    blip on the host must not gate a guest deploy — the gen CLI fails closed
+    per call and the agent sees the error. 401 is the key-drift signature
+    (the machine door key IS the LLM router key). A probe error is a report
+    line, never an exception: the doctor is the gate, and an uncaught error
+    in a check skips every later check and misreads the run as a FAIL."""
+    # the probe hits {base}/jobs — the first route every gen CLI call takes
+    # — and normalizes a trailing slash the same way the CLI does, or a
+    # mis-set URL would 404 here and on every CLI call alike
+    base = (getattr(args, "gen_base_url", None) or "").strip().rstrip("/")
+    if not base:
+        rep.add("gen.surface", SKIP, "SERVITOR_GEN_BASE_URL unset — media gen disabled")
+        return
+    if not base.startswith(("http://", "https://")):
+        rep.add(
+            "gen.surface", WARN,
+            f"SERVITOR_GEN_BASE_URL is not an absolute http(s) URL ({base!r}) — "
+            "the gen CLI would fail every call",
+        )
+        return
+    key = os.environ.get(args.api_key_env, "")
+    if not key:
+        rep.add("gen.surface", WARN, "no LLM key in env — cannot probe the gen surface")
+        return
+    req = urllib.request.Request(base + "/jobs", headers={"Authorization": f"Bearer {key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = resp.read(2048)
+            rep.add(
+                "gen.surface", PASS,
+                f"machine surface answered {resp.status} "
+                f"(queue listing, {len(body)} bytes)",
+            )
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            rep.add(
+                "gen.surface", WARN,
+                "the machine door rejected the key (401) — the LLM key does not "
+                "match the panel's machine-door key",
+            )
+        else:
+            rep.add("gen.surface", WARN, f"the machine surface answered {e.code}")
+    except Exception as e:  # transport failure / mis-set URL: report, don't crash the gate
+        rep.add(
+            "gen.surface", WARN,
+            f"probe failed ({type(e).__name__}: {e}) — the panel-api may be down",
+        )
 
 
 _HEX2 = re.compile(r"^[0-9a-f]{2}$")
@@ -194,6 +250,22 @@ def check_machine_id(rep: Report, path: str = "/etc/machine-id") -> None:
             "os.machine_id", FAIL,
             f"machine-id is not a valid id ({v!r}) — logind cannot start and "
             "firstboot would prompt; repair: write 32 random hex chars, reboot",
+        )
+
+
+def check_toolkit_gen(rep: Report, toolkit: str) -> None:
+    """The toolkit carries the gen CLI (baked, the RO lower of every
+    workdir): media generation is that script — its absence is a broken
+    image, not a degraded mode (the gen CLI would fail closed per call,
+    but the deploy must not certify a toolkit without it)."""
+    gen = os.path.join(toolkit, "bin", "gen")
+    if os.path.isfile(gen) and os.access(gen, os.X_OK):
+        rep.add("toolkit.gen", PASS, f"{gen} present and executable")
+    else:
+        rep.add(
+            "toolkit.gen", FAIL,
+            f"{gen} missing or not executable — the image build must install "
+            "the toolkit gen CLI (deploy/guest/toolkit/gen.py)",
         )
 
 
@@ -1000,6 +1072,7 @@ async def check_no_prompt_spawn(rep: Report, args: argparse.Namespace) -> None:
             omnissiah_api_key=api_key,
             exa_api_key=exa_key,
             web_cache_root=sp.web_cache,
+            gen_base_url=args.gen_base_url or None,
         )
         driver = PiSession(launch, ident, cwd=sp.workdir)
         await driver.start()
@@ -1225,6 +1298,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--pi-cli", default=_dep["SERVITOR_PI_CLI_JS"])
     p.add_argument("--pi-ext", default=_dep["SERVITOR_PI_EXT_DIR"])
     p.add_argument("--toolkit", default=_dep["SERVITOR_TOOLKIT_DIR"] or "/opt/toolkit")
+    p.add_argument("--gen-base-url", default=_dep["SERVITOR_GEN_BASE_URL"],
+                   help="the panel machine gen surface (default: SERVITOR_GEN_BASE_URL; "
+                        "empty = media gen disabled)")
     p.add_argument("--slots", default=",".join(f"slot{i}" for i in range(1, 17)))
     p.add_argument("--probe-slot", default=None,
                    help="slot for the no-prompt spawn probe (default: the image's "
@@ -1258,10 +1334,12 @@ async def main(argv: list[str]) -> int:
     rep = Report()
     print(f"DOCTOR servitor — {socket.gethostname()} {time.strftime('%Y-%m-%d %H:%M:%S')}")
     check_env(rep, args)
+    check_gen_surface(rep, args)
     check_state_fs(rep, args.state)
     check_state_mount(rep, args.state)
     check_machine_id(rep)
     check_ancestors(rep, args.state, args.toolkit)
+    check_toolkit_gen(rep, args.toolkit)
     check_config_version(rep, f"{args.state.rstrip('/')}/config")
     check_slots(rep, args.slots + [args.probe_slot])
     from app.registry import Registry

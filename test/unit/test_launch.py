@@ -69,8 +69,9 @@ def test_forbidden_flags_never_appear():
 
 def test_env_is_the_closed_allowlist():
     l = _launch(session_id="abc")
-    keys = list(l.env_dict.keys())
-    assert keys == [k for k in ENV_ALLOWLIST]  # exact set AND order
+    # the allowlist minus the optional gen surface (absent when not given):
+    # exact set AND order
+    assert list(l.env_dict.keys()) == [k for k in ENV_ALLOWLIST if k != "SERVITOR_GEN_BASE_URL"]
     # the key is in the env — and nowhere in the argv
     assert l.env_dict["OMNISSIAH_API_KEY"] == "key-value"
     assert "key-value" not in " ".join(l.argv)
@@ -80,6 +81,29 @@ def test_env_is_the_closed_allowlist():
     assert l.env_dict["USER"] == "slot1"
     # $HOME follows the uid: the home matches the slot
     assert l.env_dict["HOME"].startswith("/home/slot")
+
+
+def test_gen_url_rides_env_nonstrict_only():
+    url = "http://127.0.0.1:8010/machine/gen"
+    l = _launch(session_id="abc", gen_base_url=url)
+    assert l.env_dict.get("SERVITOR_GEN_BASE_URL") == url
+    # env-only: never on the argv (and the argv is unchanged by it)
+    assert url not in " ".join(l.argv)
+    assert "SERVITOR_GEN_BASE_URL" not in " ".join(l.argv)
+
+
+def test_gen_url_absent_when_not_given():
+    l = _launch(session_id="abc")
+    assert "SERVITOR_GEN_BASE_URL" not in l.env_dict
+    assert all(k in ENV_ALLOWLIST for k in l.env_dict)
+
+
+def test_strict_drops_the_gen_url():
+    # a strict session has no bash — the gen CLI is unreachable, and the
+    # surface stays closed: the URL never rides its env
+    l = _strict_launch(session_id="abc", gen_base_url="http://127.0.0.1:8010/machine/gen")
+    assert "SERVITOR_GEN_BASE_URL" not in l.env_dict
+    assert "SERVITOR_GEN_BASE_URL" not in " ".join(l.argv)
 
 
 def test_no_exa_key_still_valid_launch():
