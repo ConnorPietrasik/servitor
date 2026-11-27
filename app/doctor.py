@@ -43,7 +43,10 @@ from app.iso.layout import STATE_AREAS, SessionMountPaths, StatePaths, state_pat
 from app.registry import LIVE
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # annotation-only forward reference (no runtime import)
+    from app.rpc.session import PiSession
 
 PASS, FAIL, WARN, SKIP = "PASS", "FAIL", "WARN", "SKIP"
 

@@ -363,7 +363,7 @@ def unmount_all(ops: list[MountOp]) -> list[str]:
         try:
             op.unmount()
             unmounted.append(op.target)
-        except MountError as exc:
+        except MountError:
             # a stuck mount is a release failure: it gets reported (the sweep
             # will see the mountpoint), never silently skipped
             raise

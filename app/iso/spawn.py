@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import os
 import pwd
-import signal
 from dataclasses import dataclass
 
 

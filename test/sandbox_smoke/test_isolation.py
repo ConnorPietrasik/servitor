@@ -32,7 +32,6 @@ from app.delivery.usage import area_usage
 from app.iso import configswap, mounts as M
 from app.iso.layout import STATE_AREAS, SessionMountPaths, state_paths
 from app.iso.release import area_footprint
-from app.iso.slots import SlotPool
 from app.iso.spawn import slot_identity
 from app.iso.sweep import sweep_by_owner
 
@@ -75,7 +74,7 @@ MOUNTED_OPS: list = []
 def _mount_session(env, session_id: str) -> tuple[SessionMountPaths, list[M.MountOp], str]:
     state = env["state"]
     sp = SessionMountPaths.for_session(session_id, state.scratch)
-    lower = configswap.stage_and_swap(str(state.config), str(env["run_root"] / "cfgsrc"))
+    configswap.stage_and_swap(str(state.config), str(env["run_root"] / "cfgsrc"))
     lower_dir = configswap.require_active_dir(str(state.config))
     ident = slot_identity(SLOT)
     # make the staged config tree slot-owned (the bind SOURCE): the

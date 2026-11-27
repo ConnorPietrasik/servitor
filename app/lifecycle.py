@@ -4,14 +4,13 @@ No wall-clock/iteration/token caps."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import stat
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.iso import mounts as M
 from app.env import optional_env
@@ -42,6 +41,9 @@ from app.registry import (
 )
 from app.rpc.launch import STRICT_SYSTEM_NAME, build_launch
 from app.rpc.session import PiSession, SpawnFailure
+
+if TYPE_CHECKING:  # annotation-only forward reference (no runtime import)
+    from app.delivery.service import Delivery
 
 log = logging.getLogger("servitor.lifecycle")
 
@@ -579,7 +581,7 @@ class Lifecycle:
                     "release) and none is releasable — try again later"
                 )
         assert slot is not None
-        row = self.cfg.registry.upsert_session(
+        self.cfg.registry.upsert_session(
             session_id,
             display_name=display_name,
             slot=slot.name,

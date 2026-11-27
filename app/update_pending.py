@@ -101,6 +101,7 @@ def load(path: str | Path) -> UpdatePending | None:
 
 def save(path: str | Path, flag: UpdatePending) -> None:
     p = Path(path)
+    flag.ts = time.time()  # the flag's time is the write's time
     with _locked(p):
         _write(p, flag)
 

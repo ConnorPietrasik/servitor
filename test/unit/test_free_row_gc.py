@@ -20,8 +20,6 @@ import asyncio
 import time
 from types import SimpleNamespace
 
-import pytest
-
 import app.iso.slots as slotsmod
 import app.lifecycle as lcmod
 from app.iso.layout import state_paths

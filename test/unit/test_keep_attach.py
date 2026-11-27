@@ -364,8 +364,6 @@ def test_attaching_a_kept_file_is_a_free_link_not_a_recopy(tmp_path, monkeypatch
     re-copy of bytes the store already holds."""
     import time
 
-    import pytest
-
     import app.delivery.blobs as blobsmod
 
     c, _state, root = make_client(tmp_path, sids=("s1", "s2"))

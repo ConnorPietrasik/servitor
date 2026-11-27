@@ -19,8 +19,6 @@ after boot, so a late /proc read is not valid launch-line evidence.
 """
 from __future__ import annotations
 
-import os
-
 
 def _proc_environ(pid: int) -> dict[str, str]:
     out: dict[str, str] = {}

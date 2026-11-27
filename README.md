@@ -146,7 +146,7 @@ never is.** Each session's pi runs as a **slot uid** from a static pool of
 | `agent-config/` | agent system prompt, model config, skills — synced read-only |
 | `lib/` | durable human-curated library — synced read-only to the agent, mounted RO in every session's workdir; the UI can save an outbox/upload file there |
 | `deploy/` | guest image build, systemd units, firewall, sync/update/doctor, portcullis install |
-| `test/` | the gate stack: contract lint, unit, conformance, stage2, sandbox-smoke |
+| `test/` | the gate stack: contract + python lint, unit, conformance, stage2, sandbox-smoke |
 
 ## Dev loop
 
@@ -155,7 +155,7 @@ Dev happens in a plain checkout (no root needed):
 ```bash
 cp .env.example .env   # fill in per deploy/README.md
 make venv
-make check             # contract lint
+make check             # contract + python lint
 make test              # unit + conformance vs the mock router
                        # (conformance loud-skips without root; pi +
                        # extension versions come from .env — sourced by

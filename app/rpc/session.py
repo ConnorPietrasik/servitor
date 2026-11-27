@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import itertools
-import json
 import logging
 import uuid
 from collections import deque

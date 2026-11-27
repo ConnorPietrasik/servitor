@@ -18,7 +18,7 @@ asyncio and in unit tests.
 from __future__ import annotations
 
 import json
-from typing import Any, Awaitable, Callable, Iterable
+from typing import Any, Callable
 
 OnRecord = Callable[[dict[str, Any]], Any]
 OnParseError = Callable[[int, str], Any]

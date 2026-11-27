@@ -21,7 +21,7 @@ from app.iso import configswap, mounts as M
 from app.iso.layout import STATE_AREAS, SessionMountPaths, state_paths
 from app.iso.release import release_session
 from app.iso.slots import SlotPool
-from app.iso.spawn import SlotIdentity, slot_identity
+from app.iso.spawn import slot_identity
 from app.rpc.launch import build_launch
 from app.rpc.session import PiSession
 

@@ -155,7 +155,7 @@ def test_kinds_view_delivers_only_the_asked_kinds_and_consumes_the_rest():
         # must be CONSUMED even though it is never yielded. (The pending
         # anext stays blocked on the next, never-arriving event; asyncio.run
         # cancels it at shutdown.)
-        pending = asyncio.ensure_future(anext(gen))
+        asyncio.ensure_future(anext(gen))
         await asyncio.sleep(0.2)
         assert hub._consumers[sub] == 2
         hub.publish("agent_end", {"session_id": "s1"})  # id 3, filtered

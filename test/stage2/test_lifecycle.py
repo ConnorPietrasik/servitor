@@ -19,11 +19,9 @@ The gates, verbatim:
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import shutil
-import signal
 import subprocess
 import time
 import uuid
@@ -204,7 +202,6 @@ def test_crash_restart_drill(stage2_env):
     is not interleaved, and pickup respawns as the sole process."""
     env = stage2_env
     state_root, pi, run_root = env["state_root"], env["pi"], env["run_root"]
-    state = env["state"]
     uid = slot_identity(SLOT).uid
 
     router = MockRouter()

@@ -11,7 +11,7 @@ per session, setuid to a slot uid from a static pool of 16.
 ```bash
 cp .env.example .env   # if no .env; fill in per deploy/README.md
 make venv              # file-backed venv (stamped; rebuilds only on dep/interpreter change)
-make check             # contract lint — run after ANY change; fast, no root
+make check             # contract + python lint — run after ANY change; fast, no root
 make test              # unit + conformance vs the mock router
 ```
 
@@ -69,7 +69,7 @@ changes:
     STRICT_SYSTEM.md`, no search extension, no EXA key — the one surface
     the agent cannot rewrite, re-applied on every respawn/probe (README §15).
 
-## Coding contracts (enforced by `make check`, an AST + parse lint)
+## Coding contracts (enforced by `make check`: AST + parse lint + pyflakes)
 
 - **Env vars**: app code reads env *only* through `app/env.py` — never
   `os.environ`/`os.getenv` directly. A new var must be added to `.env.example`
@@ -89,6 +89,9 @@ changes:
 - **The portcullis route yml** (`deploy/portcullis/traefik-dynamic/`) must
   parse with the expected shape (one router, auth-chain middleware, the
   servitor-edge credential middleware, SSE flush setting, no `readTimeout`).
+- **Python hygiene**: pyflakes over `app/`, `test/`, `deploy/` — no unused
+  imports, no undefined names, no dead local assignments. Forward references
+  use `if TYPE_CHECKING:` imports.
 
 ## Style
 

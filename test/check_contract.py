@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Contract lint: `make check`.
+"""Contract lint.
 
 Asserts the interface contract before any runtime code exists:
 

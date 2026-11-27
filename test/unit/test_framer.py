@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from app.rpc.framer import LFFramer, encode_command
 
 

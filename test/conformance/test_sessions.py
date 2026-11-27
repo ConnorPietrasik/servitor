@@ -12,10 +12,7 @@
 """
 from __future__ import annotations
 
-import asyncio
 import os
-
-import pytest
 
 
 async def test_first_spawn_mints_id_and_persists_transcript(harness):

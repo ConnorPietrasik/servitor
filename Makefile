@@ -1,7 +1,7 @@
 # Servitor — gates.
 #
 # Gate vocabulary:
-#   check          contract lint (fast once the venv exists; needs venv)
+#   check          contract + python lint (fast once the venv exists; needs venv)
 #   test           unit + conformance vs mock router (conformance
 #                  loud-skips without root)
 #   test-stage2    lifecycle drills over the stdio app (root, server)
@@ -39,10 +39,11 @@ $(VENV_STAMP): pyproject.toml
 
 venv: $(VENV_STAMP)
 
-## contract lint (env names, no hardcoded address/port/path,
-## route parse, agent-config sanity)
+## contract + python lint (env names, no hardcoded address/port/path,
+## route parse, agent-config sanity, pyflakes over app/ test/ deploy/)
 check: venv
 	$(PY) test/check_contract.py
+	$(PY) test/lint_python.py
 
 ## unit + conformance vs mock router (needs pi install into a
 ## scratch prefix — the runner handles it; version-parameterized per .env)

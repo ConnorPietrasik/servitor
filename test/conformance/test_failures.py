@@ -18,11 +18,7 @@ import os
 
 import pytest
 
-from app.rpc.session import (
-    ModelUnavailable,
-    PromptRejected,
-    SpawnFailure,
-)
+from app.rpc.session import ModelUnavailable, PromptRejected
 
 
 async def test_t25_unset_key_is_terminal_not_a_hang(harness):
@@ -32,16 +28,15 @@ async def test_t25_unset_key_is_terminal_not_a_hang(harness):
     live = await harness.start_session(expect_startup=False, key="")
     driver = live.driver
     try:
-        model = None
         try:
-            model = await driver.assert_model_usable()
+            await driver.assert_model_usable()
         except ModelUnavailable as exc:
             # spawn path failed closed: model.id == "unknown"
             assert "unknown" in str(exc) or "no usable model" in str(exc)
             assert harness.router.requests() == []
             return  # gate satisfied at the spawn boundary
         # the model looked usable: the prompt must still fail terminal
-        with pytest.raises(PromptRejected) as ei:
+        with pytest.raises(PromptRejected):
             await asyncio.wait_for(driver.prompt("hello?"), 30)
         # zero events: no agent_start, no turn_start, no agent_settled
         types = [e.get("type") for e in live.events]
@@ -97,7 +92,6 @@ async def test_missing_cwd_respawn_is_fatal_spawn_not_retry(harness):
     # simulating the stored cwd being gone
     await live.driver.shutdown()
     await live.driver.close()
-    from app.iso import mounts as M
 
     workdir_op = [op for op in live.mount_ops if op.target == live.sp.workdir][0]
     inbox_op = [op for op in live.mount_ops if op.target == f"{live.sp.workdir}/inbox"][0]

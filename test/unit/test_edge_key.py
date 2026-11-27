@@ -184,7 +184,7 @@ def test_lifespan_passes_through_when_keyed():
 
     async def fake_app(scope, receive, send):
         events.append(scope["type"])
-        msg = await receive()
+        await receive()
         await send({"type": "lifespan.startup.complete"})
 
     mw = EdgeKeyMiddleware(fake_app, KEY.encode("latin-1"))

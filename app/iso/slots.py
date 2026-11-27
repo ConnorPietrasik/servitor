@@ -8,7 +8,7 @@ env var. Signals are uid-gated, not cgroup-gated.
 from __future__ import annotations
 
 import pwd
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterator
 
 from app.iso.layout import SLOT_HOME, SLOT_NAMES
