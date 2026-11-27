@@ -45,6 +45,25 @@ def test_ids_are_monotonic_and_gap_detected():
     assert gap2 is True, "a position evicted from the ring must be a gap"
 
 
+def test_subscribe_past_the_hubs_own_latest_is_a_gap():
+    """A position past this hub's latest_id is not resume-able: a live
+    client only holds ids THIS hub issued, so a higher position is a
+    DEAD hub's (an app restart mints fresh hubs with ids from 1). The
+    reconnect must gap and re-sync — never wait for the new hub to
+    re-issue those ids and deliver fresh events as continuous over a
+    hole (the wait would also be invisible: heartbeats only)."""
+    hub = SseHub("s1")  # fresh: latest_id 0, empty ring
+    sub, replay, gap = hub.subscribe(after_id=999)  # a dead hub's position
+    assert gap is True and replay == []
+    # positions this hub has issued stay resume-able:
+    for i in range(5):
+        hub.publish("t", {"i": i})
+    assert hub.subscribe(after_id=2)[2] is False  # in-ring: replay
+    assert hub.subscribe(after_id=5)[2] is False  # exactly latest: wait
+    # a fresh client on a fresh hub is no gap (start from the beginning):
+    assert SseHub("s3").subscribe(after_id=0)[2] is False
+
+
 def test_consumer_count_tracks_live_consumers():
     """The idle-kill guard reads this ("a human is watching") — it
     counts only live subscriptions and returns to zero as they drop."""

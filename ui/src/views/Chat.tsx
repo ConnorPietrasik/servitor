@@ -57,6 +57,11 @@ export default function Chat() {
   const [msgs, setMsgs] = useState<Msg[]>([]);
   const [tools, setTools] = useState<ToolLine[]>([]);
   const [running, setRunning] = useState(false);
+  // a send is in flight: the composer locks until it lands — a failure must
+  // restore the message (a retry is a tap, not a retype), so typing during
+  // the flight would be clobbered by the restore, and an Enter during the
+  // flight would double-send
+  const [sending, setSending] = useState(false);
   const [subview, setSubview] = useState<"chat" | "files">("chat");
   // the last file-change from this session's stream, handed to the Files
   // view: a delta to fold in, or null meaning "revalidate" (the phone itself
@@ -414,6 +419,7 @@ export default function Chat() {
     setMsgs([]);
     setTools([]);
     setRunning(false);
+    setSending(false);
     setDialogs([]);
     // an upload belongs to the session it was started in; the rows go with it
     setJobs([]);
@@ -432,8 +438,9 @@ export default function Chat() {
   }, [sid]);
 
   async function send(mode: "auto" | "followup") {
-    if (!sid || !text.trim()) return;
+    if (!sid || sending || !text.trim()) return;
     const t = text.trim();
+    setSending(true);
     setText("");
     try {
       if (mode === "followup") {
@@ -449,7 +456,15 @@ export default function Chat() {
       }
       setBanner(null);
     } catch (e) {
+      // navigated away: the session switch already reset this composer —
+      // do not stamp the old session's failure on the new one
+      if (idRef.current !== sid) return;
+      // a failed send (network, 409 no live process, 502) must not eat the
+      // message: restore it so a retry is a tap, not a retype
+      setText(t);
       setBanner(String(e));
+    } finally {
+      setSending(false);
     }
   }
 
@@ -930,6 +945,7 @@ export default function Chat() {
               <textarea
                 className="input"
                 rows={2}
+                disabled={sending}
                 placeholder={
                   running ? "steer the run…" : "message… (send = steer while running)"
                 }
@@ -946,7 +962,7 @@ export default function Chat() {
                 <button
                   className="btn ghost"
                   onClick={() => void send("followup")}
-                  disabled={!running || !text.trim()}
+                  disabled={!running || sending || !text.trim()}
                   title="queue a follow-up turn in the current run"
                 >
                   follow-up
@@ -954,7 +970,7 @@ export default function Chat() {
                 <button
                   className="btn primary"
                   onClick={() => void send("auto")}
-                  disabled={!text.trim()}
+                  disabled={sending || !text.trim()}
                 >
                   {running ? "steer" : "send"}
                 </button>

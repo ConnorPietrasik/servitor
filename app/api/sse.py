@@ -8,10 +8,12 @@ The ring is a replay buffer for delivery; it NEVER feeds back into the
 run. A consumer that falls behind the ring — slow connection, backgrounded
 phone, closed app — is simply evicted: the stream emits a ``gap`` event
 (at subscribe and mid-stream) and the client re-syncs via the API
-(transcript fetch + re-subscribe). The producer never awaits a client — a
-dropped or slow connection never cancels, slows, or stalls a run. Memory
-is bounded (cap + one in-flight event); the transcript on disk is never
-touched.
+(transcript fetch + re-subscribe). The same gap covers a position this
+hub never issued — an app restart mints fresh hubs with ids from 1, and
+a pre-restart position must re-sync, not wait for the new hub to
+re-issue those ids. The producer never awaits a client — a dropped or
+slow connection never cancels, slows, or stalls a run. Memory is bounded
+(cap + one in-flight event); the transcript on disk is never touched.
 
 The cap is a memory policy knob (``SERVITOR_SSE_RING_BYTES``, default
 50 MB) — it sizes the resume window, never a capability cap.
@@ -133,22 +135,31 @@ class SseHub:
         yields; the list comprehension is synchronous (no await), so the
         snapshot is atomic with respect to the event loop.
 
-        ``gap`` is True when the requested position has already been
-        evicted — the client must re-sync via the API, not guess.
+        ``gap`` is True when the requested position is not resume-able
+        — the client must re-sync via the API, not guess: evicted past
+        the ring edge, or past this hub's own ``latest_id``. A live
+        client only holds ids THIS hub issued (its ``?after=`` is this
+        hub's cursor, its Last-Event-ID its own), so a higher position
+        is a dead hub's — an app restart mints fresh hubs with ids from
+        1. Waiting for the new hub to re-issue those ids would deliver
+        fresh events as continuous over a hole, so gap and re-sync.
         """
         sub = self._next_sub
         self._next_sub += 1
         start = max(0, after_id) + 1
-        gap = bool(self._ring) and self._ring[0].id > start
+        gap = after_id > self._latest_id or (
+            bool(self._ring) and self._ring[0].id > start
+        )
         self._consumers[sub] = max(after_id, 0)
         return sub, [e for e in self._ring if e.id >= start], gap
 
     def gap_before(self, cursor: int) -> bool:
         """True when the ring has evicted past the consumer's next
         position (cursor + 1): the stream must emit a ``gap`` and the
-        client re-syncs via the API. An empty ring has been evicted past
-        everything too — the publisher always keeps the newest event, so a
-        non-empty check suffices."""
+        client re-syncs via the API. An empty ring means nothing was
+        ever published, not everything evicted: once a hub has
+        published it always keeps at least its newest event (eviction
+        never pops the last), so there is nothing to be past."""
         return bool(self._ring) and self._ring[0].id > cursor + 1
 
     def events_after(self, cursor: int) -> list[SseEvent]:

@@ -62,10 +62,11 @@ only serves files that RESOLVE inside ui/dist (the app runs as root; a
 percent-decoded ``..`` or an escaping symlink must not walk out). The LLM
 key is env-only — never in any request or response. SSE: monotonic integer
 ids per session; replay from the bounded ring via Last-Event-ID/?after=;
-a position past the ring edge is a ``gap`` event (client re-syncs via the
-API — never partial data). The run NEVER feeds back on delivery: a slow
-consumer that falls behind the ring simply gets a gap. No caps: uploads/
-downloads stream to/from disk.
+a position past the ring edge — or one this hub never issued (a
+reconnect after an app restart) — is a ``gap`` event (client re-syncs
+via the API — never partial data). The run NEVER feeds back on
+delivery: a slow consumer that falls behind the ring simply gets a gap.
+No caps: uploads/downloads stream to/from disk.
 
 Admission: the edge credential gate is active when ``SERVITOR_EDGE_KEY``
 is set — always in production (baked into the image at build, re-injected
@@ -325,16 +326,24 @@ def _start_pos(hub, after: int | None, last_event_id: str | None, head: bool) ->
     API). ``head`` starts at the newest event with NO replay — the app-wide
     stream is a "something changed, refetch" notifier, and replaying its ring
     to a phone that just opened the app is the exact waste this exists to
-    remove. A reconnect carrying Last-Event-ID still resumes exactly where it
-    stopped: the caller's position always beats ``head``.
+    remove.
+
+    Precedence: ``Last-Event-ID`` > ``after`` > ``head`` > 0. The browser
+    reconnects to the SAME url — ``after`` is a constant of that url (the
+    first-connect position), while ``Last-Event-ID`` is the client's
+    progressed position; letting ``after`` win would replay everything the
+    client already consumed on every radio blip (the UI dedups completed
+    messages, not tool rows or a message still in flight), not resume where
+    it stopped. A new stream object sends no header, so ``after`` still
+    governs the first connect.
     """
-    if after is not None:
-        return after
     if last_event_id is not None:
         try:
             return int(last_event_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="bad Last-Event-ID")
+    if after is not None:
+        return after
     if head:
         return hub.latest_id
     return 0

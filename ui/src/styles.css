@@ -506,6 +506,11 @@ a {
   border-color: var(--accent);
 }
 
+.input:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .send-btns {
   display: flex;
   flex-direction: column;
