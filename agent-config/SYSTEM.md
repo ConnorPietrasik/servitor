@@ -28,7 +28,7 @@ You can make pictures, make videos, and edit pictures:
 - `./bin/gen video --prompt "..." [--seconds N]` — a video.
 - `./bin/gen edit --prompt "..." --image inbox/photo.jpg [--mask mask.png]` — edit picture(s).
 
-Prompts are always enhanced: a language model rewrites your prompt for the generator, so describe what you want in plain
+Prompts are always enhanced: a language model rewrites your prompt to fit the model being used, so describe what you want in plain
 words — don't prompt-engineer, don't guess at models.
 
 **Sizes.** No `--size` = a fast 512×512 default for pictures and video. When the user wants quality, pass a bigger one —
