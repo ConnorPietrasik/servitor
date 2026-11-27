@@ -104,9 +104,16 @@ export default function Chat() {
         break;
       case "file_kept":
         // the listing is untouched by a keep; what may go stale is a
-        // kept-badge (a keep from another tab). Named, so the Files view
-        // refreshes the shelf it is showing instead of revalidating rows
-        setFileEv((c) => ({ seq: (c?.seq ?? 0) + 1, delta: null, kind: "file_kept" }));
+        // kept-badge (a keep from another tab). The event carries the
+        // source→shelf mapping (JSON detail), so the Files view sets the
+        // badge with no fetch; the shelf it is showing still revalidates
+        // for the new row (its size/mtime are not in the event)
+        setFileEv((c) => ({
+          seq: (c?.seq ?? 0) + 1,
+          delta: null,
+          kind: "file_kept",
+          detail: typeof d.detail === "string" ? d.detail : undefined,
+        }));
         break;
       case "lib_saved":
         // the listing is untouched by a save; what is missing is an in-lib

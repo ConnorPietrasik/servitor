@@ -1087,7 +1087,14 @@ def build_app(app_state, cfg) -> FastAPI:
             )
         except (FileNotDelivered, DeliveryError) as e:
             raise HTTPException(status_code=404, detail=f"no such file: {e}")
-        app_state.lc.events.add(sid, "file_kept", row["path"])
+        # the event carries the source→shelf mapping: a keep from another
+        # tab sets the kept badge there with no fetch (the shelf listing
+        # cannot map a shelf path back to its source)
+        app_state.lc.events.add(
+            sid,
+            "file_kept",
+            json.dumps({"source": body.path, "path": row["path"]}, ensure_ascii=False, separators=(",", ":")),
+        )
         app_state.lc.usage.invalidate()
         return JSONResponse(status_code=201, content=row)
 

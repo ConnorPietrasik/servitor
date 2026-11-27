@@ -15,7 +15,9 @@ Everything here runs against the real Delivery over a tmp state volume.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+from types import SimpleNamespace
 
 from _filesapp import make_client, upload
 
@@ -109,6 +111,23 @@ def test_a_keep_never_overwrites_a_keep(tmp_path):
         ).status_code == 201
     assert (root / "keep/s1/x.txt").read_bytes() == b"one\n"
     assert (root / "keep/s1/x.1.txt").read_bytes() == b"two\n"
+
+
+def test_the_keep_event_carries_the_source_mapping(tmp_path):
+    """The file_kept event's detail is the source→shelf mapping as JSON:
+    a keep from another tab sets the kept badge in this one with no fetch
+    (the shelf listing cannot map a shelf path back to its source)."""
+    c, state, root = make_client(tmp_path)
+    events = []
+    state.lc.events = SimpleNamespace(add=lambda *a: events.append(a))
+    (root / "outbox/s1").mkdir(parents=True, exist_ok=True)
+    (root / "outbox/s1/report.md").write_bytes(b"# done\n")
+    r = c.post("/api/v1/sessions/s1/files/keep", json={"path": "outbox/report.md"})
+    assert r.status_code == 201
+    assert len(events) == 1
+    sid, kind, detail = events[0]
+    assert sid == "s1" and kind == "file_kept"
+    assert json.loads(detail) == {"source": "outbox/report.md", "path": "s1/report.md"}
 
 
 def test_keep_only_reaches_files_the_human_can_see(tmp_path):

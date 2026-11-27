@@ -10,15 +10,17 @@ const SOFT_SIZE_BYTES = 100 * 1024 * 1024; // soft warning threshold (no cap)
 // for `null`, "something changed and I can't say what — revalidate" (a
 // delete the phone itself did not make, a rename, or a ring gap). The
 // revalidate is an ETag fetch: a changed listing comes back whole, an
-// unchanged one costs ~200 bytes. `kind` names the one revalidate that
-// touches nothing the listing carries: a keep (possibly from another tab)
-// changes no row but can stale the kept-badges.
+// unchanged one costs ~200 bytes. A keep or a save (possibly from another
+// tab) changes no row; the event carries the source→dest mapping, so the
+// badge is set without a fetch — only an open shelf revalidates (its new
+// row's size/mtime are not in the event).
 export interface FileEvent {
   seq: number;
   delta: FilesChanged | null;
   kind?: string;
-  // `lib_saved` only: the JSON mapping the event carries (source → lib path)
-  // — a save from another tab sets the badge directly, no fetch
+  // `lib_saved` / `file_kept`: the JSON mapping the event carries
+  // (source → lib path / shelf path) — a save or keep from another tab
+  // sets the badge directly, no fetch
   detail?: string;
 }
 
@@ -99,6 +101,62 @@ function selectionZipName(paths: string[]): string {
   return parts[parts.length - 1] || "files";
 }
 
+// The badge record in localStorage is shared across tabs of the same
+// browser, but a tab's in-memory copy carries only what its own events
+// told it: a whole-map write would wipe entries a sibling tab recorded
+// since (a keep or save it made), and they would die on the next remount.
+// A write therefore applies the update's delta to the record as stored:
+// added or changed keys take this tab's values, keys the update dropped
+// — verified stale here, the row/shelf/lib no longer backs them — are
+// deleted, and entries this tab has no opinion on survive.
+function readBadgeRecord(key: string): Record<string, string> {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) ?? "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeBadgeRecord(
+  key: string,
+  cur: Record<string, string>,
+  next: Record<string, string>,
+): void {
+  try {
+    const merged: Record<string, string> = { ...readBadgeRecord(key) };
+    for (const [src, dest] of Object.entries(next)) merged[src] = dest;
+    for (const src of Object.keys(merged))
+      if (!(src in next) && src in cur) delete merged[src];
+    const out = JSON.stringify(merged);
+    // a sibling tab may have applied the same change first — the record
+    // already is `out`, and the write is a no-op
+    if (out !== (localStorage.getItem(key) ?? "{}")) localStorage.setItem(key, out);
+  } catch {
+    /* private mode: the badge is simply per-mount */
+  }
+}
+
+// Prune the stored record against a fresh listing: a badge a now-closed
+// tab recorded lives in the store, in no tab's memory, so the in-memory
+// prune cannot reach it — only a prune that reads the store can. The
+// loaded rows verify whatever tab recorded the entry: the server keeps
+// and saves only a source it has, so a fresh sibling badge always names
+// a row the listing carries. Writes back only when something goes.
+function pruneStoredBadges(key: string, sources: Set<string>): void {
+  try {
+    const stored = readBadgeRecord(key);
+    let changed = false;
+    const next: Record<string, string> = {};
+    for (const [src, dest] of Object.entries(stored))
+      if (sources.has(src)) next[src] = dest;
+      else changed = true; // row gone — the badge goes, whoever recorded it
+    if (changed) localStorage.setItem(key, JSON.stringify(next));
+  } catch {
+    /* private mode: the badge is simply per-mount */
+  }
+}
+
 // The session's files, both directions: browse, download, rename, keep,
 // attach, delete.
 //
@@ -130,25 +188,19 @@ export default function Files({
   // path the server landed it under). Persisted per session like the
   // staged-upload records: this view remounts on every chat↔files switch,
   // and a badge that dies with the mount would let the button silently make
-  // a second copy under a suffix. The shelf is the truth — when it is
-  // loaded, a badge whose recorded shelf path is gone is unkept and goes.
+  // a second copy under a suffix. Two truths: the shelf — when it is
+  // loaded, a badge whose recorded shelf path is gone is unkept and goes —
+  // and the row: a badge whose source row is gone goes with it (the row
+  // effect below, as for in-lib).
   const keptKey = `servitor-kept:${sid}`;
-  const [kept, setKept] = useState<Record<string, string>>(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(keptKey) ?? "{}");
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-    } catch {
-      return {};
-    }
-  });
+  const [kept, setKept] = useState<Record<string, string>>(() => readBadgeRecord(keptKey));
   const updateKept = (updater: (cur: Record<string, string>) => Record<string, string>) =>
     setKept((cur) => {
       const next = updater(cur);
-      try {
-        localStorage.setItem(keptKey, JSON.stringify(next));
-      } catch {
-        /* private mode: the badge is simply per-mount */
-      }
+      // no-op updaters return `cur` itself: the UI pays for change, so a
+      // listing change that pruned nothing writes nothing (and stringifies
+      // nothing)
+      if (next !== cur) writeBadgeRecord(keptKey, cur, next);
       return next;
     });
   // source paths already saved to the shared library ("outbox/<rel>" |
@@ -156,22 +208,13 @@ export default function Files({
   // persistence and truth rules as the kept-badge: the library listing is
   // the authority, and a badge whose lib path is gone is unsaved and goes.
   const libKey = `servitor-lib:${sid}`;
-  const [inLib, setInLib] = useState<Record<string, string>>(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(libKey) ?? "{}");
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-    } catch {
-      return {};
-    }
-  });
+  const [inLib, setInLib] = useState<Record<string, string>>(() => readBadgeRecord(libKey));
   const updateInLib = (updater: (cur: Record<string, string>) => Record<string, string>) =>
     setInLib((cur) => {
       const next = updater(cur);
-      try {
-        localStorage.setItem(libKey, JSON.stringify(next));
-      } catch {
-        /* private mode: the badge is simply per-mount */
-      }
+      // same no-op contract as updateKept: `next === cur` means nothing
+      // changed, so no write
+      if (next !== cur) writeBadgeRecord(libKey, cur, next);
       return next;
     });
   const [shelf, setShelf] = useState<KeepRow[] | null>(null);
@@ -222,9 +265,25 @@ export default function Files({
       else void load(true); // no cache to fold into (first load raced it)
     } else if (ev.kind === "file_kept") {
       // a keep — possibly from another tab — changes no listing row; what
-      // goes stale is a kept-badge. Only the open shelf renders one, so only
-      // it pays: the shelf is the badge's truth, and the reconcile drops any
-      // badge whose shelf path is gone
+      // goes stale is a kept-badge. The event carries the source→shelf
+      // mapping (JSON detail), so the badge is set directly with no fetch
+      // (the shelf listing cannot map a shelf path back to its source);
+      // the open shelf still revalidates — the new row's size/mtime are
+      // not in the event, and the reconcile drops any badge the shelf no
+      // longer backs
+      let parsed: { source?: unknown; path?: unknown } | null = null;
+      try {
+        parsed = ev.detail ? JSON.parse(ev.detail) : null;
+      } catch {
+        parsed = null;
+      }
+      const source = parsed?.source;
+      const shelfPath = parsed?.path;
+      if (typeof source === "string" && typeof shelfPath === "string" && source && shelfPath) {
+        updateKept((cur) =>
+          cur[source] === shelfPath ? cur : { ...cur, [source]: shelfPath },
+        );
+      }
       if (shelf !== null) {
         void api
           .listKept()
@@ -316,26 +375,34 @@ export default function Files({
     };
   }, [hasLibBadges]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // a badge is only as good as its row: when a source leaves the listing —
-  // a delete that landed from another tab or device (its delta folds in, or
-  // its revalidate reloads the rows) — the badge goes with it, the same rule
-  // the local deletes apply. An orphaned badge would mislabel a NEW file
-  // later written to the same path (a different artifact the save does not
-  // cover) and hold the lib_deleted stream open for a row that is gone. The
-  // rows the view just loaded are the truth; a first load in flight (outbox
-  // null) prunes nothing
+  // a badge is only as good as its row — kept and in-lib alike: when a
+  // source leaves the listing — a delete that landed from another tab or
+  // device (its delta folds in, or its revalidate reloads the rows) — the
+  // badge goes with it, the same rule the local deletes apply. An orphaned
+  // badge would mislabel a NEW file later written to the same path (a
+  // different artifact the keep/save does not cover) and, for in-lib, hold
+  // the lib_deleted stream open for a row that is gone. The rows the view
+  // just loaded are the truth; a first load in flight (outbox null) prunes
+  // nothing
   useEffect(() => {
     if (outbox === null) return;
     const sources = new Set<string>([
       ...outbox.map((f) => `outbox/${f.path}`),
       ...uploads.map((u) => `uploads/${u.name}`),
     ]);
-    updateInLib((cur) => {
+    const pruneToRows = (cur: Record<string, string>) => {
       const next: Record<string, string> = {};
-      for (const [src, libPath] of Object.entries(cur))
-        if (sources.has(src)) next[src] = libPath;
+      for (const [src, dest] of Object.entries(cur))
+        if (sources.has(src)) next[src] = dest;
       return Object.keys(next).length === Object.keys(cur).length ? cur : next;
-    });
+    };
+    updateInLib(pruneToRows);
+    updateKept(pruneToRows);
+    // and the store itself: a badge a now-closed tab recorded is in no
+    // tab's memory, so the in-memory prune above cannot reach it — the
+    // stored record is pruned against these same fresh rows
+    pruneStoredBadges(keptKey, sources);
+    pruneStoredBadges(libKey, sources);
   }, [outbox, uploads]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const dirs = useMemo(() => groupByDir(outbox ?? []), [outbox]);
@@ -349,7 +416,9 @@ export default function Files({
   async function doKeep(source: string, label: string) {
     try {
       const row = await api.keepFile(sid, source);
-      updateKept((cur) => ({ ...cur, [source]: row.path }));
+      updateKept((cur) =>
+        cur[source] === row.path ? cur : { ...cur, [source]: row.path },
+      );
       setNote(`kept ${label} as ${row.path} — it now survives the session`);
       if (shelf !== null) {
         const rows = (await api.listKept()).keep;
@@ -387,7 +456,9 @@ export default function Files({
   async function doSaveToLib(source: string, label: string) {
     try {
       const row = await api.saveToLib(sid, source);
-      updateInLib((cur) => ({ ...cur, [source]: row.path }));
+      updateInLib((cur) =>
+        cur[source] === row.path ? cur : { ...cur, [source]: row.path },
+      );
       setNote(
         `saved ${label} to lib/ as ${row.path} — every session's agent can read it (read-only)`,
       );
